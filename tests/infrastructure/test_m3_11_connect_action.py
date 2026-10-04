@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -229,10 +231,51 @@ def test_secret_canary_cannot_escape_the_action_error_receipt(
 
     monkeypatch.setattr(action, "current_candidate", fail)
     assert action.main() == 1
-    receipt = read_private(tmp_path / "m3-11-cleanup-receipt.json")
+    receipt = read_private(tmp_path / "m3-11-connect/receipt.json")
     assert receipt["status"] == "unresolved"
     captured = capsys.readouterr()
     assert CANARY not in json.dumps(receipt) + captured.out + captured.err
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_real_main_atomically_replaces_progress_and_final_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fail: bool,
+) -> None:
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv("GITHUB_REPOSITORY", REPOSITORY)
+    monkeypatch.setenv(
+        "GITHUB_WORKFLOW_REF", f"{REPOSITORY}/.github/workflows/{WORKFLOW}@refs/heads/main"
+    )
+    monkeypatch.setenv("M3_11_HELPER_REVISION", "a" * 40)
+    monkeypatch.setattr(action, "current_candidate", lambda *_args: None)
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"{}")))
+
+    def execute(
+        _payload: object,
+        *,
+        directory: Path,
+        helper: str,
+        progress: Callable[[str], None],
+    ) -> dict[str, object]:
+        for phase in (
+            "start-independent-connect",
+            "authenticate-independent-connect",
+            "reconcile-and-witness",
+        ):
+            progress(phase)
+            assert read_private(directory / "receipt.json")["phase"] == phase
+        if fail:
+            raise ValueError(CANARY)
+        return {"format": action.RECEIPT_FORMAT, "status": "ready", "helper_revision": helper}
+
+    monkeypatch.setattr(action, "execute", execute)
+    assert action.main() == int(fail)
+    final = read_private(tmp_path / "m3-11-connect/receipt.json")
+    assert final["status"] == ("unresolved" if fail else "ready")
+    assert CANARY not in json.dumps(final)
 
 
 def test_javascript_action_delivers_stdin_without_bootstrap_in_child_environment_or_logs(

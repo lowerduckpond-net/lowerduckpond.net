@@ -18,7 +18,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-from scripts.m3_11_private_inputs import write_private
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended import cleanup, connect_genesis
 from scripts.m3_11_unattended.config import BOOTSTRAP_FIELDS, Connections, provider_connections
@@ -44,6 +43,7 @@ from scripts.m3_11_unattended.model import (
     stamp,
     strings,
 )
+from scripts.m3_11_unattended.state import replace_private
 from scripts.production_qualification_inputs import current_candidate, revision
 
 FORMAT = "lowerduckpond-m3-11-connect-independent-v1"
@@ -419,14 +419,14 @@ def main() -> int:
     os.umask(0o077)
     directory = Path(os.environ["RUNNER_TEMP"]) / "m3-11-connect"
     directory.mkdir(mode=0o700)
-    output = directory.parent / "m3-11-cleanup-receipt.json"
+    output = directory / "receipt.json"
     receipt: dict[str, object] = {"format": RECEIPT_FORMAT, "status": "unresolved"}
     phase = "validate-protected-execution"
 
     def progress(value: str) -> None:
         nonlocal phase
         phase = value
-        write_private(output, {"format": RECEIPT_FORMAT, "status": "unresolved", "phase": phase})
+        replace_private(output, {"format": RECEIPT_FORMAT, "status": "unresolved", "phase": phase})
 
     try:
         if (
@@ -451,7 +451,7 @@ def main() -> int:
         receipt = execute(json.loads(raw), directory=directory, helper=helper, progress=progress)
     except Exception:  # Never export input values, provider payloads or private subprocess output.
         receipt = {"format": RECEIPT_FORMAT, "status": "unresolved", "phase": phase}
-    write_private(output, receipt)
+    replace_private(output, receipt)
     return 0 if receipt["status"] == "ready" else 1
 
 
