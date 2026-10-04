@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from scripts import qualification_deadline
-from scripts.m3_11_private_inputs import read_private
+from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_unattended.docker import Docker, controller_name
-from scripts.m3_11_unattended.lifecycle import Lifecycle
+from scripts.m3_11_unattended.lifecycle import Lifecycle, intents
 from scripts.m3_11_unattended.model import Credential, identity, instant
 from scripts.m3_11_unattended.state import RunState
 from scripts.m3_11_unattended.worker import retained_credentials
@@ -53,9 +54,65 @@ def due_processes(root: Path, docker: Docker) -> list[Path]:
     return due
 
 
-def reconcile_processes(lifecycle: Lifecycle, root: Path, docker: Docker) -> dict[str, Credential]:
+def reconcile_processes(
+    lifecycle: Lifecycle, root: Path, docker: Docker, *, directories: set[Path] | None = None
+) -> dict[str, Credential]:
     available: dict[str, Credential] = {}
-    for directory in due_processes(root, docker):
+    selected = due_processes(root, docker) if directories is None else directories
+    for directory in selected:
         lifecycle.request_revocation(identity(directory.name))
         available.update(retained_credentials(directory))
     return available
+
+
+def finish_reconciled(
+    lifecycle: Lifecycle, directories: set[Path], receipt: dict[str, object]
+) -> None:
+    """Stop terminal retries only after complete, freshly verified owned cleanup."""
+    results = receipt.get("results")
+    if not isinstance(results, list):
+        return
+    owned = intents(lifecycle.journal)
+    for directory in directories:
+        # A living controller still collecting diagnostics must finish its
+        # immutable journey before a new start can consider this attempt closed.
+        if not (directory / "journey-result.json").exists():
+            continue
+        state = RunState(directory)
+        state.update("finished", cleanup="unresolved")
+        run_id = identity(directory.name)
+        expected = {intent.sha256 for intent in owned if intent.run_id == run_id}
+        local = {path.stem for path in (directory / "credential-intents").glob("*.json")}
+        available = retained_credentials(directory)
+        if not local <= expected or not set(available) <= expected:
+            continue
+        verified = [
+            value
+            for value in results
+            if isinstance(value, dict)
+            and value.get("intent_sha256") in expected
+            and value.get("status") == "verified"
+            and (
+                value["intent_sha256"] not in available
+                or value.get("negative_authentication") == "denied"
+            )
+        ]
+        if (
+            len(verified) != len(expected)
+            or {value["intent_sha256"] for value in verified} != expected
+        ):
+            continue
+        proof = {
+            "format": "lowerduckpond-m3-11-watchdog-revocation-v1",
+            "binding": read_private(directory / "attempt.json")["binding"],
+            "helper_revision": receipt["helper_revision"],
+            "observed_at": receipt["observed_at"],
+            "results": verified,
+        }
+        # An interrupted write leaves its original evidence intact. A later
+        # successful sweep adds another receipt rather than rewriting that file.
+        write_private(directory / f"watchdog-revocation-{uuid.uuid7()}.json", proof)
+        for path in (directory / "credential-cleanup").glob("*.json"):
+            path.unlink()
+        (directory / "runtime-inputs.json").unlink(missing_ok=True)
+        state.update("finished", cleanup="verified")

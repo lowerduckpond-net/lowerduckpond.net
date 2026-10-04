@@ -102,8 +102,10 @@ class OnePassword:
         }
         self.environment.update(OP_SERVICE_ACCOUNT_TOKEN=token, OP_CACHE="false")
 
-    def journal_cache(self, path: Path, vault: str) -> JournalCache:
-        return JournalCache(path, token=self.environment["OP_SERVICE_ACCOUNT_TOKEN"], vault=vault)
+    def journal_cache(self, path: Path, vault: str, *, output: Path | None = None) -> JournalCache:
+        return JournalCache(
+            path, token=self.environment["OP_SERVICE_ACCOUNT_TOKEN"], vault=vault, output=output
+        )
 
     def command(self, *arguments: str, stdin: bytes | None = None) -> bytes:
         try:
@@ -171,11 +173,23 @@ class OpJournal:
         self._items: dict[str, tuple[str, dict[str, object]]] = {}
         self._cache: JournalCache | None = None
 
-    def use_cache(self, path: Path) -> None:
-        self._cache = self.op.journal_cache(path, self.vault)
-        saved = self._cache.read()
+    def use_cache(self, path: Path, *, output: Path | None = None) -> None:
+        if self._items or self._records is not None:
+            raise LifecycleError("configure journal acceleration before reading obligations")
+        self._cache = self.op.journal_cache(path, self.vault, output=output)
+        try:
+            saved = self._cached_items(self._cache.read())
+        except RuntimeError, OSError, ValueError, TypeError:
+            # An untrusted/unreadable acceleration file is not the journal.
+            # Cold-read all live records; never manufacture an empty snapshot.
+            return
+        self._items = saved
+
+    @staticmethod
+    def _cached_items(saved: dict[str, object]) -> dict[str, tuple[str, dict[str, object]]]:
         if len(saved) > MAX_EVENTS:
             raise LifecycleError("credential journal cache exceeds its bound")
+        result = {}
         for item_id, value in saved.items():
             selected = fields(value, {"version", "record"})
             version = selected["version"]
@@ -183,7 +197,8 @@ class OpJournal:
                 not isinstance(version, str) or re.fullmatch(r"[0-9a-f]{64}", version) is None
             ):
                 raise LifecycleError("credential journal cache identity is invalid")
-            self._items[item_id] = (version, validate(selected["record"]))
+            result[item_id] = (version, validate(selected["record"]))
+        return result
 
     def _inventory(self) -> list[dict[str, object]]:
         value = json.loads(
@@ -253,12 +268,15 @@ class OpJournal:
             raise LifecycleError("credential journal has ambiguous duplicate identities")
         self._records = records
         if self._cache is not None:
-            self._cache.write(
-                {
-                    item_id: {"version": version, "record": record}
-                    for item_id, (version, record) in self._items.items()
-                }
-            )
+            # Provider cleanup uses the already validated live snapshot even if
+            # optional local acceleration cannot be retained or exceeds its cap.
+            with suppress(OSError, RuntimeError, ValueError):
+                self._cache.write(
+                    {
+                        item_id: {"version": version, "record": record}
+                        for item_id, (version, record) in self._items.items()
+                    }
+                )
         return list(records)
 
     def append(self, record: dict[str, object]) -> None:

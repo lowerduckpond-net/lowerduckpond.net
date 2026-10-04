@@ -211,6 +211,10 @@ the secret remains available. Failed negative probes retain the obligation and
 private cleanup material. Cleanup interruption resumes reconciliation, never
 qualification. Failed revocation blocks closure and new starts independently of
 the qualification outcome.
+After verifying every owned credential, the watchdog retains a private revocation
+receipt, clears only its temporary credential files, and finishes the local cleanup
+state. The original journey result and diagnostics remain unchanged; the dead
+controller leaves the fast retry queue.
 
 Revocation deletes credentials only. It never removes failed-run evidence,
 containers, backups, DNS records or remote data. Existing ownership and explicit
@@ -232,6 +236,10 @@ are fetched, and changed or disappeared records fail closed. Provider removal
 and negative-authentication evidence are never replaced by cache observations.
 Cache loss requires fresh journal reads and may need more quota. See
 [1Password request limits](https://developer.1password.com/docs/service-accounts/rate-limits/).
+An invalid or unreadable cache triggers complete live journal reads. A cache that
+is too large or cannot be written is omitted without blocking credential cleanup.
+The GitHub workflow separates restored input from newly validated encrypted output
+and saves only the latter after successful reconciliation.
 
 ## Repository identity and audit lineage
 

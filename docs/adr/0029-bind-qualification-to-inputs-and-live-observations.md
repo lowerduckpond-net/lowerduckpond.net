@@ -154,6 +154,9 @@ checks remain independent of hourly remote polling. Encrypted immutable journal
 read caches reduce repeated reads, but every sweep requires live vault inventory
 and exact metadata/content-hash agreement, followed by fresh provider readback.
 Neither a cached receipt nor exhausted quota resolves an outstanding obligation.
+Invalid cache inputs require a cold live read; cache write failures or size bounds
+do not prevent credential reconciliation. Only newly validated encrypted cache
+output may be saved for reuse.
 
 Restart is reconciliation of one immutable attempt, not a retry of qualification.
 Changed executable inputs require a new correctly bound attempt. Complete live

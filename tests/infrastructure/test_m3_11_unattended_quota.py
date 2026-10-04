@@ -14,14 +14,14 @@ from typing import cast
 
 import pytest
 
-from scripts.m3_11_private_inputs import read_private
-from scripts.m3_11_unattended import cleanup, docker, quota, watchdog, worker
+from scripts.m3_11_private_inputs import write_private
+from scripts.m3_11_unattended import cleanup, docker, journal_cache, quota, watchdog, worker
 from scripts.m3_11_unattended.config import Bootstrap, Connections
 from scripts.m3_11_unattended.journal import OnePassword, OpJournal, event
 from scripts.m3_11_unattended.journal_cache import JournalCache
 from scripts.m3_11_unattended.lifecycle import Lifecycle
 from scripts.m3_11_unattended.model import LifecycleError, stamp
-from scripts.m3_11_unattended.state import replace_private
+from scripts.m3_11_unattended.state import RunState, replace_private
 
 from .test_m3_11_unattended_controller import subject
 from .test_m3_11_unattended_lifecycle import CANARY, TARGETS, Case
@@ -49,13 +49,13 @@ class CountedCli(JournalCli):
             raise LifecycleError("provider unavailable")
         return super().command(*arguments, stdin=stdin)
 
-    def journal_cache(self, path: Path, vault: str) -> JournalCache:
-        return JournalCache(path, token=CANARY + "cleanup", vault=vault)
+    def journal_cache(self, path: Path, vault: str, *, output: Path | None = None) -> JournalCache:
+        return JournalCache(path, token=CANARY + "cleanup", vault=vault, output=output)
 
 
-def cached(cli: CountedCli, path: Path) -> OpJournal:
+def cached(cli: CountedCli, path: Path, *, output: Path | None = None) -> OpJournal:
     journal = OpJournal(cast(OnePassword, cli), "a" * 26)
-    journal.use_cache(path)
+    journal.use_cache(path, output=output)
     return journal
 
 
@@ -81,9 +81,7 @@ def test_encrypted_cache_requires_live_inventory_and_fetches_new_records(tmp_pat
         cached(cli, path).records()
 
 
-@pytest.mark.parametrize(
-    "fault", ["edit", "delete", "title", "tamper", "other-token", "other-vault"]
-)
+@pytest.mark.parametrize("fault", ["edit", "delete", "title", "other-token", "other-vault"])
 def test_cached_obligations_cannot_be_changed_erased_or_forged(tmp_path: Path, fault: str) -> None:
     tmp_path.chmod(0o700)
     cli = CountedCli()
@@ -98,11 +96,6 @@ def test_cached_obligations_cannot_be_changed_erased_or_forged(tmp_path: Path, f
         cli.items.clear()
     elif fault == "title":
         item["title"] = "untrusted"
-    elif fault == "tamper":
-        value = read_private(path)
-        raw = str(value["ciphertext"])
-        value["ciphertext"] = ("A" if raw[0] != "A" else "B") + raw[1:]
-        replace_private(path, value)
     if fault.startswith("other-"):
         selected = JournalCache(
             path,
@@ -281,7 +274,7 @@ def test_local_death_detection_does_not_wait_for_hourly_remote_poll(
     monkeypatch.setattr(
         watchdog, "due_processes", lambda *_args: [tmp_path] if clock[0] >= death_at else []
     )
-    monkeypatch.setattr(watchdog, "reconcile_processes", lambda *_args: {})
+    monkeypatch.setattr(watchdog, "reconcile_processes", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
         sys,
         "argv",
@@ -377,3 +370,175 @@ def test_cache_does_not_resolve_revocation_during_outage_and_cleanup_ignores_adm
         }
     ]
     assert case.provider.deletes == ["credential00000001"]
+
+
+@pytest.mark.parametrize("fault", ["tamper", "changed-token"])
+def test_invalid_restore_is_cold_read_and_only_fresh_validated_output_is_saved(
+    tmp_path: Path, fault: str
+) -> None:
+    tmp_path.chmod(0o700)
+    cli = CountedCli()
+    restored, output = tmp_path / "restored.json", tmp_path / "journal.json"
+    record = event("result", Case(tmp_path / "case").run_id, {"test": CANARY})
+    initial = cached(cli, restored)
+    initial.append(record)
+    initial.records()
+    if fault == "tamper":
+        replace_private(restored, {"ciphertext": "invalid"})
+    else:
+        # This models a separately authorized service-account replacement, not
+        # automatic rotation. The live obligation vault remains authoritative.
+        JournalCache(restored, token=CANARY + "previous-account", vault="a" * 26).write({})
+    rejected = restored.read_bytes()
+    cli.fail_list = True
+    with pytest.raises(LifecycleError, match="unavailable"):
+        cached(cli, restored, output=output).records()
+    assert not output.exists()
+    cli.fail_list = False
+    before = cli.gets
+    assert cached(cli, restored, output=output).records() == [record]
+    assert cli.gets == before + 1
+    assert restored.read_bytes() == rejected
+    assert CANARY.encode() not in output.read_bytes()
+    before = cli.gets
+    assert cached(cli, output).records() == [record]
+    assert cli.gets == before  # the next run can use the repaired cache
+
+
+@pytest.mark.parametrize("fault", ["oversize", "unwritable", "unsafe-directory"])
+def test_optional_cache_storage_cannot_prevent_live_revocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    tmp_path.chmod(0o700)
+    cli = CountedCli()
+    case = Case(tmp_path / "case")
+    case.lifecycle = Lifecycle(
+        OpJournal(cast(OnePassword, cli), "a" * 26),
+        {"spaces": case.provider},
+        clock=lambda: case.now,
+    )
+    intent, credential = case.create()
+    case.lifecycle.request_revocation(case.run_id)
+    if fault == "oversize":
+        monkeypatch.setattr(journal_cache, "MAX_CACHE_BYTES", 1)
+    elif fault == "unwritable":
+
+        def unavailable(*_args: object) -> None:
+            raise PermissionError
+
+        monkeypatch.setattr(journal_cache, "replace_private", unavailable)
+    output = tmp_path / "journal.json"
+    if fault == "unsafe-directory":
+        public = tmp_path / "unsafe-cache"
+        public.mkdir(mode=0o755)
+        output = public / "journal.json"
+    independent = Lifecycle(
+        cached(cli, tmp_path / "restored.json", output=output),
+        {"spaces": case.provider},
+        clock=lambda: case.now,
+    )
+    receipt = cleanup.sweep(
+        independent, actor="github", helper="f" * 40, secrets={intent.sha256: credential}
+    )
+    assert receipt["status"] == "ready"
+    assert case.provider.deletes == [credential.identifier]
+    assert not output.exists()
+    assert CANARY not in json.dumps(receipt)
+
+
+@pytest.mark.parametrize("failed_revocation", [False, True])
+def test_dead_controller_leaves_retry_set_only_after_verified_revocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failed_revocation: bool,
+) -> None:
+    cli = CountedCli()
+    case = Case(tmp_path / "case")
+    case.now = datetime.now(UTC)
+    case.lifecycle = Lifecycle(
+        OpJournal(cast(OnePassword, cli), "a" * 26),
+        {"spaces": case.provider},
+        clock=lambda: case.now,
+    )
+    root = tmp_path / "runs"
+    root.mkdir(mode=0o700)
+    directory = root / case.run_id
+    directory.mkdir(mode=0o700)
+    for name in ("credential-intents", "credential-cleanup"):
+        (directory / name).mkdir(mode=0o700)
+    state = RunState(directory)
+    state.begin({"managed_run_id": case.run_id})
+    intent, credential = case.create()
+    case.provider.fail_delete = failed_revocation
+    write_private(directory / "credential-intents" / (intent.sha256 + ".json"), intent.document())
+    write_private(
+        directory / "credential-cleanup" / (intent.sha256 + ".json"),
+        {
+            "intent_sha256": intent.sha256,
+            "identifier": credential.identifier,
+            "secret": credential.secret,
+        },
+    )
+    write_private(directory / "runtime-inputs.json", {"private": CANARY})
+    (directory / "failed.log").write_text(CANARY)
+    state.update("running", cleanup="pending")
+    clock = [0.0]
+    calls = []
+    death_at = 60
+
+    class Daemon:
+        def owned(self, name: str) -> dict[str, object]:
+            assert name == docker.controller_name(case.run_id)
+            return {"State": {"Running": clock[0] < death_at}}
+
+    def connect(*_args: object) -> Lifecycle:
+        calls.append(clock[0])
+        return Lifecycle(
+            OpJournal(cast(OnePassword, cli), "a" * 26),
+            {"spaces": case.provider},
+            clock=lambda: case.now,
+        )
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+        if clock[0] >= 2 * 3600:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(time, "sleep", sleep)
+    monkeypatch.setattr(
+        cleanup, "cleanup_configuration", lambda _path: (TARGETS, "a" * 26, Bootstrap({}))
+    )
+    monkeypatch.setattr(cleanup, "connect_cleanup", connect)
+    monkeypatch.setattr(docker, "Docker", Daemon)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "cleanup",
+            "--actor",
+            "watchdog",
+            "--watch",
+            "--config",
+            "/unused",
+            "--runs",
+            str(root),
+        ],
+    )
+    with pytest.raises(KeyboardInterrupt):
+        cleanup.main()
+    assert calls == ([0, *range(60, 2 * 3600, 300)] if failed_revocation else [0, 60, 3660])
+    assert state.status()["qualification"] == "interrupted"
+    assert state.status()["credential_cleanup"] == (
+        "unresolved" if failed_revocation else "verified"
+    )
+    assert state.status()["phase"] == "finished"
+    assert state.status()["closure"] == "unresolved"
+    assert len(list(directory.glob("watchdog-revocation-*.json"))) == (
+        0 if failed_revocation else 1
+    )
+    assert bool(list((directory / "credential-cleanup").iterdir())) == failed_revocation
+    assert (directory / "runtime-inputs.json").exists() == failed_revocation
+    assert (directory / "failed.log").read_text() == CANARY
+    assert CANARY not in capsys.readouterr().out

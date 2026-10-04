@@ -29,8 +29,8 @@ class JournalCache:
     Cache hits still require current 1Password inventory metadata and title hashes.
     """
 
-    def __init__(self, path: Path, *, token: str, vault: str) -> None:
-        self.path = path
+    def __init__(self, path: Path, *, token: str, vault: str, output: Path | None = None) -> None:
+        self.path, self.output = path, output or path
         self.context = (FORMAT + ":" + vault).encode()
         self.cipher = AESGCM(hashlib.sha256(self.context + b"\0" + token.encode()).digest())
 
@@ -52,10 +52,14 @@ class JournalCache:
                 "encrypted journal cache is invalid; preserve obligations"
             ) from None
 
-    def write(self, records: dict[str, object]) -> None:
+    def write(self, records: dict[str, object]) -> bool:
+        plain = canonical_bytes(records)
+        if len(plain) > MAX_CACHE_BYTES:
+            return False
         nonce = os.urandom(NONCE_BYTES)
-        raw = nonce + self.cipher.encrypt(nonce, canonical_bytes(records), self.context)
+        raw = nonce + self.cipher.encrypt(nonce, plain, self.context)
         value: dict[str, object] = {"ciphertext": base64.b64encode(raw).decode()}
         if len(canonical_bytes(value)) > MAX_CACHE_BYTES:
-            raise LifecycleError("encrypted journal cache exceeds its bound")
-        replace_private(self.path, value)
+            return False
+        replace_private(self.output, value)
+        return True

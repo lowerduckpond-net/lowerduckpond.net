@@ -229,18 +229,26 @@ def argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--runs", type=Path)
     parser.add_argument("--journal-cache", type=Path)
+    parser.add_argument("--journal-cache-output", type=Path)
     return parser
 
 
-def main() -> int:
+def parse_arguments() -> argparse.Namespace:
     parser = argument_parser()
     args = parser.parse_args()
+    if args.journal_cache_output is not None and args.journal_cache is None:
+        parser.error("journal cache output requires an input cache path")
     if args.actor == "github" and (
         os.environ.get("GITHUB_ACTIONS") != "true"
         or os.environ.get("GITHUB_REPOSITORY") != "lowerduckpond-net/lowerduckpond.net"
         or os.environ.get("GITHUB_REF") != "refs/heads/main"
     ):
         parser.exit(1, "Independent cleanup requires its protected main-branch workflow.\n")
+    return args
+
+
+def main() -> int:
+    args = parse_arguments()
     repository = Path(__file__).resolve().parents[2]
     helper = revision(git(repository, "rev-parse", "HEAD").decode().strip())
     status = 1
@@ -257,6 +265,7 @@ def main() -> int:
                 from scripts.m3_11_unattended.docker import Docker  # noqa: PLC0415 - watchdog only
                 from scripts.m3_11_unattended.watchdog import (  # noqa: PLC0415 - watchdog only
                     due_processes,
+                    finish_reconciled,
                     reconcile_processes,
                 )
 
@@ -277,15 +286,19 @@ def main() -> int:
                 if not isinstance(lifecycle.journal, OpJournal):
                     raise LifecycleError("independent cleanup requires the external journal")
                 if args.journal_cache is not None:
-                    lifecycle.journal.use_cache(args.journal_cache)
+                    lifecycle.journal.use_cache(
+                        args.journal_cache, output=args.journal_cache_output
+                    )
                 journal = lifecycle.journal
             else:
                 journal.refresh()
                 lifecycle.journal = journal
             available = None
             if args.runs is not None:
-                available = reconcile_processes(lifecycle, args.runs, Docker())
+                available = reconcile_processes(lifecycle, args.runs, Docker(), directories=due)
             receipt = sweep(lifecycle, actor=args.actor, helper=helper, secrets=available)
+            if args.runs is not None:
+                finish_reconciled(lifecycle, due, receipt)
             print(json.dumps(receipt, sort_keys=True), flush=True)
             status = 0 if receipt["status"] == "ready" else 1
         except RuntimeError, OSError, ValueError, KeyError, TypeError:
