@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import json
+import os
 import sys
 import time
 from datetime import UTC, datetime, timedelta
@@ -16,11 +17,11 @@ import pytest
 
 from scripts.m3_11_private_inputs import write_private
 from scripts.m3_11_unattended import cleanup, docker, journal_cache, quota, watchdog, worker
-from scripts.m3_11_unattended.config import Bootstrap, Connections
+from scripts.m3_11_unattended.config import Bootstrap, Configuration, Connections
 from scripts.m3_11_unattended.journal import OnePassword, OpJournal, event
 from scripts.m3_11_unattended.journal_cache import JournalCache
 from scripts.m3_11_unattended.lifecycle import Lifecycle
-from scripts.m3_11_unattended.model import LifecycleError, stamp
+from scripts.m3_11_unattended.model import Credential, LifecycleError, stamp
 from scripts.m3_11_unattended.state import RunState, replace_private
 
 from .test_m3_11_unattended_controller import subject
@@ -292,6 +293,78 @@ def test_local_death_detection_does_not_wait_for_hourly_remote_poll(
     with pytest.raises(KeyboardInterrupt):
         cleanup.main()
     assert calls == [0, *range(death_at, 25 * 60, 300)]
+
+
+@pytest.mark.parametrize("recovers", [False, True])
+def test_surviving_controller_bounds_failed_cleanup_retries_and_stops_after_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recovers: bool
+) -> None:
+    clock = [0.0]
+    recovery_at, stop_at = 600, 1200
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    selected, case = subject(tmp_path, monkeypatch)
+    calls = []
+    outcomes = []
+    revoke = selected.revoke
+
+    def provision() -> tuple[dict[str, Credential], dict[str, object]]:
+        case.lifecycle.remember = selected.remember
+        case.lifecycle.remember_intent = selected.remember_intent
+        _, credential = case.create()
+        return {"archive": credential}, {}
+
+    def fail_after_provisioning(_credentials: dict[str, Credential]) -> dict[str, object]:
+        case.provider.fail_delete = True
+        raise LifecycleError(CANARY)
+
+    def observe_revocation() -> bool:
+        calls.append(clock[0])
+        result = revoke()
+        outcomes.append((selected.directory / "journey-result.json").read_bytes())
+        assert selected.state.status()["credential_cleanup"] == (
+            "verified" if result else "unresolved"
+        )
+        assert bool(worker.retained_credentials(selected.directory)) is not result
+        return result
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+        if recovers and clock[0] >= recovery_at:
+            case.provider.fail_delete = False
+        if clock[0] >= stop_at:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(selected, "_provision", provision)
+    monkeypatch.setattr(selected, "_production", fail_after_provisioning)
+    monkeypatch.setattr(selected, "revoke", observe_revocation)
+    monkeypatch.setattr(worker, "Worker", lambda *_args: selected)
+    monkeypatch.setattr(Configuration, "load", lambda _path: selected.config)
+    monkeypatch.setattr(time, "sleep", sleep)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "worker",
+            "--directory",
+            str(selected.directory),
+            "--config",
+            "/unused",
+            "--source",
+            str(selected.source),
+        ],
+    )
+    previous_umask = os.umask(0o077)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            worker.main()
+    finally:
+        os.umask(previous_umask)
+    assert calls == ([0, 300, 600] if recovers else [0, 300, 600, 900])
+    assert len(set(outcomes)) == 1
+    assert selected.state.status()["qualification"] == "failed"
+    assert selected.state.status()["closure"] == "unresolved"
+    assert case.provider.creates == 1
+    assert bool(case.provider.items) is not recovers
 
 
 def test_real_provisioning_refuses_low_quota_before_any_run_or_intent(

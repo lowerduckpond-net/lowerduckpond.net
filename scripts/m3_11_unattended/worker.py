@@ -615,9 +615,11 @@ def main() -> int:
         # Keep the detached container available for status and restart recovery.
         # Its restart policy never turns a completed/failed attempt into a retry.
         while True:
+            # run() already attempted terminal cleanup immediately. Bound later
+            # retries like the watchdog instead of rereading bootstrap every minute.
+            time.sleep(cleanup.RETRY_SECONDS)
             if worker.state.status()["credential_cleanup"] != "verified":
                 worker.revoke()
-            time.sleep(60)
     except RuntimeError, OSError, ValueError, TypeError, KeyError:
         print(
             "Detached qualification requires reconciliation; private evidence is retained.",
