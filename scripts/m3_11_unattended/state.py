@@ -53,6 +53,32 @@ def replace_private(path: Path, value: dict[str, object]) -> None:
             temporary.unlink(missing_ok=True)
 
 
+@contextmanager
+def cleanup_lock(root: Path) -> Iterator[None]:
+    """Serialize local reconciliation and secret disposal across the shared run spool."""
+    private_directory(root)
+    private_directory(root.parent)
+    # Keep non-attempt files out of the strictly identified run directory.
+    descriptor = os.open(
+        root.parent / ".credential-cleanup.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
+    )
+    try:
+        info = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o600  # noqa: PLR2004 - private lock
+            or info.st_nlink != 1
+        ):
+            raise LifecycleError("cleanup lock has unsafe metadata")
+        # Separate from the journey lock: the watchdog must be able to revoke
+        # after a deadline while a controller is still finishing diagnostics.
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
 @dataclass(frozen=True)
 class RunState:
     directory: Path
@@ -118,18 +144,34 @@ class RunState:
     def cancelled(self) -> bool:
         return (self.directory / "cancel.json").exists()
 
-    def update(self, phase: str, *, cleanup: str) -> None:
+    def update(self, phase: str, *, cleanup: str, preserve_verified: bool = False) -> None:
         if phase not in PHASES or cleanup not in {"pending", "verified", "unresolved"}:
             raise LifecycleError("invalid controller progress")
-        replace_private(
-            self.directory / "status.json",
-            {
-                "format": "lowerduckpond-m3-11-unattended-status-v1",
-                "phase": phase,
-                "credential_cleanup": cleanup,
-                "observed_at": stamp(datetime.now(UTC)),
-            },
+        private_directory(self.directory)
+        descriptor = os.open(
+            self.directory / "status.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
         )
+        try:
+            # A separate short lock serializes watchdog/controller status writes
+            # without taking the controller's journey-long execution lock.
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            if (
+                preserve_verified
+                and (self.directory / "status.json").exists()
+                and self.status()["credential_cleanup"] == "verified"
+            ):
+                return
+            replace_private(
+                self.directory / "status.json",
+                {
+                    "format": "lowerduckpond-m3-11-unattended-status-v1",
+                    "phase": phase,
+                    "credential_cleanup": cleanup,
+                    "observed_at": stamp(datetime.now(UTC)),
+                },
+            )
+        finally:
+            os.close(descriptor)
 
     def status(self) -> dict[str, object]:
         progress = fields(

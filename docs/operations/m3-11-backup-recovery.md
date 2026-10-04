@@ -115,7 +115,7 @@ The cleanup workflow must be present on **main** before scheduling works. If the
 implementation PR is still open, arrange a reviewed bootstrap of that workflow
 on main and pin its explicitly approved helper commit; a branch-only scheduled
 workflow is insufficient. Dispatch it once and inspect its result. Every new
-start requires a ready GitHub heartbeat no older than 45 minutes, for the exact
+start requires a ready GitHub heartbeat no older than 90 minutes, for the exact
 helper, and no outstanding credential obligations. No live provisioning is
 authorized by successful setup alone.
 
@@ -200,8 +200,12 @@ responses reconcile exact intent metadata and provider inventory; no creation
 request is retried. Missing or ambiguous ownership remains unresolved.
 
 Terminal cleanup, a separate persistent watchdog, and the protected GitHub
-workflow independently reconcile those obligations. The watchdog checks every
-minute; GitHub schedules every 15 minutes but may be delayed. Stale execution,
+workflow independently reconcile those obligations. The watchdog checks local
+processes every minute and immediately reconciles a newly detected terminal path.
+Unresolved terminal cleanup first retries after five minutes, then backs off through
+10, 20 and 40 minutes to hourly retries. A newly detected terminal path still triggers
+immediate reconciliation. Routine remote reconciliation and GitHub scheduling are
+hourly; GitHub execution may be delayed. Stale execution,
 overdue obligations and provider failures remain visible. No exact-time Spaces
 deletion guarantee is made. A successful DELETE alone is insufficient: require
 fresh complete inventory and detail absence, plus negative authentication where
@@ -209,12 +213,47 @@ the secret remains available. Failed negative probes retain the obligation and
 private cleanup material. Cleanup interruption resumes reconciliation, never
 qualification. Failed revocation blocks closure and new starts independently of
 the qualification outcome.
+After verifying every owned credential, the watchdog retains a private revocation
+receipt, clears only its temporary credential files, and finishes the local cleanup
+state. The original journey result and diagnostics remain unchanged; the dead
+controller leaves the fast retry queue.
+Local controller and watchdog reconciliation share a lock on the persistent
+evidence volume, separate from the journey lock. They refresh the journal only
+after acquiring it and hold it through probes and temporary-key removal. Process
+death releases the lock. An authentication failure also records an explicit
+obligation whose event ID must be covered by a denied-authentication proof;
+a concurrent independent readback without the secret cannot clear it. New proof
+coverage does not depend on the actors' clock ordering.
 
 Revocation deletes credentials only. It never removes failed-run evidence,
 containers, backups, DNS records or remote data. Existing ownership and explicit
 approval requirements for destructive retirement remain in force. Diagnostic
 recovery after revocation needs newly authorized temporary credentials and cannot
 change the original failed qualification result.
+
+1Password's account-wide daily request quota is shared by all service accounts.
+Before issuing credentials, the controller checks both provisioning and cleanup
+quota metadata, requiring headroom for the journey, retained journal history and
+cleanup. This observes capacity; it cannot reserve it against unrelated account
+activity. Quota exhaustion never clears an obligation or suppresses revocation.
+The hourly remote cadence avoids consuming the quota with idle one-minute reads.
+The controller and watchdog share an encrypted cache of immutable journal reads
+on the private evidence volume; GitHub retains its own cache independently. Each
+cache is keyed by its cleanup service account and vault. It contains no provider credentials or
+production inputs. Every sweep still lists the live vault and validates each
+cached record against its current metadata and content-hash title; new records
+are fetched, and changed or disappeared records fail closed. Provider removal
+and negative-authentication evidence are never replaced by cache observations.
+Cache loss requires fresh journal reads and may need more quota. See
+[1Password request limits](https://developer.1password.com/docs/service-accounts/rate-limits/).
+An invalid or unreadable cache triggers complete live journal reads. A cache that
+is too large or cannot be written is omitted without blocking credential cleanup.
+The GitHub workflow separates restored input from newly validated encrypted output
+and saves only the latter, including when provider revocation fails. Repeated failures
+reuse an outstanding negative-authentication obligation rather than appending identical
+markers. Every retry still requires fresh provider readback and authentication checks
+where credentials remain available; reduced journal traffic cannot turn a failure into
+verified cleanup.
 
 ## Repository identity and audit lineage
 

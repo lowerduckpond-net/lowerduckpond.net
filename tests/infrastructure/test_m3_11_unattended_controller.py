@@ -58,6 +58,7 @@ def subject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[worker.Wor
         },
     )
     selected = worker.Worker(directory, configuration(), tmp_path / "source")
+    selected.cleanup_cache = tmp_path / "cleanup-journal-cache.json"
     monkeypatch.setattr(selected, "_verify_source", lambda: None)
     monkeypatch.setattr(
         worker,
@@ -186,7 +187,7 @@ def test_private_spool_is_durable_before_remote_creation_acknowledgement(
     assert not worker.retained_credentials(selected.directory)
 
 
-@pytest.mark.parametrize("age", [timedelta(minutes=46), timedelta(days=1)])
+@pytest.mark.parametrize("age", [timedelta(minutes=91), timedelta(days=1)])
 def test_stale_independent_cleanup_blocks_admission(tmp_path: Path, age: timedelta) -> None:
     case = Case(tmp_path)
     case.journal.append(

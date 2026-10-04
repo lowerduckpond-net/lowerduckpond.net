@@ -18,11 +18,11 @@ from scripts import qualification_deadline
 from scripts.m3_10_qualification_report import verify_report
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
-from scripts.m3_11_unattended import cleanup, inputs
+from scripts.m3_11_unattended import cleanup, inputs, quota
 from scripts.m3_11_unattended.cloudflare import Cloudflare
 from scripts.m3_11_unattended.config import Configuration, connect
 from scripts.m3_11_unattended.docker import SOCKET, Docker
-from scripts.m3_11_unattended.journal import event
+from scripts.m3_11_unattended.journal import OpJournal, event
 from scripts.m3_11_unattended.lifecycle import Lifecycle, intents
 from scripts.m3_11_unattended.model import (
     ROLES,
@@ -35,7 +35,7 @@ from scripts.m3_11_unattended.model import (
     stamp,
     strings,
 )
-from scripts.m3_11_unattended.state import RunState, private_directory
+from scripts.m3_11_unattended.state import RunState, cleanup_lock, private_directory
 from scripts.production_qualification_inputs import current_candidate, fingerprint, revision
 
 SECRETS = {
@@ -90,6 +90,8 @@ class Worker:
         self.directory = directory
         self.pending = qualification_deadline.Interruption()
         self.ends_at = time.monotonic() + qualification_deadline.LIVE_SECONDS
+        self.cleanup_journal: OpJournal | None = None
+        self.cleanup_cache = directory.parent.parent / "cleanup-journal-cache.json"
 
     def check_cancelled(self) -> None:
         if self.state.cancelled or self.pending.signum is not None:
@@ -198,6 +200,9 @@ class Worker:
             vault=self.config.journal_vault,
             now=now,
         )
+        if isinstance(separate.journal, OpJournal):
+            separate.journal.use_cache(self.cleanup_cache)
+            self.cleanup_journal = separate.journal
         separate.authority.require(now + timedelta(hours=14))
         cleanup.require_independent_ready(separate.journal, helper=self.helper, now=now)
         Lifecycle(separate.journal, separate.providers).require_clear()
@@ -216,7 +221,9 @@ class Worker:
             before = {item["id"] for item in separate.providers[kind].inventory()}
             if not before or before != {item["id"] for item in creator.providers[kind].inventory()}:
                 raise LifecycleError("provisioning and cleanup provider identities differ")
-        for record in creator.journal.records():
+        records = creator.journal.records()
+        quota.require_capacity(creator.journal.op, separate.journal.op, records=len(records))
+        for record in records:
             payload = record["payload"]
             if (
                 record["kind"] == "run"
@@ -444,11 +451,22 @@ class Worker:
             )
 
     def revoke(self) -> bool:
+        with cleanup_lock(self.directory.parent):
+            return self._revoke_locked()
+
+    def _revoke_locked(self) -> bool:
         self.state.update("revoking", cleanup="pending")
         try:
             lifecycle = cleanup.connect_cleanup(
                 self.config.cleanup, self.config.targets, self.config.journal_vault
             )
+            if self.cleanup_journal is None:
+                if isinstance(lifecycle.journal, OpJournal):
+                    lifecycle.journal.use_cache(self.cleanup_cache)
+                    self.cleanup_journal = lifecycle.journal
+            else:
+                self.cleanup_journal.refresh()
+                lifecycle.journal = self.cleanup_journal
             lifecycle.request_revocation(self.run_id)
             available = retained_credentials(self.directory)
             receipt = cleanup.sweep(
@@ -612,10 +630,20 @@ def main() -> int:
             worker.run()
         # Keep the detached container available for status and restart recovery.
         # Its restart policy never turns a completed/failed attempt into a retry.
+        retry_seconds = cleanup.RETRY_SECONDS
         while True:
+            # run() already attempted terminal cleanup immediately. Bound later
+            # failures to an hourly cadence without consuming the shared quota.
+            time.sleep(retry_seconds)
             if worker.state.status()["credential_cleanup"] != "verified":
-                worker.revoke()
-            time.sleep(60)
+                verified = worker.revoke()
+                retry_seconds = (
+                    cleanup.REMOTE_SECONDS
+                    if verified
+                    else min(2 * retry_seconds, cleanup.REMOTE_SECONDS)
+                )
+            else:
+                retry_seconds = cleanup.REMOTE_SECONDS
     except RuntimeError, OSError, ValueError, TypeError, KeyError:
         print(
             "Detached qualification requires reconciliation; private evidence is retained.",

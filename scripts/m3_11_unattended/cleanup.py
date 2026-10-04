@@ -10,6 +10,7 @@ import os
 import sys
 import time
 import uuid
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -24,7 +25,7 @@ from scripts.m3_11_unattended.config import (
 )
 from scripts.m3_11_unattended.http import Api
 from scripts.m3_11_unattended.journal import Journal, OpJournal, event
-from scripts.m3_11_unattended.lifecycle import Lifecycle, Provider, intents
+from scripts.m3_11_unattended.lifecycle import Lifecycle, Provider, intents, pending_authentication
 from scripts.m3_11_unattended.model import (
     Credential,
     LifecycleError,
@@ -34,10 +35,13 @@ from scripts.m3_11_unattended.model import (
     stamp,
 )
 from scripts.m3_11_unattended.spaces import Spaces
+from scripts.m3_11_unattended.state import cleanup_lock
 from scripts.production_qualification_inputs import git, revision
 
-HEARTBEAT_MAX_AGE = timedelta(minutes=45)
+HEARTBEAT_MAX_AGE = timedelta(minutes=90)
 POLL_SECONDS = 60
+REMOTE_SECONDS = 3600
+RETRY_SECONDS = 300
 
 
 def connect_cleanup(bootstrap: Bootstrap, targets: Targets, vault: str) -> Lifecycle:
@@ -126,12 +130,15 @@ def sweep(
         and record["payload"].get("actor") == actor
     ]
     newest = max(prior, key=lambda value: str(value.get("observed_at"))) if prior else None
-    # Avoid an unbounded one-item-per-minute trail when nothing changes. GitHub
-    # always records its independent run, including delayed/stale execution.
+    # GitHub records every execution; the watchdog records at least hourly.
+    # Controller retries keep local status timestamps and journal only changes.
     if (
         actor == "github"
         or newest is None
-        or now - instant(newest["observed_at"]) >= timedelta(minutes=15)
+        or (
+            actor == "watchdog"
+            and now - instant(newest["observed_at"]) >= timedelta(seconds=REMOTE_SECONDS)
+        )
         or any(
             newest.get(key) != receipt[key]
             for key in ("helper_revision", "status", "overdue", "results")
@@ -180,8 +187,9 @@ def status_document(journal: Journal, *, helper: str, now: datetime) -> dict[str
             and isinstance(record["payload"], dict)
             and record["payload"].get("intent_sha256") == intent.sha256
         ]
-        latest = max(results, key=lambda record: str(record["event_id"])) if results else None
-        unresolved = latest is None or latest["kind"] != "resolved"
+        unresolved = not any(record["kind"] == "resolved" for record in results) or bool(
+            pending_authentication(results)
+        )
         pending += unresolved
         overdue += unresolved and instant(intent.deadline) < now
     heartbeats = [
@@ -220,45 +228,88 @@ def status_document(journal: Journal, *, helper: str, now: datetime) -> dict[str
     }
 
 
-def main() -> int:
+def argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--actor", choices=("github", "watchdog"), required=True)
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--runs", type=Path)
+    parser.add_argument("--journal-cache", type=Path)
+    parser.add_argument("--journal-cache-output", type=Path)
+    return parser
+
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argument_parser()
     args = parser.parse_args()
+    if args.journal_cache_output is not None and args.journal_cache is None:
+        parser.error("journal cache output requires an input cache path")
     if args.actor == "github" and (
         os.environ.get("GITHUB_ACTIONS") != "true"
         or os.environ.get("GITHUB_REPOSITORY") != "lowerduckpond-net/lowerduckpond.net"
         or os.environ.get("GITHUB_REF") != "refs/heads/main"
     ):
         parser.exit(1, "Independent cleanup requires its protected main-branch workflow.\n")
+    return args
+
+
+def main() -> int:  # noqa: PLR0915 - remote cadence plus locked local reconciliation
+    args = parse_arguments()
     repository = Path(__file__).resolve().parents[2]
     helper = revision(git(repository, "rev-parse", "HEAD").decode().strip())
     status = 1
     journal: OpJournal | None = None
+    next_remote = next_retry = 0.0
+    retry_seconds = RETRY_SECONDS
+    last_due: set[Path] = set()
     while True:
         try:
-            targets, vault, bootstrap = cleanup_configuration(args.config)
-            lifecycle = connect_cleanup(bootstrap, targets, vault)
-            if journal is None:
-                if not isinstance(lifecycle.journal, OpJournal):
-                    raise LifecycleError("independent cleanup requires the external journal")
-                journal = lifecycle.journal
-            else:
-                journal.refresh()
-                lifecycle.journal = journal
-            available = None
+            now = time.monotonic()
+            due: set[Path] = set()
             if args.runs is not None:
                 if args.actor != "watchdog":
                     raise LifecycleError("only the persistent watchdog reads local runtime spools")
                 from scripts.m3_11_unattended.docker import Docker  # noqa: PLC0415 - watchdog only
                 from scripts.m3_11_unattended.watchdog import (  # noqa: PLC0415 - watchdog only
+                    due_processes,
+                    finish_reconciled,
                     reconcile_processes,
                 )
 
-                available = reconcile_processes(lifecycle, args.runs, Docker())
-            receipt = sweep(lifecycle, actor=args.actor, helper=helper, secrets=available)
+                due = set(due_processes(args.runs, Docker()))
+            newly_due = bool(due - last_due)
+            if args.watch and now < next_remote and not newly_due and (not due or now < next_retry):
+                time.sleep(POLL_SECONDS)
+                continue
+            # Local process checks remain every minute. Remote reconciliation is
+            # hourly, or immediate on an unresolved local terminal path, with a
+            # five-minute first retry and backoff to hourly after failure. Avoid
+            # consuming the daily quota rereading idle bootstrap every minute.
+            retry_seconds = RETRY_SECONDS if newly_due else retry_seconds
+            next_remote, next_retry = now + REMOTE_SECONDS, now + retry_seconds
+            last_due = due
+            with cleanup_lock(args.runs) if args.runs is not None else nullcontext():
+                targets, vault, bootstrap = cleanup_configuration(args.config)
+                lifecycle = connect_cleanup(bootstrap, targets, vault)
+                if journal is None:
+                    if not isinstance(lifecycle.journal, OpJournal):
+                        raise LifecycleError("independent cleanup requires the external journal")
+                    if args.journal_cache is not None:
+                        lifecycle.journal.use_cache(
+                            args.journal_cache, output=args.journal_cache_output
+                        )
+                    journal = lifecycle.journal
+                else:
+                    # Refresh after acquiring the shared lock: a preceding
+                    # controller may have resolved obligations and removed keys.
+                    journal.refresh()
+                    lifecycle.journal = journal
+                available = None
+                if args.runs is not None:
+                    available = reconcile_processes(lifecycle, args.runs, Docker(), directories=due)
+                receipt = sweep(lifecycle, actor=args.actor, helper=helper, secrets=available)
+                if args.runs is not None:
+                    finish_reconciled(lifecycle, due, receipt)
             print(json.dumps(receipt, sort_keys=True), flush=True)
             status = 0 if receipt["status"] == "ready" else 1
         except RuntimeError, OSError, ValueError, KeyError, TypeError:
@@ -268,6 +319,7 @@ def main() -> int:
                 flush=True,
             )
             status = 1
+        retry_seconds = RETRY_SECONDS if status == 0 else min(2 * retry_seconds, REMOTE_SECONDS)
         if not args.watch:
             return status
         time.sleep(POLL_SECONDS)

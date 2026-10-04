@@ -90,6 +90,74 @@ def wait_for(docker: Docker, name: str, path: str) -> None:
 
 
 @pytest.mark.skipif(
+    not os.environ.get("LDP_M3_11_DOCKER_SMOKE_REVISION"),
+    reason="explicit prepared Docker host required",
+)
+def test_cleanup_lock_serializes_containers_and_releases_after_death() -> None:
+    docker = Docker()
+    source = os.environ["LDP_M3_11_DOCKER_SMOKE_REVISION"]
+    image = os.environ["LDP_M3_11_DOCKER_SMOKE_IMAGE"]
+    volume = "ldp-m311-smoke-cleanup-lock-" + uuid.uuid4().hex
+    docker.volume(volume)
+    program = """
+import os, signal, sys
+from pathlib import Path
+from scripts.m3_11_private_inputs import write_private
+from scripts.m3_11_unattended.state import cleanup_lock
+os.umask(0o077)
+root = Path('/smoke')
+root.chmod(0o700)
+runs = root/'runs'
+runs.mkdir(mode=0o700, exist_ok=True)
+with cleanup_lock(runs):
+    write_private(root/(sys.argv[1]+'.json'), {'entered':True})
+    signal.pause()
+"""
+    names = []
+    try:
+        for role in ("holder", "contender"):
+            name = volume + "-" + role
+            docker.command(
+                "run",
+                "--detach",
+                "--rm",
+                "--network",
+                "none",
+                "--name",
+                name,
+                "--label",
+                OWNER + "=true",
+                "--mount",
+                f"type=volume,source={helper_volume(source)},target=/opt/lifecycle,readonly",
+                "--mount",
+                f"type=volume,source={volume},target=/smoke",
+                image,
+                "uv",
+                "run",
+                "--no-sync",
+                "--frozen",
+                "python",
+                "-c",
+                program,
+                role,
+            )
+            names.append(name)
+            if role == "holder":
+                wait_for(docker, name, "/smoke/holder.json")
+        with pytest.raises(RuntimeError):
+            docker.command("exec", names[1], "test", "-f", "/smoke/contender.json")
+        docker.command("kill", "--signal=KILL", names[0])
+        names.pop(0)
+        wait_for(docker, names[0], "/smoke/contender.json")
+        # Neither acquisition creates an entry mistaken for a new attempt.
+        assert docker.command("exec", names[0], "ls", "-A", "/smoke/runs") == b""
+    finally:
+        for name in names:
+            docker.command("kill", "--signal=KILL", name)
+    # The isolated proof volume is retained, including both acquisition records.
+
+
+@pytest.mark.skipif(
     not os.environ.get("LDP_M3_11_DOCKER_SMOKE_IMAGE"),
     reason="explicit prepared Docker image required",
 )
