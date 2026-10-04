@@ -10,6 +10,7 @@ import os
 import sys
 import time
 import uuid
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -24,7 +25,7 @@ from scripts.m3_11_unattended.config import (
 )
 from scripts.m3_11_unattended.http import Api
 from scripts.m3_11_unattended.journal import Journal, OpJournal, event
-from scripts.m3_11_unattended.lifecycle import Lifecycle, Provider, intents
+from scripts.m3_11_unattended.lifecycle import Lifecycle, Provider, intents, pending_authentication
 from scripts.m3_11_unattended.model import (
     Credential,
     LifecycleError,
@@ -34,6 +35,7 @@ from scripts.m3_11_unattended.model import (
     stamp,
 )
 from scripts.m3_11_unattended.spaces import Spaces
+from scripts.m3_11_unattended.state import cleanup_lock
 from scripts.production_qualification_inputs import git, revision
 
 HEARTBEAT_MAX_AGE = timedelta(minutes=90)
@@ -185,8 +187,9 @@ def status_document(journal: Journal, *, helper: str, now: datetime) -> dict[str
             and isinstance(record["payload"], dict)
             and record["payload"].get("intent_sha256") == intent.sha256
         ]
-        latest = max(results, key=lambda record: str(record["event_id"])) if results else None
-        unresolved = latest is None or latest["kind"] != "resolved"
+        unresolved = not any(record["kind"] == "resolved" for record in results) or bool(
+            pending_authentication(results)
+        )
         pending += unresolved
         overdue += unresolved and instant(intent.deadline) < now
     heartbeats = [
@@ -250,7 +253,7 @@ def parse_arguments() -> argparse.Namespace:
     return args
 
 
-def main() -> int:
+def main() -> int:  # noqa: PLR0915 - remote cadence plus locked local reconciliation
     args = parse_arguments()
     repository = Path(__file__).resolve().parents[2]
     helper = revision(git(repository, "rev-parse", "HEAD").decode().strip())
@@ -285,25 +288,28 @@ def main() -> int:
             retry_seconds = RETRY_SECONDS if newly_due else retry_seconds
             next_remote, next_retry = now + REMOTE_SECONDS, now + retry_seconds
             last_due = due
-            targets, vault, bootstrap = cleanup_configuration(args.config)
-            lifecycle = connect_cleanup(bootstrap, targets, vault)
-            if journal is None:
-                if not isinstance(lifecycle.journal, OpJournal):
-                    raise LifecycleError("independent cleanup requires the external journal")
-                if args.journal_cache is not None:
-                    lifecycle.journal.use_cache(
-                        args.journal_cache, output=args.journal_cache_output
-                    )
-                journal = lifecycle.journal
-            else:
-                journal.refresh()
-                lifecycle.journal = journal
-            available = None
-            if args.runs is not None:
-                available = reconcile_processes(lifecycle, args.runs, Docker(), directories=due)
-            receipt = sweep(lifecycle, actor=args.actor, helper=helper, secrets=available)
-            if args.runs is not None:
-                finish_reconciled(lifecycle, due, receipt)
+            with cleanup_lock(args.runs) if args.runs is not None else nullcontext():
+                targets, vault, bootstrap = cleanup_configuration(args.config)
+                lifecycle = connect_cleanup(bootstrap, targets, vault)
+                if journal is None:
+                    if not isinstance(lifecycle.journal, OpJournal):
+                        raise LifecycleError("independent cleanup requires the external journal")
+                    if args.journal_cache is not None:
+                        lifecycle.journal.use_cache(
+                            args.journal_cache, output=args.journal_cache_output
+                        )
+                    journal = lifecycle.journal
+                else:
+                    # Refresh after acquiring the shared lock: a preceding
+                    # controller may have resolved obligations and removed keys.
+                    journal.refresh()
+                    lifecycle.journal = journal
+                available = None
+                if args.runs is not None:
+                    available = reconcile_processes(lifecycle, args.runs, Docker(), directories=due)
+                receipt = sweep(lifecycle, actor=args.actor, helper=helper, secrets=available)
+                if args.runs is not None:
+                    finish_reconciled(lifecycle, due, receipt)
             print(json.dumps(receipt, sort_keys=True), flush=True)
             status = 0 if receipt["status"] == "ready" else 1
         except RuntimeError, OSError, ValueError, KeyError, TypeError:

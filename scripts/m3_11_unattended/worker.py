@@ -35,7 +35,7 @@ from scripts.m3_11_unattended.model import (
     stamp,
     strings,
 )
-from scripts.m3_11_unattended.state import RunState, private_directory
+from scripts.m3_11_unattended.state import RunState, cleanup_lock, private_directory
 from scripts.production_qualification_inputs import current_candidate, fingerprint, revision
 
 SECRETS = {
@@ -451,6 +451,10 @@ class Worker:
             )
 
     def revoke(self) -> bool:
+        with cleanup_lock(self.directory.parent):
+            return self._revoke_locked()
+
+    def _revoke_locked(self) -> bool:
         self.state.update("revoking", cleanup="pending")
         try:
             lifecycle = cleanup.connect_cleanup(

@@ -217,6 +217,13 @@ After verifying every owned credential, the watchdog retains a private revocatio
 receipt, clears only its temporary credential files, and finishes the local cleanup
 state. The original journey result and diagnostics remain unchanged; the dead
 controller leaves the fast retry queue.
+Local controller and watchdog reconciliation share a lock on the persistent
+evidence volume, separate from the journey lock. They refresh the journal only
+after acquiring it and hold it through probes and temporary-key removal. Process
+death releases the lock. An authentication failure also records an explicit
+obligation whose event ID must be covered by a denied-authentication proof;
+a concurrent independent readback without the secret cannot clear it. New proof
+coverage does not depend on the actors' clock ordering.
 
 Revocation deletes credentials only. It never removes failed-run evidence,
 containers, backups, DNS records or remote data. Existing ownership and explicit
