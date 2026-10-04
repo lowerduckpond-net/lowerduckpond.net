@@ -1,0 +1,309 @@
+"""GitHub registry and encrypted artifact fault boundaries without live writes."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import io
+import subprocess
+import uuid
+import zipfile
+from collections.abc import Callable
+from pathlib import Path
+from typing import override
+from urllib.parse import parse_qs, urlsplit
+
+import pytest
+
+from scripts.m3_11_unattended import github_checkpoint as github
+from scripts.m3_11_unattended.connect_checkpoint import Stored
+from scripts.m3_11_unattended.model import LifecycleError, digest
+
+CANARY = "github-checkpoint-private-canary"
+
+
+class Registry(github.GitHubArtifacts):
+    def __init__(self, directory: Path) -> None:
+        super().__init__(epoch=str(uuid.uuid7()), token=CANARY, directory=directory)
+        self.runs: list[dict[str, object]] = [
+            {"id": 3, "status": "in_progress", "head_branch": "main"}
+        ]
+        self.artifacts: dict[int, list[dict[str, object]]] = {3: []}
+        self.archives: dict[int, bytes] = {}
+        self.fail_download = False
+
+    @override
+    def _api(self, path: str, *, binary: bool = False) -> object:
+        page = int(parse_qs(urlsplit(path).query).get("page", ["1"])[0])
+        start = (page - 1) * github.PAGE_SIZE
+        if "/workflows/" in path:
+            return {
+                "workflow_runs": copy.deepcopy(self.runs[start : start + github.PAGE_SIZE]),
+                "total_count": len(self.runs),
+            }
+        if "/runs/" in path:
+            run_id = int(path.split("/runs/")[1].split("/", maxsplit=1)[0])
+            values = copy.deepcopy(self.artifacts.get(run_id, []))
+            return {
+                "artifacts": values[start : start + github.PAGE_SIZE],
+                "total_count": len(values),
+            }
+        selected = int(path.split("/artifacts/")[1].split("/", maxsplit=1)[0])
+        if binary:
+            if self.fail_download:
+                raise LifecycleError("download unavailable")
+            return self.archives[selected]
+        return next(
+            copy.deepcopy(row)
+            for rows in self.artifacts.values()
+            for row in rows
+            if row["id"] == selected
+        )
+
+    def add(
+        self, *, name: str, raw: bytes, run_id: int = 3, expired: bool = False
+    ) -> dict[str, object]:
+        selected = len(self.archives) + 10
+        self.archives[selected] = raw
+        value: dict[str, object] = {
+            "id": selected,
+            "name": name,
+            "workflow_run": {"id": run_id, "head_branch": "main"},
+            "expired": expired,
+            "digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
+            "size_in_bytes": len(raw),
+        }
+        self.artifacts.setdefault(run_id, []).append(value)
+        return value
+
+
+def archive(path: Path) -> bytes:
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as output:
+        output.writestr("checkpoint.json", path.read_bytes())
+    return stream.getvalue()
+
+
+def action_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = tmp_path / "work/repository"
+    action = (
+        workspace.parent
+        / "_actions/actions/upload-artifact"
+        / github.UPLOAD_REVISION
+        / "dist/upload/index.js"
+    )
+    action.parent.mkdir(parents=True)
+    action.write_text("pinned-test-placeholder")
+    node = tmp_path / "node"
+    node.touch()
+    for key, value in {
+        "GITHUB_ACTIONS": "true",
+        "GITHUB_REPOSITORY": github.REPOSITORY,
+        "GITHUB_WORKFLOW_REF": (
+            f"{github.REPOSITORY}/.github/workflows/{github.WORKFLOW}@refs/heads/main"
+        ),
+        "GITHUB_RUN_ID": "3",
+        "ACTIONS_RUNTIME_TOKEN": CANARY,
+        "RUNNER_WORKSPACE": str(workspace),
+        "M3_11_ACTION_NODE": str(node),
+        "OP_SERVICE_ACCOUNT_TOKEN": CANARY + "unrelated",
+        "CLEANUP_CONFIGURATION": CANARY + "bootstrap",
+    }.items():
+        monkeypatch.setenv(key, value)
+
+
+def uploader(
+    registry: Registry, *, uncertain: bool = False
+) -> Callable[..., subprocess.CompletedProcess[bytes]]:
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        environment = kwargs["env"]
+        assert isinstance(environment, dict)
+        assert "OP_SERVICE_ACCOUNT_TOKEN" not in environment
+        assert "CLEANUP_CONFIGURATION" not in environment
+        assert environment["INPUT_OVERWRITE"] == "false"
+        assert CANARY not in repr(command)
+        path = Path(environment["INPUT_PATH"])
+        assert CANARY.encode() not in path.read_bytes()
+        registry.add(name=environment["INPUT_NAME"], raw=archive(path))
+        if uncertain:
+            raise subprocess.TimeoutExpired(command, 1, output=CANARY.encode())
+        return subprocess.CompletedProcess(command, 0, CANARY.encode(), CANARY.encode())
+
+    return run
+
+
+def test_encrypted_checkpoint_roundtrip_and_clean_uploader_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    value: dict[str, object] = {"records": [{"name": "owned-id", "canary": CANARY}]}
+    stored = registry.create(value)
+    assert registry.latest() == stored
+    assert stored.sha256 == digest(value)
+    assert registry.read(stored) == value
+    captured = capsys.readouterr()
+    assert CANARY not in captured.out + captured.err
+
+
+def test_lost_upload_response_remains_discoverable_without_another_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry, uncertain=True))
+    value: dict[str, object] = {"records": ["owned-intent-and-returned-id"]}
+    with pytest.raises(LifecycleError, match="uncertain") as error:
+        registry.create(value)
+    assert CANARY not in str(error.value)
+    stored = registry.latest()
+    assert stored is not None and registry.read(stored) == value
+    assert len(registry.archives) == 1
+
+
+def test_older_workflow_rerun_cannot_write_over_newer_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    registry.runs.append({"id": 4, "status": "completed", "head_branch": "main"})
+    monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: pytest.fail("must not upload"))
+    with pytest.raises(LifecycleError, match="older"):
+        registry.create({"records": []})
+
+
+def test_queued_newer_run_does_not_preempt_the_serialized_current_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    registry.runs.append({"id": 4, "status": "queued", "head_branch": "main"})
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    stored = registry.create({"records": ["owned"]})
+    assert registry.latest() == stored
+
+
+def test_complete_pagination_and_newest_run_without_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    stored = registry.create({"records": ["owned"]})
+    registry.runs.extend(
+        {"id": value, "status": "completed", "head_branch": "main"} for value in range(4, 107)
+    )
+    for value in range(101):
+        registry.add(name=f"unrelated-{value}", raw=b"not-a-checkpoint")
+    # All pages are examined even when the API order is not chronological.
+    assert registry.latest() == stored
+
+
+@pytest.mark.parametrize("inventory", ["runs", "artifacts"])
+@pytest.mark.parametrize("fault", ["duplicate", "count-change", "partial"])
+def test_incomplete_inventory_never_selects_an_older_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inventory: str, fault: str
+) -> None:
+    registry = Registry(tmp_path / "private")
+    original = registry._api
+
+    def changed(path: str, *, binary: bool = False) -> object:
+        target = "/workflows/" if inventory == "runs" else "/runs/"
+        if target not in path:
+            return original(path, binary=binary)
+        page = int(parse_qs(urlsplit(path).query)["page"][0])
+        field = "workflow_runs" if inventory == "runs" else "artifacts"
+        row = {"id": 3, "status": "completed", "head_branch": "main"}
+        if fault == "partial":
+            return {field: [], "total_count": 1}
+        total = 2 if fault == "duplicate" or page == 1 else 3
+        return {field: [row], "total_count": total}
+
+    monkeypatch.setattr(registry, "_api", changed)
+    with pytest.raises(LifecycleError):
+        registry.latest()
+
+
+@pytest.mark.parametrize("field,value", [("head_branch", "untrusted"), ("id", True)])
+def test_workflow_identity_mismatch_stops_registry_discovery(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    registry = Registry(tmp_path / "private")
+    registry.runs[0][field] = value
+    with pytest.raises(LifecycleError):
+        registry.latest()
+
+
+@pytest.mark.parametrize(
+    "fault", ["expired", "download", "wrong-hash", "wrong-epoch", "corrupt-zip", "empty-zip"]
+)
+def test_latest_checkpoint_failure_never_falls_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    older = registry.create({"records": ["old"]})
+    newer = registry.create({"records": ["old", "new-owned-intent"]})
+    value = registry.artifacts[3][-1]
+    if fault == "expired":
+        value["expired"] = True
+        with pytest.raises(LifecycleError, match="expired"):
+            registry.latest()
+        return
+    if fault == "download":
+        registry.fail_download = True
+    elif fault == "wrong-hash":
+        value["digest"] = "sha256:" + "0" * 64
+    elif fault == "wrong-epoch":
+        value["name"] = "m311-connect-unexpected-epoch"
+    elif fault == "corrupt-zip":
+        registry.archives[newer.identity] = b"broken"
+        value["digest"] = "sha256:" + hashlib.sha256(b"broken").hexdigest()
+    else:
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, "w"):
+            pass
+        raw = stream.getvalue()
+        registry.archives[newer.identity] = raw
+        value["digest"] = "sha256:" + hashlib.sha256(raw).hexdigest()
+    with pytest.raises(LifecycleError):
+        registry.read(newer)
+    assert older.identity in registry.archives  # Failure never deletes retained evidence.
+
+
+def test_plaintext_binding_and_epoch_cipher_prevent_cross_checkpoint_adoption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    stored = registry.create({"records": ["owned"]})
+    altered = Stored(stored.identity, "0" * 64)
+    with pytest.raises(LifecycleError):
+        registry.read(altered)
+    registry._token = CANARY + "wrong-cleanup-client"
+    with pytest.raises(LifecycleError):
+        registry.read(stored)
+
+
+def test_gh_cli_error_suppresses_stdout_stderr_and_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("GH_TOKEN", CANARY)
+    client = github.GitHubArtifacts(
+        epoch=str(uuid.uuid7()), token=CANARY, directory=tmp_path / "private"
+    )
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        assert CANARY not in repr(command)
+        assert kwargs["env"]["GH_TOKEN"] == CANARY  # type: ignore[index] # subprocess boundary
+        return subprocess.CompletedProcess(command, 1, CANARY.encode(), CANARY.encode())
+
+    monkeypatch.setattr(subprocess, "run", run)
+    with pytest.raises(LifecycleError) as error:
+        client.latest()
+    assert CANARY not in str(error.value)
+    captured = capsys.readouterr()
+    assert CANARY not in captured.out + captured.err

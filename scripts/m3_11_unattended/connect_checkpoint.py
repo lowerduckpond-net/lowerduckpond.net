@@ -93,6 +93,9 @@ class Checkpoint:
             self.head is not None and latest.identity < self.head.identity
         ):
             raise LifecycleError("independent checkpoint registry moved backwards")
+        for pinned in (self.genesis, self.head):
+            if pinned is not None and latest.identity == pinned.identity and latest != pinned:
+                raise LifecycleError("an immutable independent checkpoint identity changed")
         document = self.store.read(latest)
         if digest(document) != latest.sha256:
             raise LifecycleError("independent checkpoint readback changed")
@@ -105,6 +108,17 @@ class Checkpoint:
             or sequence < max(1, self.sequence)
         ):
             raise LifecycleError("independent checkpoint identity or sequence differs")
+        if sequence == 1:
+            if value["previous"] is not None:
+                raise LifecycleError("independent genesis has an unexpected predecessor")
+        else:
+            previous = fields(value["previous"], {"identity", "sha256"})
+            identifier, sha256 = previous["identity"], previous["sha256"]
+            if type(identifier) is not int or not isinstance(sha256, str):
+                raise LifecycleError("independent checkpoint predecessor is malformed")
+            parent = Stored(identifier, sha256)
+            if parent.identity >= latest.identity:
+                raise LifecycleError("independent checkpoint predecessor does not precede it")
         records = _records(value["records"])
         self._require_extension(records)
         self.head, self.sequence, self.records = latest, sequence, records
