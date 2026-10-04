@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import override
 
 import pytest
 
@@ -113,6 +114,86 @@ class Case:
             scope=SCOPE,
             authority=self.authority,
         )
+
+
+class DelayedPersistence(FileJournal):
+    """A Connect cache may read its own write before independent cleanup can."""
+
+    pending_kind: str = ""
+
+    @override
+    def persist(self, record: dict[str, object]) -> dict[str, object]:
+        self.append(record)
+        if record["kind"] == self.pending_kind:
+            raise LifecycleError("independent acknowledgement unavailable")
+        return record
+
+
+def test_staged_negative_marker_blocks_probe_until_independently_persisted(tmp_path: Path) -> None:
+    case = Case(tmp_path)
+    journal = DelayedPersistence(tmp_path)
+    case.lifecycle.journal = journal
+    intent, credential = case.create()
+    case.lifecycle.request_revocation(case.run_id)
+    journal.pending_kind = "cleanup"
+    probes = []
+    original = case.provider.denied
+
+    def denied(intent: Intent, credential: Credential) -> bool:
+        probes.append(credential.identifier)
+        return original(intent, credential)
+
+    case.provider.denied = denied  # type: ignore[method-assign] # observe the real probe boundary
+    assert case.lifecycle.reconcile(intent, credential).status == "unresolved"
+    assert case.provider.deletes == [credential.identifier]
+    assert probes == []
+    assert case.lifecycle.reconcile(intent, credential).status == "unresolved"
+    assert len([record for record in journal.records() if record["kind"] == "cleanup"]) == 1
+    journal.pending_kind = ""
+    assert case.lifecycle.reconcile(intent, credential).status == "verified"
+    assert probes == [credential.identifier]
+
+
+def test_staged_denial_keeps_closure_pending_and_reuses_exact_proof(tmp_path: Path) -> None:
+    case = Case(tmp_path)
+    journal = DelayedPersistence(tmp_path)
+    case.lifecycle.journal = journal
+    intent, credential = case.create()
+    case.lifecycle.request_revocation(case.run_id)
+    journal.pending_kind = "resolved"
+    assert case.lifecycle.reconcile(intent, credential).status == "unresolved"
+    originals = [row for row in journal.records() if row["kind"] in {"cleanup", "resolved"}]
+    assert case.lifecycle.reconcile(intent, credential).status == "unresolved"
+    assert [row for row in journal.records() if row["kind"] in {"cleanup", "resolved"}] == originals
+    # A delayed ACK cannot replace the required fresh provider absence checks.
+    journal.pending_kind = ""
+    case.provider.fail_read = True
+    assert case.lifecycle.reconcile(intent, credential).status == "unresolved"
+    case.provider.fail_read = False
+    assert case.lifecycle.reconcile(intent, credential).status == "verified"
+    assert [row for row in journal.records() if row["kind"] in {"cleanup", "resolved"}] == originals
+
+
+def test_lost_creation_response_recovery_id_is_persisted_before_delete(tmp_path: Path) -> None:
+    case = Case(tmp_path)
+    journal = DelayedPersistence(tmp_path)
+    case.lifecycle.journal = journal
+    case.provider.lose_response = True
+    with pytest.raises(LifecycleError):
+        case.create()
+    intent = intents(journal)[0]
+    case.lifecycle.request_revocation(case.run_id)
+    journal.pending_kind = "created"
+    assert case.lifecycle.reconcile(intent).status == "unresolved"
+    assert case.provider.deletes == []
+    # A restarted actor must not mistake the cache's recovered ID for durability.
+    case.lifecycle = Lifecycle(journal, {"spaces": case.provider}, clock=lambda: case.now)
+    assert case.lifecycle.reconcile(intent).status == "unresolved"
+    assert case.provider.deletes == []
+    journal.pending_kind = ""
+    assert case.lifecycle.reconcile(intent).status == "verified"
+    assert len(case.provider.deletes) == 1
+    assert len([row for row in journal.records() if row["kind"] == "created"]) == 1
 
 
 def test_intent_is_external_before_creation_and_secret_never_journaled(tmp_path: Path) -> None:

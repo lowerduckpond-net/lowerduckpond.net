@@ -59,7 +59,11 @@ def validate(value: object) -> dict[str, object]:
 
 class Journal(Protocol):
     def append(self, record: dict[str, object]) -> None:
-        """Return only after independent storage readback matches the exact bytes."""
+        """Stage one immutable record with exact readback; this may be a local cache."""
+        ...
+
+    def persist(self, record: dict[str, object]) -> dict[str, object]:
+        """Return the original event after independent storage confirms its exact bytes."""
         ...
 
     def records(self) -> list[dict[str, object]]: ...
@@ -85,6 +89,11 @@ class FileJournal:
         if len(paths) > MAX_EVENTS:
             raise LifecycleError("credential journal inventory exceeds its bound")
         return [validate(read_private(path)) for path in paths]
+
+    def persist(self, record: dict[str, object]) -> dict[str, object]:
+        # This adapter is only for local doubles, never live provisioning.
+        self.append(record)
+        return record
 
 
 class OnePassword:
@@ -172,6 +181,16 @@ class OpJournal:
         self._records: list[dict[str, object]] | None = None
         self._items: dict[str, tuple[str, dict[str, object]]] = {}
         self._cache: JournalCache | None = None
+
+    def persist(self, record: dict[str, object]) -> dict[str, object]:
+        # op communicates with 1Password directly, without a Connect replica.
+        matches = [value for value in self.records() if value["event_id"] == record["event_id"]]
+        if matches:
+            if matches != [record]:
+                raise LifecycleError("persisted journal event differs from its original contents")
+        else:
+            self.append(record)
+        return record
 
     def use_cache(self, path: Path, *, output: Path | None = None) -> None:
         if self._items or self._records is not None:

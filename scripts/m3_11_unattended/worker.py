@@ -232,7 +232,7 @@ class Worker:
                 and payload.get("mode") == self.request["mode"]
             ):
                 raise LifecycleError("this approved attempt has already been consumed")
-        creator.journal.append(
+        creator.journal.persist(
             event(
                 "run",
                 self.run_id,
@@ -500,7 +500,7 @@ class Worker:
                     for record in lifecycle.journal.records()
                 )
             ):
-                lifecycle.journal.append(
+                lifecycle.journal.persist(
                     event(
                         "result",
                         self.run_id,

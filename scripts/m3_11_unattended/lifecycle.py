@@ -203,7 +203,7 @@ class Lifecycle:
         )
         if self.remember_intent is not None:
             self.remember_intent(intent)
-        self.journal.append(event("intent", run_id, intent.document()))
+        self.journal.persist(event("intent", run_id, intent.document()))
         if self.clock() >= instant(intent.create_before):
             raise LifecycleError("credential creation window elapsed before acknowledgement")
         # Exactly one mutation. A timeout or lost response is an outstanding
@@ -211,7 +211,7 @@ class Lifecycle:
         credential = client.create(intent)
         if self.remember is not None:
             self.remember(intent, credential)
-        self.journal.append(
+        self.journal.persist(
             event(
                 "created",
                 run_id,
@@ -221,6 +221,11 @@ class Lifecycle:
                 },
             )
         )
+        if self.remember is not None:
+            # Establish the retained key's negative-authentication obligation
+            # while the independent provisioning witness is still available.
+            # A later host failure cannot turn a failed probe into "unavailable".
+            self.journal.persist(_authentication_marker(intent))
         metadata = client.inspect(credential.identifier)
         if metadata is None:
             raise LifecycleError("new credential was not visible in provider readback")
@@ -243,7 +248,7 @@ class Lifecycle:
             for record in self.journal.records()
         )
 
-    def reconcile(  # noqa: PLR0912 - independent ownership, removal and authentication gates
+    def reconcile(  # noqa: PLR0912, PLR0915 - separate ownership, removal, authentication and durability gates
         self, intent: Intent, credential: Credential | None = None
     ) -> CleanupResult:
         """Delete credentials only. No container, DNS record, backup or object deletion."""
@@ -276,23 +281,31 @@ class Lifecycle:
                 raise LifecycleError("credential inventory is ambiguous")
             if candidates:
                 selected = _owned(intent, candidates[0], known=known)
-                if known is None:
-                    self.journal.append(
-                        event(
-                            "created",
-                            intent.run_id,
-                            {
-                                "intent_sha256": intent.sha256,
-                                "credential_id": selected,
-                            },
-                        )
-                    )
+                known = selected
+            if known is not None:
+                # Even a locally visible recovery record may still be staged.
+                # Persist its exact ID on every retry before DELETE or closure.
+                payload: dict[str, object] = {
+                    "intent_sha256": intent.sha256,
+                    "credential_id": known,
+                }
+                recovered = next(
+                    (
+                        record
+                        for record in self.journal.records()
+                        if record["kind"] == "created"
+                        and record["run_id"] == intent.run_id
+                        and record["payload"] == payload
+                    ),
+                    None,
+                )
+                self.journal.persist(recovered or event("created", intent.run_id, payload))
+            if candidates:
                 # Inspect again with the exact ID immediately before deletion.
                 current = client.inspect(selected)
                 if current is not None:
                     _owned(intent, current, known=selected)
                     client.delete(selected)
-                known = selected
             elif known is None:
                 # Neither API gives a server-side bound on a request whose reply
                 # was lost. Empty inventory cannot prove that creation will never
@@ -310,23 +323,36 @@ class Lifecycle:
                 raise LifecycleError("deleted credential remains in inventory")
             if credential is None and pending:
                 raise LifecycleError("a failed authentication rejection still needs its credential")
+            prior = next(
+                (record for record in reversed(observations) if record["kind"] == "resolved"), None
+            )
             if credential is not None:
+                if known != credential.identifier:
+                    raise LifecycleError("retained credential identity differs from its obligation")
+                if (
+                    not pending
+                    and prior is not None
+                    and isinstance(prior["payload"], dict)
+                    and prior["payload"].get("credential_id") == known
+                    and prior["payload"].get("negative_authentication") == "denied"
+                ):
+                    # A previous verified probe may only be waiting for external
+                    # persistence. Recheck removal above, then finish that exact
+                    # proof instead of generating another marker on every retry.
+                    self.journal.persist(prior)
+                    return CleanupResult(intent.sha256, "verified", "denied")
                 # Losing this actor after DELETE must not let a later actor
                 # discard a failed negative probe by omitting the retained key.
                 # Reuse an outstanding marker; each retry still probes afresh.
                 if not pending:
-                    marker = event(
-                        "cleanup",
-                        intent.run_id,
-                        {
-                            "intent_sha256": intent.sha256,
-                            "negative_authentication": "required",
-                            "proof_binding": "event-id",
-                        },
-                    )
-                    self.journal.append(marker)
+                    marker = _authentication_marker(intent)
+                    marker = self.journal.persist(marker)
                     pending.add(identity(marker["event_id"]))
-                if known != credential.identifier or not client.denied(intent, credential):
+                else:
+                    for marker in observations:
+                        if marker["event_id"] in pending:
+                            self.journal.persist(marker)
+                if not client.denied(intent, credential):
                     raise LifecycleError(
                         "revoked credential still authenticates or rejection is unproven"
                     )
@@ -339,9 +365,6 @@ class Lifecycle:
             }
             if credential is not None:
                 proof["negative_authentication_markers"] = sorted(pending)
-            prior = next(
-                (record for record in reversed(observations) if record["kind"] == "resolved"), None
-            )
             if (
                 credential is not None
                 or prior is None
@@ -352,7 +375,13 @@ class Lifecycle:
                     and prior["payload"] != proof
                 )
             ):
-                self.journal.append(event("resolved", intent.run_id, proof))
+                record = event("resolved", intent.run_id, proof)
+                if credential is None:
+                    self.journal.append(record)
+                else:
+                    # Retain the key and unresolved state until the independent
+                    # actor has observed the successful negative proof as well.
+                    self.journal.persist(record)
             return CleanupResult(intent.sha256, "verified", negative)
         except LifecycleError, OSError, ValueError, KeyError, TypeError:
             # Never copy provider exception payloads into status or erase intent.
@@ -367,3 +396,15 @@ class Lifecycle:
         # catches delayed creation responses without trusting old DELETE receipts.
         if any(result.status != "verified" for result in self.sweep()):
             raise LifecycleError("outstanding credential obligations block a new qualification")
+
+
+def _authentication_marker(intent: Intent) -> dict[str, object]:
+    return event(
+        "cleanup",
+        intent.run_id,
+        {
+            "intent_sha256": intent.sha256,
+            "negative_authentication": "required",
+            "proof_binding": "event-id",
+        },
+    )
