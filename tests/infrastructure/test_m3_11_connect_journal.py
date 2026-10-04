@@ -95,7 +95,7 @@ class Case:
 
     def witness_once(self) -> None:
         sync(self.shared, self.remote)
-        self.github.acknowledge(run_id=10, attempt=1)
+        self.github.acknowledge(run_id=10, attempt=1, allow=lambda _record: True)
         sync(self.remote, self.shared)
 
 
@@ -187,7 +187,7 @@ def test_independent_restart_recovers_id_with_empty_replica_and_keeps_readiness_
     assert record in restarted.records()
     assert not restarted.cache_complete
     with pytest.raises(LifecycleError, match="incomplete"):
-        restarted.acknowledge(run_id=11, attempt=1)
+        restarted.acknowledge(run_id=11, attempt=1, allow=lambda _record: True)
     # Recovery can continue recording exact provider removal while the cache is down.
     proof = event("resolved", str(record["run_id"]), {"provider_readback": "absent"})
     assert restarted.persist(proof) == proof
@@ -207,7 +207,7 @@ def test_restarted_independent_writer_never_mistakes_partial_replica_for_complet
     assert record in restarted.records()
     assert not restarted.cache_complete
     with pytest.raises(LifecycleError, match="incomplete"):
-        restarted.acknowledge(run_id=11, attempt=1)
+        restarted.acknowledge(run_id=11, attempt=1, allow=lambda _record: True)
     restarted.persist(record)
     assert record in restarted.records() and restarted.cache_complete
 

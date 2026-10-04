@@ -164,7 +164,7 @@ class ConnectLedger:
         self._cached_items = cached_items
         return sorted(records.values(), key=lambda row: str(row["event_id"]))
 
-    def stage(self, record: dict[str, object]) -> None:
+    def stage(self, record: dict[str, object], *, claimed_author: str | None = None) -> None:
         """Submit once and retain uncertainty; this never claims external persistence."""
         validate(record)
         event_id = identity(record["event_id"])
@@ -194,6 +194,10 @@ class ConnectLedger:
                 }
             ],
         }
+        if claimed_author is not None:
+            # Used only by the explicit provenance ceremony. Admission remains
+            # disabled unless native readback proves this forged field was ignored.
+            item["lastEditedBy"] = account_identity(claimed_author)
         try:
             response = self.client.request("POST", "/v1/vaults/" + self.vault + "/items", item)
         except LifecycleError:
@@ -269,3 +273,11 @@ class ConnectLedger:
             and item.get("createdAt") == item.get("updatedAt")
             for item in self._metadata.get(identity(record["event_id"]), [])
         )
+
+    def authors(self, record: dict[str, object]) -> set[str]:
+        """Only immutable native metadata from the last complete snapshot counts."""
+        return {
+            account_identity(item["lastEditedBy"])
+            for item in self._metadata.get(identity(record["event_id"]), [])
+            if self.authored(record, account_identity(item["lastEditedBy"]))
+        }

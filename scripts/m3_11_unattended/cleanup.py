@@ -19,6 +19,7 @@ from scripts.m3_11_unattended.cloudflare import ORIGIN, Cloudflare
 from scripts.m3_11_unattended.config import (
     DO_READ_SCOPES,
     Bootstrap,
+    Reader,
     UnavailableProvider,
     _cloudflare_authority,
     cleanup_configuration,
@@ -50,7 +51,16 @@ RETRY_SECONDS = 300
 def connect_cleanup(
     bootstrap: Bootstrap, targets: Targets, vault: str, *, journal_directory: Path | None = None
 ) -> Lifecycle:
-    op = bootstrap.reader()
+    return Lifecycle(
+        bootstrap.journal(vault, directory=journal_directory),
+        cleanup_providers(bootstrap.reader(), bootstrap.values, targets),
+    )
+
+
+def cleanup_providers(
+    reader: Reader, references: dict[str, str], targets: Targets
+) -> dict[ProviderKind, Provider]:
+    """Try every authority so one unavailable provider cannot strand the others."""
     providers: dict[ProviderKind, Provider] = {}
     for kind, reference in (
         ("spaces", "digitalocean"),
@@ -59,10 +69,10 @@ def connect_cleanup(
     ):
         selected: ProviderKind = kind  # type: ignore[assignment] # fixed provider table
         try:
-            secret = op.read(bootstrap.values[reference])
+            secret = reader.read(references[reference])
             if selected == "spaces":
                 metadata = fields(
-                    json.loads(op.read(bootstrap.values["digitalocean_metadata"])),
+                    json.loads(reader.read(references["digitalocean_metadata"])),
                     {
                         "format",
                         "token_sha256",
@@ -89,7 +99,7 @@ def connect_cleanup(
                 providers[selected] = client
         except RuntimeError, OSError, ValueError, TypeError, KeyError:
             providers[selected] = UnavailableProvider(selected)
-    return Lifecycle(bootstrap.journal(vault, directory=journal_directory), providers)
+    return providers
 
 
 def sweep(

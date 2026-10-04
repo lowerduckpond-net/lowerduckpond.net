@@ -1,0 +1,167 @@
+"""Fresh per-attempt independent capacity and authority precede any creation ACK."""
+
+from __future__ import annotations
+
+import re
+from datetime import datetime, timedelta
+
+from scripts.m3_11_qualification_evidence import fields
+from scripts.m3_11_unattended.connect_journal import IndependentJournal
+from scripts.m3_11_unattended.github_checkpoint import MINIMUM_START_CAPACITY
+from scripts.m3_11_unattended.inputs import BINDING
+from scripts.m3_11_unattended.journal import event
+from scripts.m3_11_unattended.model import (
+    LIFETIME,
+    Authority,
+    Intent,
+    LifecycleError,
+    Targets,
+    digest,
+    identity,
+    instant,
+    stamp,
+    strings,
+)
+from scripts.production_qualification_inputs import revision
+
+FORMAT = "lowerduckpond-m3-11-connect-creation-reservation-v1"
+WINDOW = timedelta(minutes=10)
+
+
+def run_digest(run_id: str, payload: dict[str, object]) -> str:
+    return digest({"run_id": identity(run_id), "payload": payload})
+
+
+class Admission:
+    def __init__(self, journal: IndependentJournal, *, targets: Targets, now: datetime) -> None:
+        self.journal, self.targets, self.now = journal, targets, now
+        self.records = journal.records()
+
+    def _run(self, record: dict[str, object]) -> dict[str, str]:
+        payload = fields(record["payload"], {"binding", "mode", "approval_sha256"})
+        binding = strings(fields(payload["binding"], BINDING))
+        if (
+            record["kind"] != "run"
+            or identity(record["run_id"]) != identity(binding["managed_run_id"])
+            or revision(binding["source_revision"]) != revision(binding["helper_revision"])
+            or binding["helper_revision"] != self.journal.witness.helper
+            or binding["storage_target_sha256"] != self.targets.storage_digest
+            or payload["mode"] not in {"rehearsal", "qualification"}
+            or not isinstance(payload["approval_sha256"], str)
+            or re.fullmatch(r"[0-9a-f]{64}", payload["approval_sha256"]) is None
+            or any(
+                re.fullmatch(r"[0-9a-f]{64}", binding[key]) is None
+                for key in ("artifact_sha256", "qualification_inputs_sha256")
+            )
+        ):
+            raise LifecycleError("Connect creation request differs from its approved binding")
+        return binding
+
+    def _reservation(self, record: dict[str, object]) -> dict[str, object] | None:
+        wanted = run_digest(
+            identity(record["run_id"]),
+            fields(record["payload"], {"binding", "mode", "approval_sha256"}),
+        )
+        matches = []
+        for value in self.records:
+            payload = value["payload"]
+            if (
+                value["kind"] == "heartbeat"
+                and value["run_id"] == record["run_id"]
+                and isinstance(payload, dict)
+                and payload.get("format") == FORMAT
+                and payload.get("run_sha256") == wanted
+                and payload.get("witness") == self.journal.witness.binding()
+                and self.journal.checkpoint.records.get(str(value["event_id"])) == value
+                and self.journal.ledger.authored(value, self.journal.witness.author)
+            ):
+                matches.append(payload)
+        if len(matches) > 1:
+            raise LifecycleError("Connect creation reservation is ambiguous")
+        return matches[0] if matches else None
+
+    def reserve(self, expected: str, authority: Authority) -> bool:
+        """Called only for the exact request dispatched by the authorized launcher."""
+        if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+            raise LifecycleError("Connect witness dispatch needs an exact request digest")
+        matches = [
+            record
+            for record in self.records
+            if record["kind"] == "run"
+            and isinstance(record["payload"], dict)
+            and run_digest(identity(record["run_id"]), record["payload"]) == expected
+        ]
+        if not matches:
+            return False
+        if len(matches) != 1:
+            raise LifecycleError("Connect witness dispatch request is ambiguous")
+        record = matches[0]
+        self._run(record)
+        if self._reservation(record) is not None:
+            return True  # Restart keeps the original capacity reservation and window.
+        if (
+            not self.journal.cache_complete
+            or not self.now - timedelta(minutes=2) <= instant(record["recorded_at"]) <= self.now
+            or self.journal.capacity() < MINIMUM_START_CAPACITY
+        ):
+            raise LifecycleError("Connect attempt lacks fresh independent capacity")
+        authority.require(self.now + WINDOW + LIFETIME)
+        accepted = self.now.replace(microsecond=0)
+        receipt = self.journal.persist(
+            event(
+                "heartbeat",
+                identity(record["run_id"]),
+                {
+                    "format": FORMAT,
+                    "run_sha256": expected,
+                    "witness": self.journal.witness.binding(),
+                    "accepted_at": stamp(accepted),
+                    "create_before": stamp(accepted + WINDOW),
+                    "authority_expires_at": stamp(authority.valid_until),
+                    "provider_authorities": {
+                        kind: authority.provider_identity(kind)
+                        for kind in ("spaces", "cloudflare-account", "cloudflare-user")
+                    },
+                    "reserved_capacity": MINIMUM_START_CAPACITY,
+                },
+            )
+        )
+        self.records = self.journal.records()
+        if not self.journal.cache_complete or not self.journal.ledger.authored(
+            receipt, self.journal.witness.author
+        ):
+            raise LifecycleError("Connect capacity reservation awaits native readback")
+        return True
+
+    def allow(self, record: dict[str, object]) -> bool:
+        """Cleanup/proof ACKs continue after admission closes; creation ACKs cannot."""
+        if record["kind"] not in {"run", "intent"}:
+            return True
+        candidates = [
+            row
+            for row in self.records
+            if row["kind"] == "run" and row["run_id"] == record["run_id"]
+        ]
+        if len(candidates) != 1:
+            return False
+        run = candidates[0]
+        binding = self._run(run)
+        receipt = self._reservation(run)
+        if receipt is None:
+            return False
+        accepted, before = instant(receipt["accepted_at"]), instant(receipt["create_before"])
+        if before - accepted != WINDOW or not accepted <= self.now <= before:
+            return False
+        if record["kind"] == "run":
+            return True
+        intent = Intent.parse(record["payload"])
+        authorities = strings(receipt["provider_authorities"])
+        return (
+            intent.run_id == run["run_id"]
+            and intent.source_revision == binding["source_revision"]
+            and intent.helper_revision == binding["helper_revision"]
+            and intent.targets == self.targets
+            and intent.cleanup_authority_sha256 == authorities.get(intent.provider)
+            and accepted <= instant(intent.requested_at) < before
+            and self.now < instant(intent.create_before)
+        )

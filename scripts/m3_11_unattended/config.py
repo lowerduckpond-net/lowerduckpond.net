@@ -270,9 +270,31 @@ def connect(  # noqa: PLR0913 - authority, target and persistence boundaries are
     provisioning: bool = False,
     journal_directory: Path | None = None,
 ) -> Connections:
-    op = bootstrap.reader()
+    return provider_connections(
+        bootstrap.reader(),
+        bootstrap.values,
+        journal=bootstrap.journal(vault, directory=journal_directory),
+        expires_at=bootstrap.expires_at(),
+        targets=targets,
+        vault=vault,
+        now=now,
+        provisioning=provisioning,
+    )
+
+
+def provider_connections(  # noqa: PLR0913 - explicit reader/journal/lifetime for either backend
+    reader: Reader,
+    references: dict[str, str],
+    *,
+    journal: Journal,
+    expires_at: datetime,
+    targets: Targets,
+    vault: str,
+    now: datetime,
+    provisioning: bool = False,
+) -> Connections:
     values = {
-        key: op.read(bootstrap.values[key])
+        key: reader.read(references[key])
         for key in (
             "digitalocean",
             "digitalocean_metadata",
@@ -323,7 +345,7 @@ def connect(  # noqa: PLR0913 - authority, target and persistence boundaries are
             account_expiry,
             user_expiry,
             instant(metadata["expires_at"]),
-            bootstrap.expires_at(),
+            expires_at,
         ),
         {
             "spaces": spaces.authority_sha256,
@@ -335,4 +357,4 @@ def connect(  # noqa: PLR0913 - authority, target and persistence boundaries are
         dict[ProviderKind, Provider],
         {"spaces": spaces, "cloudflare-account": account, "cloudflare-user": user},
     )
-    return Connections(bootstrap.journal(vault, directory=journal_directory), providers, authority)
+    return Connections(journal, providers, authority)

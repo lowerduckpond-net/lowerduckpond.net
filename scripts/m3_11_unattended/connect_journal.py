@@ -199,7 +199,9 @@ class IndependentJournal(_Canonical):
             "remaining_capacity": max(0, capacity - 1),
         }
 
-    def acknowledge(self, *, run_id: int, attempt: int) -> int:
+    def acknowledge(
+        self, *, run_id: int, attempt: int, allow: Callable[[dict[str, object]], bool]
+    ) -> int:
         if type(run_id) is not int or run_id < 1 or type(attempt) is not int or attempt < 1:
             raise LifecycleError("independent acknowledgement needs its GitHub execution identity")
         records = self.records()
@@ -211,6 +213,8 @@ class IndependentJournal(_Canonical):
             if acknowledgement(record) or self.ledger.minimum.get(
                 identity(record["event_id"])
             ) == digest(record):
+                continue
+            if not allow(record):
                 continue
             if self.ledger.confirmed(
                 record,
