@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import threading
+import time
+import traceback
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import override
@@ -22,10 +24,13 @@ class Server(ThreadingHTTPServer):
     status: int = 200
     body: bytes = b"[]"
     received: list[tuple[str, str, str | None, bytes]]
+    raw: bytes | None = None
+    drip: str | None = None
 
     def __init__(self) -> None:
         super().__init__(("127.0.0.1", 0), Handler)
         self.received = []
+        self.disconnected = threading.Event()
 
     @property
     def url(self) -> str:
@@ -50,6 +55,23 @@ class Handler(BaseHTTPRequestHandler):
         self.server.received.append(
             (self.command, self.path, self.headers.get("Authorization"), body)
         )
+        if self.server.raw is not None:
+            self.wfile.write(self.server.raw)
+            return
+        if self.server.drip is not None:
+            raw = (
+                b"HTTP/1.0 200 OK\r\nX-Slow: " + b" " * 100 + b"\r\n\r\n[]"
+                if self.server.drip == "headers"
+                else b"HTTP/1.0 200 OK\r\n\r\n[" + b" " * 100 + b"]"
+            )
+            try:
+                for byte in raw:
+                    self.wfile.write(bytes([byte]))
+                    self.wfile.flush()
+                    time.sleep(0.02)
+            except OSError:
+                self.server.disconnected.set()
+            return
         self.send_response(self.server.status)
         self.send_header("Content-Type", "application/json")
         if self.server.status in (301, 302, 307, 308):
@@ -163,6 +185,40 @@ def test_mutation_timeout_response_is_not_replayed(server: Server) -> None:
     client = Connect(server.url, CANARY, local_cleanup=True)
     with pytest.raises(LifecycleError, match="unresolved"):
         client.request("POST", f"/v1/vaults/{VAULT}/items", {"title": "test"})
+    assert len(server.received) == 1
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        CANARY.encode() + b"\r\n",
+        b"HTTP/1.0 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n" + CANARY.encode() + b"\r\n",
+    ],
+)
+def test_malformed_http_never_exports_reflected_credential(
+    server: Server, raw: bytes, capsys: pytest.CaptureFixture[str]
+) -> None:
+    server.raw = raw
+    with pytest.raises(LifecycleError, match="unresolved") as error:
+        Connect(server.url, CANARY, local_cleanup=True).vaults()
+    assert CANARY not in "".join(traceback.format_exception(error.value))
+    captured = capsys.readouterr()
+    assert CANARY not in captured.out + captured.err
+
+
+@pytest.mark.parametrize("part", ["headers", "body"])
+def test_deadline_terminates_trickling_mutation_without_replay(
+    server: Server, part: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server.drip = part
+    monkeypatch.setattr(connect_api, "TIMEOUT_SECONDS", 0.6)
+    started = time.monotonic()
+    with pytest.raises(LifecycleError, match="unresolved"):
+        Connect(server.url, CANARY, local_cleanup=True).request(
+            "POST", f"/v1/vaults/{VAULT}/items", {"title": "test"}
+        )
+    assert time.monotonic() - started < 1.5  # noqa: PLR2004 - bound including test scheduling slack
+    assert server.disconnected.wait(1.0), "the timed-out child must close its live socket"
     assert len(server.received) == 1
 
 
