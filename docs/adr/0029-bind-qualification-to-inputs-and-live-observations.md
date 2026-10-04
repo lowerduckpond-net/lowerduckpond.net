@@ -125,10 +125,39 @@ validate the policy machinery; they do not manufacture live-provider evidence.
 
 ## Consequences
 
+### Managed M3.11 credentials
+
+The dedicated unattended controller adds the
+`lowerduckpond-m3-11-installed-spaces-managed-v1` envelope. It preserves the
+original source, input fingerprint, artifact, storage target, combined recovery,
+chronology and freshness requirements. It additionally binds its managed run
+and trusted lifecycle-helper revision to **separate** production and fixture
+credential receipts. The production receipt proves the actual non-expiring
+exact-policy Caddy token and the existing short production storage capability
+check. Fixture credentials cannot substitute for that proof. Packaging incorporates
+both receipts into oldest-evidence time and rejects missing, stale, mismatched,
+unknown-field or overlapping-identity receipts. Legacy accepted formats keep
+their previous contracts; production deployment gates remain active.
+
+An approved dedicated Docker host may hold these inputs. It is a trusted
+credential-processing host, not a container security boundary. Durable external
+creation intents, exact ownership reconciliation, terminal/watchdog/GitHub
+revocation and a separate unresolved-cleanup outcome are required before closing
+an unattended attempt. Their deletion authority covers newly issued credentials
+only. It introduces no production rotation, data retirement or deployment
+authority. Native Cloudflare expiry and Spaces deletion deadlines are distinct;
+scheduler/provider availability precludes an exact-time Spaces expiry guarantee.
+
+Restart is reconciliation of one immutable attempt, not a retry of qualification.
+Changed executable inputs require a new correctly bound attempt. Complete live
+Spaces/public-CA qualification, a demonstrated credential rehearsal and verified
+revocation remain operational acceptance requirements beyond component tests.
+
 Administrative records can advance independently of qualification. Production
 still requires reviewed current main, exact artifacts, verified history, fresh
-live controls, and successful convergence/idempotence/acceptance. No new cleanup,
-retry, credential distribution, or publication authority is introduced.
+live controls, and successful convergence/idempotence/acceptance. Input equivalence
+introduces no production data cleanup, qualification retry, credential rotation,
+or publication authority.
 
 Broad input inclusion may conservatively require qualification for changes that
 ultimately prove irrelevant. Narrowing the input map is a reviewed policy change,

@@ -207,7 +207,19 @@ def report(directory: Path, phase: str, status: int, reason: str) -> None:
 
 def run() -> int:
     """The fixed deadline includes setup; the separate diagnostic allowance grants no pass."""
-    with tempfile.TemporaryDirectory(prefix="ldp-qualification-supervisor-") as temporary:
+    with contextlib.ExitStack() as stack:
+        retained = os.environ.get("LDP_QUALIFICATION_CONTEXT_DIRECTORY")
+        if retained:
+            from scripts.m3_11_unattended.state import private_directory  # noqa: PLC0415
+
+            private_directory(Path(retained))
+            if (Path(retained) / "context.json").exists():
+                raise ValueError("an interrupted qualification context cannot be replayed")
+            temporary = retained
+        else:
+            temporary = stack.enter_context(
+                tempfile.TemporaryDirectory(prefix="ldp-qualification-supervisor-")
+            )
         path = Path(temporary) / "context.json"
         environment = {**os.environ, CONTEXT_ENV: str(path)}
         result = execute(

@@ -25,6 +25,7 @@ from scripts.check_m3_7_production_edge import (
     _require_zone_identity,
 )
 from scripts.check_m3_10_provider import check_caddy_token, required
+from scripts.m3_11_fixture_tokens import check_fixture_tokens
 from scripts.m3_11_live_storage import LiveStorage
 from scripts.m3_11_private_inputs import read_private, write_private
 
@@ -121,7 +122,11 @@ class DnsWitness:
         }
         if len(accounts) != 1:
             raise ValueError("public DNS zones belong to different accounts")
-        check_caddy_token(storage.environment, account_id=accounts.pop(), now=datetime.now(UTC))
+        account_id = accounts.pop()
+        if "LDP_M3_11_MANAGED_INPUTS" in storage.environment:
+            check_fixture_tokens(storage.environment, account_id=account_id, now=datetime.now(UTC))
+        else:
+            check_caddy_token(storage.environment, account_id=account_id, now=datetime.now(UTC))
         # Allocation is exclusive even when the first observation fails. A retry
         # must retain that failure rather than replace a nonempty baseline.
         observations.mkdir(mode=0o700)

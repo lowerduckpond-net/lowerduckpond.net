@@ -6,6 +6,213 @@ are preparation and verification tooling; production convergence remains an
 explicit later operator step after the final M3.11 qualification. M3.12 is
 unstarted and production publication stays disabled.
 
+## Unattended qualification on the dedicated Docker host
+
+The explicitly approved dedicated Coder/Docker host may run M3.11 without the
+operator workstation staying online. This is an exception for qualification,
+not production deployment. Processing actual production credentials makes that
+Docker host trusted. Docker access and sibling containers are not a hard security
+boundary. Do not transfer old virtual environments, private configuration, logs
+or credentials from another workspace.
+
+`just m3-11-unattended` prepares and operates a detached controller. It calls the
+existing `just m3-11-spaces-qualification`, deadline supervisor, live wrapper,
+provider/storage checks, Molecule phases, combined recovery and report packager.
+The start operation counts provisioning and the short production check against
+the original 600-minute ceiling, with the existing bounded diagnostic allowance.
+Provisioning has a separate 14-hour credential deadline; it cannot extend
+qualification. Neither controller
+restart nor diagnostic continuation reruns or promotes an interrupted attempt.
+
+The controller joins the **daemon's host network** and receives the daemon-side
+Unix socket. A forwarded Unix socket by itself does not establish the network
+topology needed for published SSH ports. On the dedicated Coder template inspected
+for this implementation, the workspace and Docker daemon have different network
+namespaces. Docker's data directory is in the template's persistent Docker volume;
+qualification code, private evidence, configuration and storage leases use inner
+named volumes. Controller and watchdog use `unless-stopped` restart policies.
+Before provisioning, the controller verifies that its mounted socket reaches
+the exact Docker-host identity recorded in the approved preparation.
+
+Terminal disconnection does not own these containers. A workspace-agent exit
+does not intrinsically stop a sibling daemon container. Coder stop/rebuild can
+stop/recreate that daemon: persistence depends on retaining the template's Docker
+volume and mounting it back at `/var/lib/docker`. A Docker-host restart interrupts
+qualification; restart reconciles its immutable attempt and revokes credentials.
+Deleting the Coder/Docker volume loses private evidence, not the independent
+1Password obligations. Do not claim an actual Coder stop/rebuild or host restart
+survival test solely from mount inspection; retain the observed lifecycle results
+with the implementation's qualification record.
+
+### Initial setup and authority
+
+First install the locked repository dependencies and prepare a clean, exact commit:
+
+```console
+mise install
+mise exec -- just setup
+mise exec -- just m3-11-unattended prepare FULL_COMMIT_SHA --output /private/prepared.json
+mise exec -- just m3-11-unattended setup-template > /private/setup.json
+```
+
+Fill the non-secret manifest with the approved region, production archive/backup
+buckets, Cloudflare account, both production zone IDs, and the Page Rules user's
+ID. Coordinates come from approved configuration, never decrypted state. The
+manifest uses immutable `op://VAULT_ID/ITEM_ID/FIELD_ID` references. Create four
+dedicated 1Password vaults: provisioning bootstrap, cleanup bootstrap, production
+reader inputs, and the append-only obligation journal. No unrelated items belong
+in those vaults. Use three separate service accounts:
+
+| Role | Vault access and provider authority |
+| --- | --- |
+| Provisioning | Read provisioning bootstrap; read/write obligation journal. DigitalOcean `spaces_key:create_credentials`, `spaces_key:delete`, `spaces_key:read`, `spaces:read`, `regions:read`, `sizes:read`, `actions:read`. Separate Cloudflare account Account API Tokens Write on the approved account and user API Tokens Write on the approved user. |
+| Cleanup | Read cleanup bootstrap; read/write obligation journal. A distinct DigitalOcean token with deletion and the same reads, without credential creation. Distinct Cloudflare account/user token-write authorities. No production-state passphrase or production vault access. |
+| Production checking | Read only the dedicated production-reader vault containing references for state access, state bucket, state decryption passphrase and the existing production Caddy token. No provisioning or journal authority. |
+
+Record the service-account expiry from its creation ceremony. Bootstrap authority
+must outlive every child deadline by at least two days; seven days is a practical
+initial bootstrap lifetime. The helper never rolls or extends existing credentials.
+Cloudflare's user-token bootstrap uses its **Create additional tokens** template;
+the User/API Tokens permission is not available in the ordinary custom builder.
+Its policy must bind the approved `com.cloudflare.api.user.USER_ID` resource.
+Provisioning and cleanup Cloudflare authorities must have no token conditions,
+including IP restrictions that could prevent the independent cleanup actor from
+using them. Expiry alone must bound their availability.
+
+DigitalOcean's public Spaces API does not expose PAT scope/expiry introspection.
+After inspecting the exact scopes and expiry in the provider console, run
+`attest-digitalocean --token-reference op://... --expires-at UTC_TIMESTAMP
+--role provision|cleanup --attest-provider-console --output /private/metadata.json`.
+The helper reads the token through a hidden service-account prompt and writes
+metadata bound to its SHA-256, without exporting the token. Import this JSON into
+the dedicated metadata item's `notesPlain` field and set `digitalocean_metadata`
+to that reference. This is an explicit operator attestation, not provider-side
+expiry verification. Child Spaces grants are read back from the provider.
+
+```console
+mise exec -- just m3-11-unattended setup \
+  --manifest /private/setup.json --output /private/controller.json
+mise exec -- just m3-11-unattended install-github-cleanup \
+  --config /private/controller.json --helper-revision FULL_COMMIT_SHA
+```
+
+Setup asks for the three **new** service-account tokens using hidden terminal
+prompts, or accepts a mode-0600 `--service-accounts-file` delivered privately.
+Never paste secrets into chat, arguments or reports. It checks separated vault
+visibility, bootstrap metadata, live provider reads and independent journal
+write/readback. It does not decrypt production state or create provider credentials.
+The explicit GitHub setup operation creates a main-only environment named
+`m3-11-credential-cleanup`, with no per-execution human approver, installs only
+the cleanup subset as `M3_11_CLEANUP_CONFIG`, and pins
+`M3_11_CLEANUP_REVISION`. It refuses to weaken an existing environment's protection
+policy. Review changes to that protected workflow and its pinned helper as
+credential-deletion authority.
+
+The cleanup workflow must be present on **main** before scheduling works. If the
+implementation PR is still open, arrange a reviewed bootstrap of that workflow
+on main and pin its explicitly approved helper commit; a branch-only scheduled
+workflow is insufficient. Dispatch it once and inspect its result. Every new
+start requires a ready GitHub heartbeat no older than 45 minutes, for the exact
+helper, and no outstanding credential obligations. No live provisioning is
+authorized by successful setup alone.
+
+Provider contracts used by setup are documented by
+[DigitalOcean Spaces keys](https://docs.digitalocean.com/products/spaces/reference/api/spaces-keys/),
+[Cloudflare token creation](https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/),
+[1Password service accounts](https://developer.1password.com/docs/service-accounts/), and
+[GitHub environments](https://docs.github.com/en/rest/deployments/environments).
+
+### Review, start and monitor
+
+Before the first live issuance, present the prepared source/helper commit,
+artifact digest, controller image ID, Docker-host identity, targets, credential
+scopes/deadlines and independent-cleanup readiness together. Obtain explicit live
+approval. Record its reference and exact bindings in a private
+`lowerduckpond-m3-11-live-approval-v1` document. Approval expires within one day and
+authorizes one rehearsal and one qualification attempt on that revision. A changed
+executable revision needs a new approval and correctly bound attempt.
+
+The seven fresh runtime credentials are separate: archive `readwrite` on its
+bucket, backup `readwrite` on its bucket, account-wide Spaces `fullaccess` operator,
+account-owned fixture Caddy Zone Read + DNS Write on both zones, account-owned
+observer Zone Read + DNS Read on both zones, account-owned Account API Tokens Read
+audit, and user-owned Page Rules Read on exactly both zones. Full policy, identity,
+activity and lifetime are verified; Page Rules activity alone is insufficient.
+Cloudflare children use native 14-hour expiry, with at least 12 hours remaining
+at startup. Existing audit eight-day and Page Rules 91-day **remaining-time**
+upper bounds are retained. Spaces has no documented native key expiry: its
+recorded deadline triggers deletion, not provider-enforced expiry.
+
+Bucket-scoped keys reach whole production buckets, and DNS Write reaches both
+whole zones. Run prefixes are ownership accounting, not an IAM boundary.
+The Spaces fullaccess operator stays controller-side. Provisioning bootstrap
+never enters qualification or guests. A separate short production-check process
+alone reads encrypted state, verifies the existing non-expiring exact-policy
+production Caddy token and runs the existing production archive/backup
+`ldp-m3-archive credential-check`, including mutual denial. Its bound sanitized
+receipt is distinct from the fixture receipt. Managed qualification inputs must
+be complete; state cannot replace them or serve as a fallback.
+
+```console
+mise exec -- just m3-11-unattended start FULL_COMMIT_SHA \
+  --mode rehearsal --approval /private/live-approval.json \
+  --config /private/controller.json --daemon-socket /docker-sock/docker.sock
+mise exec -- just m3-11-unattended status RUN_UUID
+mise exec -- just m3-11-unattended evidence RUN_UUID
+mise exec -- just m3-11-unattended cancel RUN_UUID
+mise exec -- just m3-11-unattended cleanup-status --config /private/controller.json
+```
+
+Start reserves the daemon-wide container name `ldp-m311-admission` before checking
+existing controllers or writing run inputs, and releases it after launch. A
+concurrent start fails immediately. If a launcher dies before releasing this
+inert reservation, new starts remain blocked. Confirm that no launcher is still
+running, inspect existing controllers and retained run state, and reconcile any
+credential obligations before removing that reservation by its inspected
+container ID. Never remove another launcher's reservation or prune the daemon.
+
+The rehearsal performs bounded real production/fixture probes, delivers private
+inputs, signals the controller's cancellation handler, revokes and records the
+interruption. Before `start --mode qualification`, GitHub must independently
+read back every rehearsal revocation. The full run uses the same start operation
+with that mode. Status and evidence work from another terminal; routine monitoring
+does not require operator log-pasting. Raw logs and any retained cleanup secrets
+stay private. `cleanup-status` reads external obligations without a Docker
+dependency and exposes overdue obligations and stale GitHub execution. Logs
+stay in `ldp-m311-evidence` under `/evidence/runs/RUN_UUID`. Named helper/source
+volumes retain the clean checkouts. `evidence` exports validated status and
+revocation receipts, and the existing strictly verified passing report.
+
+### Independent revocation and unresolved results
+
+Before each create request, an immutable external 1Password item records the
+run, unique provider name, exact scope, source/helper, baseline inventory and
+deadline.
+Each intent also pins its cleanup authority's secret hash: a different account's
+empty inventory or a replaced bootstrap token cannot manufacture removal proof.
+Changing that authority with outstanding obligations needs a separate reviewed
+authorization decision, not an automatic token roll.
+Returned IDs are immediately recorded locally and externally. Lost
+responses reconcile exact intent metadata and provider inventory; no creation
+request is retried. Missing or ambiguous ownership remains unresolved.
+
+Terminal cleanup, a separate persistent watchdog, and the protected GitHub
+workflow independently reconcile those obligations. The watchdog checks every
+minute; GitHub schedules every 15 minutes but may be delayed. Stale execution,
+overdue obligations and provider failures remain visible. No exact-time Spaces
+deletion guarantee is made. A successful DELETE alone is insufficient: require
+fresh complete inventory and detail absence, plus negative authentication where
+the secret remains available. Failed negative probes retain the obligation and
+private cleanup material. Cleanup interruption resumes reconciliation, never
+qualification. Failed revocation blocks closure and new starts independently of
+the qualification outcome.
+
+Revocation deletes credentials only. It never removes failed-run evidence,
+containers, backups, DNS records or remote data. Existing ownership and explicit
+approval requirements for destructive retirement remain in force. Diagnostic
+recovery after revocation needs newly authorized temporary credentials and cannot
+change the original failed qualification result.
+
 ## Repository identity and audit lineage
 
 The installed backup configuration supplies the repository and node identity.

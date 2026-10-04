@@ -1,5 +1,15 @@
 # Qualification diagnostics
 
+For the dedicated M3.11 controller, use `just m3-11-unattended status RUN_UUID`,
+`evidence RUN_UUID`, or `cancel RUN_UUID`; see the
+[setup and lifecycle](m3-11-backup-recovery.md#unattended-qualification-on-the-dedicated-docker-host).
+Its private named volume survives controller replacement and retains the
+deadline supervisor's context. Restart marks an unfinished attempt interrupted
+and reconciles credentials, without replaying the journey. Qualification outcome
+and credential-cleanup status are independent. Sanitized export never traverses
+raw controller/production logs, fixture inputs or cleanup secret spools. Existing
+failed-fixture retirement authority is unchanged.
+
 `just check-ansible-m3-8` runs the existing full installed sequence and records
 monotonic timing observations. Its private timing directory is printed before
 the run, under `${XDG_DATA_HOME:-$HOME/.local/share}/lowerduckpond.net/qualification/`

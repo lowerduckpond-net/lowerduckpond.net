@@ -89,6 +89,16 @@ python_version = "3.14"
 strict = true
 warn_unreachable = true
 files = [
+  "scripts/qualification_pebble.py",
+  "tests/infrastructure/test_pebble_download.py",
+  "scripts/m3_11_unattended",
+  "scripts/m3_11_fixture_tokens.py",
+  "tests/infrastructure/test_m3_11_unattended_lifecycle.py",
+  "tests/infrastructure/test_m3_11_unattended_inputs.py",
+  "tests/infrastructure/test_m3_11_unattended_controller.py",
+  "tests/infrastructure/test_m3_11_unattended_admission.py",
+  "tests/infrastructure/test_m3_11_unattended_docker.py",
+  "tests/infrastructure/test_m3_11_unattended_providers.py",
   "scripts/qualification_archive_failure.py",
   "tests/infrastructure/test_qualification_archive_failure.py",
   "scripts/m3_11_debug_archive_repair.py",

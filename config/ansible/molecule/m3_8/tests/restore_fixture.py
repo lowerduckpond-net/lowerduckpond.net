@@ -11,7 +11,6 @@ import tarfile
 import time
 import uuid
 from pathlib import Path
-from urllib.request import urlopen
 
 import test_backup_identity as identity
 import test_lifecycle as support
@@ -23,6 +22,7 @@ from lowerduckpond_static_host_agent.host_restore_inputs import INPUT_SCHEMA, IS
 from testinfra.host import Host
 
 from config.ansible.molecule.m3_8 import restore_convergence
+from scripts import qualification_pebble as pebble
 from scripts import qualification_restore as owned
 from scripts.m3_11_live_storage import LiveStorage
 from scripts.m3_11_restore_reservation import adopt
@@ -33,10 +33,6 @@ SCENARIO = Path(__file__).resolve().parents[1]
 REPO = SCENARIO.parents[3]
 UNIT = "lowerduckpond-host-restore.service"
 RECOVERY = "/var/lib/lowerduckpond/recovery"
-PINNED = {
-    "pebble": "4f2fcb5bca8c85c9cf73ad140fccfc0d2be40bd81ab99879c79b7b8a0b4f70ed",
-    "pebble-challtestsrv": "e93a5aa25ecdf3af2f9fbb2de32b0173e64a2eae81002a4ccfe35fa6f4f60b92",
-}
 
 
 def checked(host: Host, code: str) -> str:
@@ -188,16 +184,9 @@ for name in names:
     def _prepare_acme(self) -> None:
         root = self.root / "acme-inputs"
         root.mkdir(mode=0o700)
-        for name, digest in PINNED.items():
+        for name in pebble.PINNED:
             archive = root / f"{name}.tgz"
-            url = (
-                "https://github.com/letsencrypt/pebble/releases/download/v2.10.1/"
-                f"{name}-linux-amd64.tar.gz"
-            )
-            with urlopen(url, timeout=30) as response:  # noqa: S310 - fixed HTTPS release
-                data = response.read(32 * 1024 * 1024 + 1)
-            assert hashlib.sha256(data).hexdigest() == digest
-            private(archive, data)
+            private(archive, pebble.download(name))
             with tarfile.open(archive) as bundle:
                 members = [
                     value for value in bundle if value.isfile() and Path(value.name).name == name
@@ -268,7 +257,7 @@ for name in names:
                 ["/usr/bin/openssl", *args], cwd=root, check=True, capture_output=True, timeout=30
             )
         for path in root.iterdir():
-            if path.name not in PINNED:
+            if path.name not in pebble.PINNED:
                 path.chmod(0o600)
         private(
             root / "pebble.json",

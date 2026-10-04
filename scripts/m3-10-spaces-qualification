@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run only on the secure workstation. This never connects to the production host.
+# Run on a trusted controller. This never connects to the production host.
 set +x
 set -euo pipefail
 umask 077
@@ -60,7 +60,12 @@ fi
 # Resolve the real target before taking the shared workstation lease. Re-exec
 # with its open descriptor so every phase and child retains writer exclusion.
 # State outputs remain in this process tree, never in the lease file.
-source "${repository_root}/scripts/lib/m3-10-production-state"
+if [[ -v LDP_M3_11_MANAGED_INPUTS ]]; then
+    [[ ${milestone} == 3.11 ]] || { echo 'Managed inputs require M3.11.' >&2; exit 2; }
+    uv run --quiet --frozen python -m scripts.m3_11_unattended.inputs check
+else
+    source "${repository_root}/scripts/lib/m3-10-production-state"
+fi
 if [[ -z ${LDP_QUALIFICATION_STORAGE_LEASE_FD:-} ]]; then
     exec uv run --quiet --frozen python -m scripts.qualification_storage_lease -- \
         bash "${repository_root}/scripts/m3-10-spaces-qualification" --milestone "${milestone}"
@@ -151,6 +156,9 @@ fi
 set_phase state-inputs
 uv run --quiet --frozen python -m scripts.production_qualification_inputs \
     --capture-run "${run_directory}" --source "${source_revision}"
+if [[ -v LDP_M3_11_MANAGED_INPUTS ]]; then
+    uv run --quiet --frozen python -m scripts.m3_11_unattended.inputs capture "${run_directory}"
+fi
 set_phase provider-preflight
 uv run --quiet --frozen python -m scripts.check_m3_10_provider --storage-only
 set_phase storage-acceptance
