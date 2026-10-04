@@ -101,6 +101,9 @@ prompts, or accepts a mode-0600 `--service-accounts-file` delivered privately.
 Never paste secrets into chat, arguments or reports. It checks separated vault
 visibility, bootstrap metadata, live provider reads and independent journal
 write/readback. It does not decrypt production state or create provider credentials.
+Start delivers the private configuration over stdin and atomically creates
+mode-0600 files owned by the container user. Workspace file ownership is not
+carried across Docker; the strict private-file ownership checks remain active.
 The explicit GitHub setup operation creates a main-only environment named
 `m3-11-credential-cleanup`, with no per-execution human approver, installs only
 the cleanup subset as `M3_11_CLEANUP_CONFIG`, and pins
