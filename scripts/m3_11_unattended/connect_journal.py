@@ -1,0 +1,219 @@
+"""Connect journals with explicit independent persistence, never cache-only admission."""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+
+from scripts.m3_11_private_inputs import read_private, write_private
+from scripts.m3_11_unattended.connect_auth import identity as account_identity
+from scripts.m3_11_unattended.connect_checkpoint import Checkpoint, Stored
+from scripts.m3_11_unattended.connect_ledger import ACK_FORMAT, ConnectLedger
+from scripts.m3_11_unattended.journal import event, validate
+from scripts.m3_11_unattended.model import LifecycleError, digest, identity
+from scripts.m3_11_unattended.state import cleanup_lock
+from scripts.production_qualification_inputs import revision
+
+ACK_WAIT_SECONDS = 120
+ACK_POLL_SECONDS = 5
+
+
+def acknowledgement(record: dict[str, object]) -> bool:
+    payload = record.get("payload")
+    return (
+        record.get("kind") == "heartbeat"
+        and isinstance(payload, dict)
+        and payload.get("format") == ACK_FORMAT
+    )
+
+
+def logical_key(record: dict[str, object]) -> str:
+    validate(record)
+    return digest({key: record[key] for key in ("kind", "run_id", "payload")})
+
+
+@dataclass(frozen=True)
+class Witness:
+    epoch: str
+    helper: str
+    server: str
+    author: str
+    genesis: Stored
+
+    def __post_init__(self) -> None:
+        identity(self.epoch)
+        revision(self.helper)
+        account_identity(self.server)
+        account_identity(self.author)
+
+    def binding(self) -> dict[str, object]:
+        return {
+            "epoch": self.epoch,
+            "helper_revision": self.helper,
+            "genesis": {"identity": self.genesis.identity, "sha256": self.genesis.sha256},
+        }
+
+
+class _Canonical:
+    def __init__(self, ledger: ConnectLedger) -> None:
+        self.ledger = ledger
+        self.logical = ledger.spool / "logical"
+        self.logical.mkdir(mode=0o700, exist_ok=True)
+
+    def records(self) -> list[dict[str, object]]:
+        return self.ledger.records()
+
+    def _original(self, record: dict[str, object]) -> dict[str, object]:
+        """A retry keeps its original event ID even when its first POST is unseen."""
+        key = logical_key(record)
+        path = self.logical / (key + ".json")
+        with cleanup_lock(self.logical):
+            if path.exists():
+                original = validate(read_private(path))
+                if logical_key(original) != key:
+                    raise LifecycleError("retained Connect journal event changed")
+                return original
+            matches = [value for value in self.records() if logical_key(value) == key]
+            exact = [value for value in matches if value == record]
+            if not exact and len(matches) > 1:
+                raise LifecycleError("Connect logical journal event is ambiguous")
+            original = exact[0] if exact else matches[0] if matches else record
+            write_private(path, original)
+            return original
+
+
+class ConnectJournal(_Canonical):
+    """Controller/watchdog adapter: provider work waits for an independent ACK."""
+
+    def __init__(
+        self,
+        ledger: ConnectLedger,
+        witness: Witness,
+        *,
+        wait_seconds: int = ACK_WAIT_SECONDS,
+        check_cancelled: Callable[[], None] = lambda: None,
+    ) -> None:
+        super().__init__(ledger)
+        if not 0 <= wait_seconds <= ACK_WAIT_SECONDS:
+            raise LifecycleError("Connect acknowledgement wait exceeds its bound")
+        self.witness, self.wait_seconds, self.check_cancelled = (
+            witness,
+            wait_seconds,
+            check_cancelled,
+        )
+
+    def append(self, record: dict[str, object]) -> None:
+        self.ledger.stage(self._original(record))
+
+    def confirmed(self, record: dict[str, object]) -> bool:
+        if self.ledger.minimum.get(identity(record["event_id"])) == digest(record):
+            # The explicitly approved genesis checkpoint contains this inventory.
+            return True
+        return self.ledger.confirmed(
+            record,
+            independent_server=self.witness.server,
+            independent_author=self.witness.author,
+            binding=self.witness.binding(),
+            minimum_checkpoint=self.witness.genesis,
+        )
+
+    def persist(self, record: dict[str, object]) -> dict[str, object]:
+        original = self._original(record)
+        self.ledger.stage(original)
+        until = time.monotonic() + self.wait_seconds
+        while True:
+            self.check_cancelled()
+            if self.confirmed(original):
+                return original
+            remaining = until - time.monotonic()
+            if remaining <= 0:
+                raise LifecycleError("Connect event awaits independent persistence")
+            time.sleep(min(ACK_POLL_SECONDS, remaining))
+
+
+class IndependentJournal(_Canonical):
+    """Protected GitHub adapter: recoverable checkpoints precede any acknowledgement."""
+
+    def __init__(self, ledger: ConnectLedger, checkpoint: Checkpoint, witness: Witness) -> None:
+        super().__init__(ledger)
+        if checkpoint.epoch != witness.epoch or checkpoint.genesis != witness.genesis:
+            raise LifecycleError("independent Connect checkpoint differs from its pinned witness")
+        self.checkpoint, self.witness = checkpoint, witness
+        checkpoint.restore()
+        self.cache_complete = False
+
+    def records(self) -> list[dict[str, object]]:
+        try:
+            observed = self.ledger.records()
+        except LifecycleError, OSError, ValueError:
+            # This actor can still delete exactly owned credentials recovered
+            # from the authoritative checkpoint, while reporting itself unready.
+            self.cache_complete = False
+            if not self.checkpoint.records:
+                raise LifecycleError("independent obligations are unavailable") from None
+            return list(self.checkpoint.records.values())
+        self.cache_complete = self.checkpoint.records.keys() <= {
+            identity(record["event_id"]) for record in observed
+        }
+        return self.checkpoint.merge(observed)
+
+    def _retain(self, records: list[dict[str, object]]) -> Stored:
+        return self.checkpoint.persist([value for value in records if not acknowledgement(value)])
+
+    def persist(self, record: dict[str, object]) -> dict[str, object]:
+        original = self._original(record)
+        records = self.records()
+        if not any(value == original for value in records):
+            records.append(original)
+        self._retain(records)
+        try:
+            self.ledger.stage(original)
+        except LifecycleError, OSError, ValueError:
+            # Failure here cannot forget the recovered ID or proof: it is
+            # already durable off host. The receipt must remain unready.
+            self.cache_complete = False
+        return original
+
+    def append(self, record: dict[str, object]) -> None:
+        self.persist(record)
+
+    def acknowledge(self, *, run_id: int, attempt: int) -> int:
+        if type(run_id) is not int or run_id < 1 or type(attempt) is not int or attempt < 1:
+            raise LifecycleError("independent acknowledgement needs its GitHub execution identity")
+        records = self.records()
+        stored = self._retain(records)
+        if not self.cache_complete:
+            raise LifecycleError("Connect replica remains incomplete; cleanup is not ready")
+        published = 0
+        for record in records:
+            if acknowledgement(record) or self.ledger.minimum.get(
+                identity(record["event_id"])
+            ) == digest(record):
+                continue
+            if self.ledger.confirmed(
+                record,
+                independent_server=self.witness.server,
+                independent_author=self.witness.author,
+                binding=self.witness.binding(),
+                minimum_checkpoint=self.witness.genesis,
+            ):
+                continue
+            proof = event(
+                "heartbeat",
+                identity(record["run_id"]),
+                {
+                    "format": ACK_FORMAT,
+                    "event_id": record["event_id"],
+                    "event_sha256": digest(record),
+                    "binding": self.witness.binding(),
+                    "github_run_id": run_id,
+                    "github_run_attempt": attempt,
+                    "independent_server_id": self.witness.server,
+                    "checkpoint": {"identity": stored.identity, "sha256": stored.sha256},
+                },
+            )
+            # ACKs are transport receipts, not new obligations to ACK recursively.
+            self.ledger.stage(self._original(proof))
+            published += 1
+        return published

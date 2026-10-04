@@ -13,6 +13,7 @@ import pytest
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_qualification_evidence import canonical_bytes
 from scripts.m3_11_unattended.connect_api import Connect, Response
+from scripts.m3_11_unattended.connect_checkpoint import Stored
 from scripts.m3_11_unattended.connect_ledger import ACK_FORMAT, ConnectLedger
 from scripts.m3_11_unattended.journal import TAG, OpJournal, event
 from scripts.m3_11_unattended.model import LifecycleError, digest
@@ -131,6 +132,7 @@ def ack(record: dict[str, object]) -> dict[str, object]:
             "github_run_id": 100,
             "github_run_attempt": 1,
             "independent_server_id": REMOTE_SERVER,
+            "checkpoint": {"identity": 1, "sha256": "d" * 64},
         },
     )
 
@@ -160,6 +162,44 @@ def test_cache_readback_is_not_independent_persistence(
     cache.items["c" * 26] = note(ack(addition), "c" * 26, author=REMOTE_AUTHOR)
     cache.version += 1
     assert confirmed(selected, addition)
+
+
+def test_identical_recovered_copies_form_one_logical_event(
+    tmp_path: Path, record: dict[str, object]
+) -> None:
+    cache = Replica(record)
+    cache.items["b" * 26] = note(record, "b" * 26, author=REMOTE_AUTHOR)
+    selected = ledger(cache, tmp_path, record)
+    assert selected.records() == [record]
+    # A copied locally authored ACK cannot replace the native independent one.
+    proof = ack(record)
+    cache.items["c" * 26] = note(proof, "c" * 26)
+    cache.items["d" * 26] = note(proof, "d" * 26, author=REMOTE_AUTHOR)
+    cache.version += 1
+    assert confirmed(selected, record)
+
+
+def test_conflicting_copy_is_rejected(tmp_path: Path, record: dict[str, object]) -> None:
+    cache = Replica(record)
+    altered = {**record, "payload": {"conflict": CANARY}}
+    cache.items["b" * 26] = note(altered, "b" * 26)
+    with pytest.raises(LifecycleError, match="conflicting"):
+        ledger(cache, tmp_path, record).records()
+
+
+def test_acknowledgement_cannot_precede_the_pinned_genesis(
+    tmp_path: Path, record: dict[str, object]
+) -> None:
+    cache = Replica(record)
+    cache.items["b" * 26] = note(ack(record), "b" * 26, author=REMOTE_AUTHOR)
+    selected = ledger(cache, tmp_path, record)
+    assert not selected.confirmed(
+        record,
+        independent_server=REMOTE_SERVER,
+        independent_author=REMOTE_AUTHOR,
+        binding=BINDING,
+        minimum_checkpoint=Stored(2, "e" * 64),
+    )
 
 
 @pytest.mark.parametrize("failure", ["before", "after"])

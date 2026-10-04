@@ -17,6 +17,7 @@ from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
 from scripts.m3_11_unattended.connect_api import Connect
 from scripts.m3_11_unattended.connect_auth import identity as account_identity
+from scripts.m3_11_unattended.connect_checkpoint import Stored
 from scripts.m3_11_unattended.journal import MAX_EVENTS, TAG, OpJournal, _note_content, validate
 from scripts.m3_11_unattended.model import LifecycleError, digest, identity
 from scripts.m3_11_unattended.state import private_directory
@@ -30,6 +31,7 @@ ACK_FIELDS = {
     "github_run_id",
     "github_run_attempt",
     "independent_server_id",
+    "checkpoint",
 }
 ITEM_BINDING = (
     "title",
@@ -71,7 +73,7 @@ class ConnectLedger:
                 raise LifecycleError("Connect journal checkpoint is invalid")
         spool.mkdir(mode=0o700, parents=True, exist_ok=True)
         private_directory(spool)
-        self._metadata: dict[str, dict[str, object]] = {}
+        self._metadata: dict[str, list[dict[str, object]]] = {}
         self._known: dict[str, str] = dict(minimum)
         self._items: dict[str, str] = {}
         self._cached_items: dict[str, tuple[dict[str, object], dict[str, object]]] = {}
@@ -121,7 +123,10 @@ class ConnectLedger:
             or len(response.body) != before[0]
         ):
             raise LifecycleError("Connect journal inventory is partial or unavailable")
-        records, metadata, items = [], {}, {}
+        records: dict[str, dict[str, object]] = {}
+        metadata: dict[str, list[dict[str, object]]] = {}
+        items: dict[str, str] = {}
+        cached_items = {}
         item_ids: set[str] = set()
         for listed in response.body:
             if not isinstance(listed, dict):
@@ -135,14 +140,16 @@ class ConnectLedger:
             if any(listed.get(key) != item.get(key) for key in ITEM_BINDING):
                 raise LifecycleError("Connect journal changed during readback")
             event_id = identity(record["event_id"])
-            if event_id in items:
-                raise LifecycleError("Connect journal contains duplicate event identities")
+            if event_id in records and records[event_id] != record:
+                raise LifecycleError("Connect journal contains conflicting event identities")
             if event_id in self._known and self._known[event_id] != digest(record):
                 raise LifecycleError("an immutable Connect journal event changed")
             if item_id == self.anchor and digest(record) != self.anchor_sha256:
                 raise LifecycleError("Connect journal anchor changed")
-            items[event_id], metadata[event_id] = item_id, item
-            records.append(record)
+            items[event_id] = item_id
+            metadata.setdefault(event_id, []).append(item)
+            records[event_id] = record
+            cached_items[item_id] = record, item
         if (
             self.anchor not in item_ids
             or not self._known.keys() <= items.keys()
@@ -150,12 +157,12 @@ class ConnectLedger:
         ):
             raise LifecycleError("Connect journal is not synchronized with its retained checkpoint")
         self._metadata, self._items = metadata, items
-        self._known.update({identity(record["event_id"]): digest(record) for record in records})
-        self._cached_items = {
-            items[identity(record["event_id"])]: (record, metadata[identity(record["event_id"])])
-            for record in records
-        }
-        return records
+        self._known.update({key: digest(record) for key, record in records.items()})
+        # An independent worker can recover the same event from its checkpoint
+        # after losing a POST reply and its ephemeral spool. Exact immutable
+        # copies share one logical event; conflicting copies still fail closed.
+        self._cached_items = cached_items
+        return sorted(records.values(), key=lambda row: str(row["event_id"]))
 
     def stage(self, record: dict[str, object]) -> None:
         """Submit once and retain uncertainty; this never claims external persistence."""
@@ -210,6 +217,7 @@ class ConnectLedger:
         independent_server: str,
         independent_author: str,
         binding: dict[str, object],
+        minimum_checkpoint: Stored | None = None,
     ) -> bool:
         """Require the provider's read-only author identity, not a self-asserted actor tag."""
         account_identity(independent_server)
@@ -228,16 +236,21 @@ class ConnectLedger:
             ):
                 continue
             proof = fields(payload, ACK_FIELDS)
-            item = self._metadata[identity(value["event_id"])]
+            pointer = fields(proof["checkpoint"], {"identity", "sha256"})
+            if type(pointer["identity"]) is not int or not isinstance(pointer["sha256"], str):
+                raise LifecycleError("Connect acknowledgement checkpoint is invalid")
+            checkpoint = Stored(pointer["identity"], pointer["sha256"])
             if (
                 value["run_id"] == record["run_id"]
                 and proof["event_sha256"] == digest(record)
                 and proof["binding"] == binding
                 and proof["independent_server_id"] == independent_server
-                and item["lastEditedBy"] == independent_author
-                and item["version"] == 1
-                and item.get("createdAt") is not None
-                and item.get("createdAt") == item.get("updatedAt")
+                and self.authored(value, independent_author)
+                and (
+                    minimum_checkpoint is None
+                    or checkpoint.identity > minimum_checkpoint.identity
+                    or checkpoint == minimum_checkpoint
+                )
                 and all(
                     type(proof[key]) is int and cast(int, proof[key]) > 0
                     for key in ("github_run_id", "github_run_attempt")
@@ -245,3 +258,14 @@ class ConnectLedger:
             ):
                 return True
         return False
+
+    def authored(self, record: dict[str, object], author: str) -> bool:
+        """Inspect provider metadata from the most recent complete snapshot."""
+        account_identity(author)
+        return any(
+            item["lastEditedBy"] == author
+            and item["version"] == 1
+            and item.get("createdAt") is not None
+            and item.get("createdAt") == item.get("updatedAt")
+            for item in self._metadata.get(identity(record["event_id"]), [])
+        )
