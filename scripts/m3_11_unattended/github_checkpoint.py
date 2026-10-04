@@ -188,20 +188,20 @@ class GitHubArtifacts:
         # GitHub returns individual statuses newest first. Unlike artifacts,
         # these records have no expiry, replacement or deletion API. Never
         # infer the head from the surviving artifact inventory.
-        current = None
+        current = previous = None
         for row in self._statuses():
             if cast(str, row["context"]).lower() != self.context:
                 continue
             selected = self._status_reference(row)
             if current is None:
                 current = selected
-            elif selected != current:
-                if current.identity <= selected.identity:
+            if previous is not None and selected != previous:
+                if previous.identity <= selected.identity:
                     raise LifecycleError("checkpoint registry points backwards")
-                self._parents[current.identity] = selected
-                return current
-        if current is not None:
-            self._parents[current.identity] = None
+                self._parents[previous.identity] = selected
+            previous = selected
+        if previous is not None:
+            self._parents[previous.identity] = None
         return current
 
     def remaining_capacity(self) -> int:

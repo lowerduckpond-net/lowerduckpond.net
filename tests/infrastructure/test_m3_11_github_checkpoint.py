@@ -297,6 +297,21 @@ def test_append_only_head_rejects_replayed_old_pointer(
         registry.latest()
 
 
+def test_replayed_valid_prefix_cannot_hide_a_later_acknowledged_head(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    for values in (["A"], ["A", "B"], ["A", "B", "C"]):
+        registry.create({"records": values})
+    # The newest pair B -> A is valid in isolation, but omits acknowledged C.
+    registry.statuses.insert(0, {**registry.statuses[-1], "id": 4})
+    registry.statuses.insert(0, {**registry.statuses[-2], "id": 5})
+    with pytest.raises(LifecycleError, match="backwards"):
+        registry.latest()
+
+
 def test_other_workflow_cannot_supply_a_checkpoint_despite_same_bot_identity(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
