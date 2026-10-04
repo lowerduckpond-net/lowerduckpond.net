@@ -115,7 +115,7 @@ The cleanup workflow must be present on **main** before scheduling works. If the
 implementation PR is still open, arrange a reviewed bootstrap of that workflow
 on main and pin its explicitly approved helper commit; a branch-only scheduled
 workflow is insufficient. Dispatch it once and inspect its result. Every new
-start requires a ready GitHub heartbeat no older than 45 minutes, for the exact
+start requires a ready GitHub heartbeat no older than 90 minutes, for the exact
 helper, and no outstanding credential obligations. No live provisioning is
 authorized by successful setup alone.
 
@@ -200,8 +200,10 @@ responses reconcile exact intent metadata and provider inventory; no creation
 request is retried. Missing or ambiguous ownership remains unresolved.
 
 Terminal cleanup, a separate persistent watchdog, and the protected GitHub
-workflow independently reconcile those obligations. The watchdog checks every
-minute; GitHub schedules every 15 minutes but may be delayed. Stale execution,
+workflow independently reconcile those obligations. The watchdog checks local
+processes every minute and immediately reconciles a newly detected terminal path.
+Unresolved terminal cleanup retries at five-minute intervals. Routine remote
+reconciliation and GitHub scheduling are hourly; GitHub execution may be delayed. Stale execution,
 overdue obligations and provider failures remain visible. No exact-time Spaces
 deletion guarantee is made. A successful DELETE alone is insufficient: require
 fresh complete inventory and detail absence, plus negative authentication where
@@ -215,6 +217,21 @@ containers, backups, DNS records or remote data. Existing ownership and explicit
 approval requirements for destructive retirement remain in force. Diagnostic
 recovery after revocation needs newly authorized temporary credentials and cannot
 change the original failed qualification result.
+
+1Password's account-wide daily request quota is shared by all service accounts.
+Before issuing credentials, the controller checks both provisioning and cleanup
+quota metadata, requiring headroom for the journey, retained journal history and
+cleanup. This observes capacity; it cannot reserve it against unrelated account
+activity. Quota exhaustion never clears an obligation or suppresses revocation.
+The hourly remote cadence avoids consuming the quota with idle one-minute reads.
+The GitHub workflow retains an encrypted cache of immutable journal reads, keyed
+by its cleanup service account and vault. It contains no provider credentials or
+production inputs. Every sweep still lists the live vault and validates each
+cached record against its current metadata and content-hash title; new records
+are fetched, and changed or disappeared records fail closed. Provider removal
+and negative-authentication evidence are never replaced by cache observations.
+Cache loss requires fresh journal reads and may need more quota. See
+[1Password request limits](https://developer.1password.com/docs/service-accounts/rate-limits/).
 
 ## Repository identity and audit lineage
 

@@ -18,7 +18,7 @@ from scripts import qualification_deadline
 from scripts.m3_10_qualification_report import verify_report
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
-from scripts.m3_11_unattended import cleanup, inputs
+from scripts.m3_11_unattended import cleanup, inputs, quota
 from scripts.m3_11_unattended.cloudflare import Cloudflare
 from scripts.m3_11_unattended.config import Configuration, connect
 from scripts.m3_11_unattended.docker import SOCKET, Docker
@@ -216,7 +216,9 @@ class Worker:
             before = {item["id"] for item in separate.providers[kind].inventory()}
             if not before or before != {item["id"] for item in creator.providers[kind].inventory()}:
                 raise LifecycleError("provisioning and cleanup provider identities differ")
-        for record in creator.journal.records():
+        records = creator.journal.records()
+        quota.require_capacity(creator.journal.op, separate.journal.op, records=len(records))
+        for record in records:
             payload = record["payload"]
             if (
                 record["kind"] == "run"

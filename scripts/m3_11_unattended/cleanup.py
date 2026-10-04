@@ -36,8 +36,10 @@ from scripts.m3_11_unattended.model import (
 from scripts.m3_11_unattended.spaces import Spaces
 from scripts.production_qualification_inputs import git, revision
 
-HEARTBEAT_MAX_AGE = timedelta(minutes=45)
+HEARTBEAT_MAX_AGE = timedelta(minutes=90)
 POLL_SECONDS = 60
+REMOTE_SECONDS = 3600
+RETRY_SECONDS = 300
 
 
 def connect_cleanup(bootstrap: Bootstrap, targets: Targets, vault: str) -> Lifecycle:
@@ -131,7 +133,7 @@ def sweep(
     if (
         actor == "github"
         or newest is None
-        or now - instant(newest["observed_at"]) >= timedelta(minutes=15)
+        or now - instant(newest["observed_at"]) >= timedelta(seconds=REMOTE_SECONDS)
         or any(
             newest.get(key) != receipt[key]
             for key in ("helper_revision", "status", "overdue", "results")
@@ -220,12 +222,18 @@ def status_document(journal: Journal, *, helper: str, now: datetime) -> dict[str
     }
 
 
-def main() -> int:
+def argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--actor", choices=("github", "watchdog"), required=True)
     parser.add_argument("--watch", action="store_true")
     parser.add_argument("--runs", type=Path)
+    parser.add_argument("--journal-cache", type=Path)
+    return parser
+
+
+def main() -> int:
+    parser = argument_parser()
     args = parser.parse_args()
     if args.actor == "github" and (
         os.environ.get("GITHUB_ACTIONS") != "true"
@@ -237,26 +245,45 @@ def main() -> int:
     helper = revision(git(repository, "rev-parse", "HEAD").decode().strip())
     status = 1
     journal: OpJournal | None = None
+    next_remote = next_retry = 0.0
+    last_due: set[Path] = set()
     while True:
         try:
+            now = time.monotonic()
+            due: set[Path] = set()
+            if args.runs is not None:
+                if args.actor != "watchdog":
+                    raise LifecycleError("only the persistent watchdog reads local runtime spools")
+                from scripts.m3_11_unattended.docker import Docker  # noqa: PLC0415 - watchdog only
+                from scripts.m3_11_unattended.watchdog import (  # noqa: PLC0415 - watchdog only
+                    due_processes,
+                    reconcile_processes,
+                )
+
+                due = set(due_processes(args.runs, Docker()))
+            newly_due = bool(due - last_due)
+            if args.watch and now < next_remote and not newly_due and (not due or now < next_retry):
+                time.sleep(POLL_SECONDS)
+                continue
+            # Local process checks remain every minute. Remote reconciliation is
+            # hourly, or immediate on an unresolved local terminal path, with a
+            # bounded five-minute retry interval after failure. Never burn the
+            # account-wide daily quota rereading idle bootstrap fields each minute.
+            next_remote, next_retry = now + REMOTE_SECONDS, now + RETRY_SECONDS
+            last_due = due
             targets, vault, bootstrap = cleanup_configuration(args.config)
             lifecycle = connect_cleanup(bootstrap, targets, vault)
             if journal is None:
                 if not isinstance(lifecycle.journal, OpJournal):
                     raise LifecycleError("independent cleanup requires the external journal")
+                if args.journal_cache is not None:
+                    lifecycle.journal.use_cache(args.journal_cache)
                 journal = lifecycle.journal
             else:
                 journal.refresh()
                 lifecycle.journal = journal
             available = None
             if args.runs is not None:
-                if args.actor != "watchdog":
-                    raise LifecycleError("only the persistent watchdog reads local runtime spools")
-                from scripts.m3_11_unattended.docker import Docker  # noqa: PLC0415 - watchdog only
-                from scripts.m3_11_unattended.watchdog import (  # noqa: PLC0415 - watchdog only
-                    reconcile_processes,
-                )
-
                 available = reconcile_processes(lifecycle, args.runs, Docker())
             receipt = sweep(lifecycle, actor=args.actor, helper=helper, secrets=available)
             print(json.dumps(receipt, sort_keys=True), flush=True)

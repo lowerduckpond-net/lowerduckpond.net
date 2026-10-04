@@ -186,7 +186,7 @@ def test_private_spool_is_durable_before_remote_creation_acknowledgement(
     assert not worker.retained_credentials(selected.directory)
 
 
-@pytest.mark.parametrize("age", [timedelta(minutes=46), timedelta(days=1)])
+@pytest.mark.parametrize("age", [timedelta(minutes=91), timedelta(days=1)])
 def test_stale_independent_cleanup_blocks_admission(tmp_path: Path, age: timedelta) -> None:
     case = Case(tmp_path)
     case.journal.append(

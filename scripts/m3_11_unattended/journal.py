@@ -20,6 +20,7 @@ from typing import Protocol, cast
 
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
+from scripts.m3_11_unattended.journal_cache import JournalCache
 from scripts.m3_11_unattended.model import LifecycleError, digest, identity, instant, stamp
 
 FORMAT = "lowerduckpond-m3-11-credential-journal-v1"
@@ -101,6 +102,9 @@ class OnePassword:
         }
         self.environment.update(OP_SERVICE_ACCOUNT_TOKEN=token, OP_CACHE="false")
 
+    def journal_cache(self, path: Path, vault: str) -> JournalCache:
+        return JournalCache(path, token=self.environment["OP_SERVICE_ACCOUNT_TOKEN"], vault=vault)
+
     def command(self, *arguments: str, stdin: bytes | None = None) -> bytes:
         try:
             result = subprocess.run(  # noqa: S603 - fixed op operations, secrets only in stdin/env
@@ -165,6 +169,21 @@ class OpJournal:
         self.op, self.vault = op, vault
         self._records: list[dict[str, object]] | None = None
         self._items: dict[str, tuple[str, dict[str, object]]] = {}
+        self._cache: JournalCache | None = None
+
+    def use_cache(self, path: Path) -> None:
+        self._cache = self.op.journal_cache(path, self.vault)
+        saved = self._cache.read()
+        if len(saved) > MAX_EVENTS:
+            raise LifecycleError("credential journal cache exceeds its bound")
+        for item_id, value in saved.items():
+            selected = fields(value, {"version", "record"})
+            version = selected["version"]
+            if re.fullmatch(r"[a-z0-9]{26}", item_id) is None or (
+                not isinstance(version, str) or re.fullmatch(r"[0-9a-f]{64}", version) is None
+            ):
+                raise LifecycleError("credential journal cache identity is invalid")
+            self._items[item_id] = (version, validate(selected["record"]))
 
     def _inventory(self) -> list[dict[str, object]]:
         value = json.loads(
@@ -209,7 +228,10 @@ class OpJournal:
         # Dedicated vault: silently filtering malformed/foreign obligations could
         # hide a credential. Unrelated configuration belongs in separate vaults.
         records = []
-        for item in self._inventory():
+        inventory = self._inventory()
+        if set(self._items) - {item.get("id") for item in inventory}:
+            raise LifecycleError("an immutable credential journal item disappeared")
+        for item in inventory:
             item_id = item.get("id")
             if not isinstance(item_id, str):
                 raise LifecycleError("credential journal item identity is invalid")
@@ -223,13 +245,20 @@ class OpJournal:
             if cached is None:
                 cached = (version, self._read(item_id))
                 self._items[item_id] = cached
-            if cached[0] != version:
+            if cached[0] != version or item.get("title") != self._title(cached[1]):
                 raise LifecycleError("an immutable credential journal item was edited")
             records.append(cached[1])
         ids = [record["event_id"] for record in records]
         if len(set(ids)) != len(ids):
             raise LifecycleError("credential journal has ambiguous duplicate identities")
         self._records = records
+        if self._cache is not None:
+            self._cache.write(
+                {
+                    item_id: {"version": version, "record": record}
+                    for item_id, (version, record) in self._items.items()
+                }
+            )
         return list(records)
 
     def append(self, record: dict[str, object]) -> None:
