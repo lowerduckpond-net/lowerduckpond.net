@@ -49,7 +49,9 @@ class Case:
 
     def reserve(self) -> Admission:
         admission = self.admission()
-        assert admission.reserve(run_digest(self.run_id, self.payload), self.authority)
+        assert admission.reserve(
+            run_digest(self.run_id, self.payload), self.authority, require_clear=lambda: None
+        )
         return admission
 
     def acknowledge(self, admission: Admission) -> None:
@@ -77,7 +79,7 @@ def test_without_exact_dispatch_neither_run_nor_intent_gets_an_independent_ack(
     case = Case(tmp_path)
     intent = case.intent()
     admission = case.admission()
-    assert not admission.reserve("0" * 64, case.authority)
+    assert not admission.reserve("0" * 64, case.authority, require_clear=lambda: None)
     case.acknowledge(admission)
     assert not case.journal.controller.confirmed(case.run)
     assert not case.journal.controller.confirmed(intent)
@@ -115,7 +117,9 @@ def test_new_attempt_rechecks_capacity_and_cleanup_lifetime_instead_of_trusting_
     else:
         admission.targets = dataclasses.replace(TARGETS, archive_bucket="different-approved-target")
     with pytest.raises(LifecycleError):
-        admission.reserve(run_digest(case.run_id, case.payload), case.authority)
+        admission.reserve(
+            run_digest(case.run_id, case.payload), case.authority, require_clear=lambda: None
+        )
     assert not case.journal.controller.confirmed(case.run)
 
 

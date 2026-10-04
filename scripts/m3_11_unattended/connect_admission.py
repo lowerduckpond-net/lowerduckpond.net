@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from scripts.m3_11_qualification_evidence import fields
@@ -87,7 +88,9 @@ class Admission:
             raise LifecycleError("Connect creation reservation is ambiguous")
         return matches[0] if matches else None
 
-    def reserve(self, expected: str, authority: Authority) -> bool:
+    def reserve(
+        self, expected: str, authority: Authority, *, require_clear: Callable[[], None]
+    ) -> bool:
         """Called only for the exact request dispatched by the authorized launcher."""
         if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
             raise LifecycleError("Connect witness dispatch needs an exact request digest")
@@ -119,6 +122,7 @@ class Admission:
         ):
             raise LifecycleError("Connect attempt lacks fresh independent capacity")
         authority.require(self.now + WINDOW + LIFETIME)
+        require_clear()
         # Anchor both timing and event identity to the immutable dispatched run.
         # Even a late POST after ephemeral-spool loss produces identical copies,
         # rather than another window or an ambiguous logical decision.

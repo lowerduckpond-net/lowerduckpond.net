@@ -23,6 +23,8 @@ from scripts.m3_11_unattended.model import (
 from scripts.production_qualification_inputs import revision
 
 REQUEST_FORMAT = "lowerduckpond-m3-11-connect-genesis-request-v1"
+DISCOVERY_FORMAT = "lowerduckpond-m3-11-connect-discovery-request-v1"
+DISCOVERY_RECEIPT = "lowerduckpond-m3-11-connect-discovery-receipt-v1"
 RECEIPT_FORMAT = "lowerduckpond-m3-11-connect-genesis-receipt-v1"
 PROBE_FORMAT = "lowerduckpond-m3-11-connect-provenance-v1"
 REQUEST_FIELDS = {
@@ -43,9 +45,9 @@ REQUEST_FIELDS = {
 }
 
 
-def request(value: object) -> dict[str, object]:  # noqa: PLR0912 - explicit immutable probe bindings
-    selected = fields(value, REQUEST_FIELDS)
-    if selected["format"] != REQUEST_FORMAT:
+def discovery_request(value: object) -> dict[str, object]:
+    selected = fields(value, REQUEST_FIELDS - {"shared_forgery_probe"})
+    if selected["format"] != DISCOVERY_FORMAT:
         raise LifecycleError("Connect genesis request format is invalid")
     epoch = identity(selected["epoch"])
     revision(selected["helper_revision"])
@@ -79,6 +81,20 @@ def request(value: object) -> dict[str, object]:  # noqa: PLR0912 - explicit imm
             or (role == "independent" and str(probe["event_id"]) in initial)
         ):
             raise LifecycleError("Connect genesis provenance probe is misbound")
+    return selected
+
+
+def request(value: object) -> dict[str, object]:
+    selected = fields(value, REQUEST_FIELDS)
+    if selected["format"] != REQUEST_FORMAT:
+        raise LifecycleError("Connect genesis request format is invalid")
+    discovery_request(
+        {
+            **{key: item for key, item in selected.items() if key != "shared_forgery_probe"},
+            "format": DISCOVERY_FORMAT,
+        }
+    )
+    epoch, initial = identity(selected["epoch"]), strings(selected["initial"])
     forged = validate(selected["shared_forgery_probe"])
     claimed = fields(forged["payload"], {"format", "epoch", "actor", "claimed_author"})
     account_identity(claimed["claimed_author"])
@@ -93,6 +109,40 @@ def request(value: object) -> dict[str, object]:  # noqa: PLR0912 - explicit imm
     ):
         raise LifecycleError("Connect shared forgery probe is misbound")
     return selected
+
+
+def discover(
+    ledger: ConnectLedger, approved: object, *, helper: str, server: str, now: datetime
+) -> dict[str, object]:
+    selected = discovery_request(approved)
+    vaults = strings(selected["vaults"])
+    probe = validate(selected["independent_probe"])
+    before = [record for record in ledger.records() if not acknowledgement(record)]
+    if (
+        revision(helper) != selected["helper_revision"]
+        or account_identity(server) == selected["shared_server"]
+        or ledger.vault != vaults["journal"]
+        or ledger.anchor != selected["anchor"]
+        or ledger.anchor_sha256 != selected["anchor_sha256"]
+        or {str(record["event_id"]): digest(record) for record in before if record != probe}
+        != strings(selected["initial"])
+        or any(record["kind"] == "intent" for record in before)
+        or ledger.authors(validate(selected["shared_probe"])) != {selected["shared_author"]}
+    ):
+        raise LifecycleError("Connect discovery inputs or complete initial inventory differ")
+    author = discover_author(ledger, probe, shared_author=str(selected["shared_author"]))
+    return {
+        "format": DISCOVERY_RECEIPT,
+        "request_sha256": digest(selected),
+        "epoch": selected["epoch"],
+        "helper_revision": helper,
+        "independent_server": server,
+        "independent_author": author,
+        "shared_author": selected["shared_author"],
+        "forged_author_ignored": True,
+        "observed_at": stamp(now),
+        "provider_children_created": False,
+    }
 
 
 def discover_author(ledger: ConnectLedger, probe: dict[str, object], *, shared_author: str) -> str:

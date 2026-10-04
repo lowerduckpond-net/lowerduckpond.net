@@ -118,7 +118,7 @@ def test_external_or_ambiguous_api_binding_is_rejected_and_removed(port: str) ->
 
 def test_interruption_removes_only_this_workers_connect_resources() -> None:
     docker = DockerDouble()
-    unrelated = {"Labels": {OWNER: "another-execution"}}
+    unrelated: dict[str, object] = {"Labels": {OWNER: "another-execution"}}
     docker.objects["volume", "qualification-failed-evidence"] = unrelated
     with (
         pytest.raises(KeyboardInterrupt),

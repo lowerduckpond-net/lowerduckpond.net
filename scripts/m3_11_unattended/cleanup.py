@@ -108,6 +108,7 @@ def sweep(
     actor: str,
     helper: str,
     secrets: dict[str, Credential] | None = None,
+    authority_verified: bool = True,
 ) -> dict[str, object]:
     if actor not in {"controller", "watchdog", "github"}:
         raise LifecycleError("unknown cleanup actor")
@@ -126,7 +127,9 @@ def sweep(
             healthy = False
     status = (
         "ready"
-        if healthy and all(value.status in {"verified", "not-due"} for value in observed)
+        if authority_verified
+        and healthy
+        and all(value.status in {"verified", "not-due"} for value in observed)
         else "unresolved"
     )
     if isinstance(lifecycle.journal, IndependentJournal) and not lifecycle.journal.cache_complete:
