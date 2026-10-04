@@ -23,7 +23,7 @@ from scripts.m3_11_unattended.cloudflare import Cloudflare
 from scripts.m3_11_unattended.config import Configuration, connect
 from scripts.m3_11_unattended.connect_journal import ConnectJournal
 from scripts.m3_11_unattended.docker import SOCKET, Docker
-from scripts.m3_11_unattended.journal import OpJournal, event
+from scripts.m3_11_unattended.journal import Journal, OpJournal, event
 from scripts.m3_11_unattended.lifecycle import Lifecycle, intents
 from scripts.m3_11_unattended.model import (
     ROLES,
@@ -261,7 +261,7 @@ class Worker:
             journal_directory=self.directory.parent.parent / "connect-journal" / "provision",
         )
         if self.request["mode"] == "qualification":
-            self._require_rehearsal(creator.journal.records())
+            self._require_rehearsal(creator.journal)
         if isinstance(creator.journal, ConnectJournal):
             creator.journal.check_cancelled = self.check_cancelled
         for kind in separate.providers:
@@ -359,7 +359,8 @@ class Worker:
         }
         return credentials, receipt
 
-    def _require_rehearsal(self, records: list[dict[str, object]]) -> None:
+    def _require_rehearsal(self, journal: Journal) -> None:
+        records = journal.records()
         completed = [
             record
             for record in records
@@ -374,6 +375,10 @@ class Worker:
                 "qualification requires its completed credential lifecycle rehearsal"
             )
         rehearsal = completed[0]
+        if isinstance(journal, ConnectJournal) and not journal.confirmed(rehearsal):
+            raise LifecycleError(
+                "credential lifecycle rehearsal result is not independently durable"
+            )
         owned = {
             Intent.parse(record["payload"]).sha256
             for record in records
@@ -388,6 +393,13 @@ class Worker:
                 and payload.get("helper_revision") == self.helper
                 and instant(record["recorded_at"]) >= instant(rehearsal["recorded_at"])
                 and isinstance(payload.get("results"), list)
+                and (
+                    not isinstance(journal, ConnectJournal)
+                    or (
+                        journal.confirmed(record)
+                        and journal.ledger.authored(record, journal.witness.author)
+                    )
+                )
             ):
                 verified = {
                     value.get("intent_sha256")

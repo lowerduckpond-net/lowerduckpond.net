@@ -19,6 +19,7 @@ from infrastructure.test_m3_11_connect_ledger import (
     ledger,
     note,
 )
+from infrastructure.test_m3_11_unattended_controller import subject
 from infrastructure.test_m3_11_unattended_lifecycle import Case as LifecycleCase
 from scripts.m3_11_unattended.cleanup import require_independent_ready, status_document
 from scripts.m3_11_unattended.connect_api import Response
@@ -26,7 +27,7 @@ from scripts.m3_11_unattended.connect_checkpoint import Checkpoint
 from scripts.m3_11_unattended.connect_journal import ConnectJournal, IndependentJournal, Witness
 from scripts.m3_11_unattended.github_checkpoint import MINIMUM_START_CAPACITY
 from scripts.m3_11_unattended.journal import event
-from scripts.m3_11_unattended.model import LifecycleError, digest, stamp
+from scripts.m3_11_unattended.model import ROLES, LifecycleError, digest, stamp
 
 
 class RemoteReplica(Replica):
@@ -309,3 +310,50 @@ def test_sanitized_status_cannot_treat_a_staged_denial_as_closed(
     assert status_document(case.controller, helper=case.witness.helper, now=now)["outstanding"] == 1
     case.witness_once()
     assert status_document(case.controller, helper=case.witness.helper, now=now)["outstanding"] == 0
+
+
+@pytest.mark.parametrize("fault", ["none", "result-staged", "receipt-staged", "local-author"])
+def test_rehearsal_gate_needs_durable_result_and_independently_authored_revocation_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    case = Case(tmp_path / "connect")
+    selected, runtime = subject(tmp_path, monkeypatch)
+    selected.helper = case.witness.helper
+    owned = [runtime.create(role=role)[0].sha256 for role in ROLES]
+    for record in runtime.journal.records():
+        case.controller.append(record)
+    result = event(
+        "result",
+        runtime.run_id,
+        {
+            "approval_sha256": selected.request["approval_sha256"],
+            "qualification": "rehearsal-interrupted",
+            "credential_cleanup": "verified",
+        },
+    )
+    if fault != "result-staged":
+        case.controller.append(result)
+    case.witness_once()
+    receipt = event(
+        "heartbeat",
+        str(uuid.uuid7()),
+        {
+            "actor": "github",
+            "helper_revision": selected.helper,
+            "results": [{"intent_sha256": value, "status": "verified"} for value in owned],
+        },
+    )
+    if fault in {"receipt-staged", "local-author"}:
+        case.controller.append(receipt)
+    else:
+        case.github.persist(receipt)
+    if fault != "receipt-staged":
+        case.witness_once()
+    if fault == "result-staged":
+        case.controller.append(result)
+        assert not case.controller.confirmed(result)
+    if fault == "none":
+        selected._require_rehearsal(case.controller)
+    else:
+        with pytest.raises(LifecycleError):
+            selected._require_rehearsal(case.controller)
