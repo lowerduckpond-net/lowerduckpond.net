@@ -36,9 +36,10 @@ class Registry(github.GitHubArtifacts):
         self.fail_download = False
         self.statuses: list[dict[str, object]] = []
         self.lose_status_reply = False
+        self.workflow_id = github.WORKFLOW_ID
 
     @override
-    def _api(
+    def _api(  # noqa: PLR0911 - distinct GitHub API routes in the provider double
         self, path: str, *, binary: bool = False, body: dict[str, object] | None = None
     ) -> object:
         page = int(parse_qs(urlsplit(path).query).get("page", ["1"])[0])
@@ -63,6 +64,16 @@ class Registry(github.GitHubArtifacts):
             }
         if "/runs/" in path:
             run_id = int(path.split("/runs/")[1].split("/", maxsplit=1)[0])
+            if "/artifacts" not in path:
+                return {
+                    "id": run_id,
+                    "workflow_id": self.workflow_id,
+                    "path": ".github/workflows/" + github.WORKFLOW,
+                    "event": "workflow_dispatch",
+                    "head_branch": "main",
+                    "repository": {"full_name": github.REPOSITORY},
+                    "head_repository": {"full_name": github.REPOSITORY},
+                }
             values = copy.deepcopy(self.artifacts.get(run_id, []))
             return {
                 "artifacts": values[start : start + github.PAGE_SIZE],
@@ -270,6 +281,89 @@ def test_newest_registry_entry_cannot_be_skipped_when_untrusted(
         row["description"] = "not-a-digest"
     with pytest.raises(LifecycleError, match="untrusted"):
         registry.latest()
+
+
+def test_append_only_head_rejects_replayed_old_pointer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    registry.create({"records": ["old"]})
+    registry.create({"records": ["old", "new"]})
+    replay = {**registry.statuses[-1], "id": 3}
+    registry.statuses.insert(0, replay)
+    with pytest.raises(LifecycleError, match="backwards"):
+        registry.latest()
+
+
+def test_other_workflow_cannot_supply_a_checkpoint_despite_same_bot_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    stored = registry.create({"records": ["owned"]})
+    registry._verified_runs.clear()
+    registry.workflow_id += 1
+    with pytest.raises(LifecycleError, match="protected"):
+        registry.read(stored)
+
+
+def test_capacity_counts_all_matching_history_and_duplicate_registration_is_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    stored = registry.create({"records": ["owned"]})
+    original = registry.statuses[0]
+    used = github.STATUS_LIMIT - github.MINIMUM_START_CAPACITY + 1
+    registry.statuses = [{**original, "id": index + 1} for index in reversed(range(used))]
+    assert registry.latest() == stored
+    assert registry.remaining_capacity() == github.MINIMUM_START_CAPACITY - 1
+    registry.statuses.extend(
+        {"id": index + used + 1, "context": "unrelated-ci"} for index in range(105)
+    )
+    assert registry.remaining_capacity() == github.MINIMUM_START_CAPACITY - 1
+
+
+def test_stale_writer_and_republished_genesis_cannot_erase_an_intervening_intent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    anchor = event("run", str(uuid.uuid7()), {"initial": True})
+    initial = {str(anchor["event_id"]): digest(anchor)}
+    checkpoint = Checkpoint(
+        registry, epoch=registry.epoch, genesis=None, initial=initial, initialize=True
+    )
+    genesis = checkpoint.persist([anchor])
+    old = registry.read(genesis)
+    checkpoint.persist([anchor, event("intent", str(anchor["run_id"]), {"owned": True})])
+    uploads = len(registry.archives)
+    with pytest.raises(LifecycleError, match="extension"):
+        registry.create(old)
+    assert len(registry.archives) == uploads
+    # Even an authenticated status pointing at a new copy of old content fails
+    # the full predecessor check when the independent process starts afresh.
+    copied = registry.add(
+        name=str(registry.artifacts[3][0]["name"]), raw=registry.archives[genesis.identity]
+    )
+    registry.statuses.insert(
+        0,
+        {
+            **registry.statuses[-1],
+            "id": 3,
+            "target_url": (
+                f"https://github.com/{github.REPOSITORY}/actions/runs/3/artifacts/{copied['id']}"
+            ),
+        },
+    )
+    restarted = Checkpoint(registry, epoch=registry.epoch, genesis=genesis, initial=initial)
+    with pytest.raises(LifecycleError, match="predecessor"):
+        restarted.restore()
 
 
 def test_older_workflow_rerun_cannot_write_over_newer_checkpoint(

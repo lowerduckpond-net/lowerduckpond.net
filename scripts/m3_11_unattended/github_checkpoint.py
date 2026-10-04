@@ -18,6 +18,7 @@ import tempfile
 import time
 import uuid
 import zipfile
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -25,7 +26,7 @@ from urllib.parse import urlencode
 
 from scripts.m3_11_private_inputs import write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes
-from scripts.m3_11_unattended.connect_checkpoint import Stored
+from scripts.m3_11_unattended.connect_checkpoint import FORMAT, Stored
 from scripts.m3_11_unattended.journal_cache import MAX_CACHE_BYTES, JournalCache
 from scripts.m3_11_unattended.model import LifecycleError, digest, identity
 from scripts.m3_11_unattended.state import private_directory
@@ -33,6 +34,7 @@ from scripts.production_qualification_inputs import revision
 
 REPOSITORY = "lowerduckpond-net/lowerduckpond.net"
 WORKFLOW = "m3-11-credential-cleanup.yml"
+WORKFLOW_ID = 374497951
 UPLOAD_REVISION = "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 PAGE_SIZE = 100
 MAX_RUN_PAGES = 10
@@ -40,6 +42,9 @@ MAX_ARTIFACTS = 500
 IO_SECONDS = 30
 SCAN_SECONDS = 90
 STATUS_AUTHOR = 41898282  # github-actions[bot], immutable GitHub user identity
+STATUS_LIMIT = 1000  # GitHub's hard per-SHA/context limit.
+MINIMUM_START_CAPACITY = 384  # 128 witness writes plus 256 reserved cleanup writes.
+MAX_STATUS_PAGES = 30
 
 
 def _number(value: object) -> int:
@@ -67,6 +72,8 @@ class GitHubArtifacts:
         private_directory(directory)
         self._until = 0.0
         self._published_runs: dict[int, int] = {}
+        self._parents: dict[int, Stored | None] = {}
+        self._verified_runs: set[int] = set()
 
     def _api(
         self, path: str, *, binary: bool = False, body: dict[str, object] | None = None
@@ -181,7 +188,31 @@ class GitHubArtifacts:
         # GitHub returns individual statuses newest first. Unlike artifacts,
         # these records have no expiry, replacement or deletion API. Never
         # infer the head from the surviving artifact inventory.
-        for page in range(1, MAX_RUN_PAGES + 1):
+        current = None
+        for row in self._statuses():
+            if cast(str, row["context"]).lower() != self.context:
+                continue
+            selected = self._status_reference(row)
+            if current is None:
+                current = selected
+            elif selected != current:
+                if current.identity <= selected.identity:
+                    raise LifecycleError("checkpoint registry points backwards")
+                self._parents[current.identity] = selected
+                return current
+        if current is not None:
+            self._parents[current.identity] = None
+        return current
+
+    def remaining_capacity(self) -> int:
+        """Readiness must reserve cleanup writes before it admits any new children."""
+        self._until = time.monotonic() + SCAN_SECONDS
+        used = sum(cast(str, row["context"]).lower() == self.context for row in self._statuses())
+        return max(0, STATUS_LIMIT - used)
+
+    def _statuses(self) -> Iterator[dict[str, object]]:
+        seen = set()
+        for page in range(1, MAX_STATUS_PAGES + 1):
             rows = self._api(
                 f"repos/{REPOSITORY}/commits/{self.registry_revision}/statuses"
                 f"?per_page={PAGE_SIZE}&page={page}"
@@ -191,10 +222,13 @@ class GitHubArtifacts:
             for row in rows:
                 if not isinstance(row, dict) or not isinstance(row.get("context"), str):
                     raise LifecycleError("independent checkpoint registry is malformed")
-                if cast(str, row["context"]).lower() == self.context:
-                    return self._status_reference(row)
+                selected = _number(row.get("id"))
+                if selected in seen:
+                    raise LifecycleError("checkpoint registry changed during pagination")
+                seen.add(selected)
+                yield row
             if len(rows) < PAGE_SIZE:
-                return None
+                return
         raise LifecycleError("independent checkpoint registry exceeds its scan bound")
 
     def _status_reference(self, row: dict[str, object]) -> Stored:
@@ -229,6 +263,10 @@ class GitHubArtifacts:
             or not 0 < metadata["size_in_bytes"] <= MAX_CACHE_BYTES
         ):
             raise LifecycleError("GitHub checkpoint metadata differs from its registry identity")
+        workflow = metadata["workflow_run"]
+        if not isinstance(workflow, dict):
+            raise LifecycleError("GitHub checkpoint workflow identity is unavailable")
+        self._verify_run(_number(workflow["id"]))
         raw = self._api(f"repos/{REPOSITORY}/actions/artifacts/{stored.identity}/zip", binary=True)
         if (
             not isinstance(raw, bytes)
@@ -251,9 +289,41 @@ class GitHubArtifacts:
                 value = JournalCache(path, token=self._token, vault="connect:" + self.epoch).read()
             if digest(value) != stored.sha256:
                 raise LifecycleError("GitHub checkpoint plaintext binding changed")
+            if (
+                value.get("format") == FORMAT
+                and stored.identity in self._parents
+                and value.get("previous") != self._parent(self._parents[stored.identity])
+            ):
+                raise LifecycleError("checkpoint predecessor differs from its registry history")
             return value
         except OSError, ValueError, zipfile.BadZipFile:
             raise LifecycleError("GitHub checkpoint cannot be recovered") from None
+
+    @staticmethod
+    def _parent(previous: Stored | None) -> dict[str, object] | None:
+        return (
+            None if previous is None else {"identity": previous.identity, "sha256": previous.sha256}
+        )
+
+    def _verify_run(self, run_id: int) -> None:
+        if run_id in self._verified_runs:
+            return
+        value = self._api(f"repos/{REPOSITORY}/actions/runs/{run_id}")
+        if (
+            not isinstance(value, dict)
+            or value.get("id") != run_id
+            or value.get("workflow_id") != WORKFLOW_ID
+            or value.get("path") != ".github/workflows/" + WORKFLOW
+            or value.get("head_branch") != "main"
+            or value.get("event") not in {"schedule", "workflow_dispatch"}
+            or any(
+                not isinstance(value.get(key), dict)
+                or cast(dict[str, object], value[key]).get("full_name") != REPOSITORY
+                for key in ("repository", "head_repository")
+            )
+        ):
+            raise LifecycleError("checkpoint was not produced by the protected cleanup workflow")
+        self._verified_runs.add(run_id)
 
     def create(self, document: dict[str, object]) -> Stored:
         self._until = time.monotonic() + SCAN_SECONDS
@@ -270,6 +340,8 @@ class GitHubArtifacts:
         if not runs or runs[0].get("id") != run_id:
             raise LifecycleError("an older cleanup run cannot publish over a newer checkpoint")
         previous = self.latest()
+        if document.get("format") == FORMAT and document.get("previous") != self._parent(previous):
+            raise LifecycleError("checkpoint upload is not an extension of the registered head")
         action = (
             Path(os.environ["RUNNER_WORKSPACE"]).parent
             / "_actions/actions/upload-artifact"
