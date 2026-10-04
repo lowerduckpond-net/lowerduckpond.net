@@ -67,6 +67,7 @@ def document() -> dict[str, object]:
     witness = {
         "epoch": str(uuid.uuid7()),
         "helper": "e" * 40,
+        "active_helper": "e" * 40,
         "server": "I" * 26,
         "author": "R" * 26,
         "genesis_id": "1",

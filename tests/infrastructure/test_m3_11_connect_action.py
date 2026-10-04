@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import copy
+import dataclasses
 import io
 import json
 import os
 import shutil
 import subprocess
 import sys
+import time
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,6 +20,7 @@ from typing import cast
 import pytest
 
 from infrastructure.test_m3_11_connect_admission import Case as AdmissionCase
+from infrastructure.test_m3_11_connect_configuration import VAULTS, reader_config
 from infrastructure.test_m3_11_connect_genesis import Case as GenesisCase
 from infrastructure.test_m3_11_connect_journal import sync
 from infrastructure.test_m3_11_connect_ledger import REMOTE_AUTHOR, REMOTE_SERVER
@@ -23,9 +28,11 @@ from infrastructure.test_m3_11_unattended_lifecycle import CANARY, TARGETS, Prov
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_unattended import connect_action as action
 from scripts.m3_11_unattended import connect_genesis as genesis
+from scripts.m3_11_unattended.cleanup import require_independent_ready
 from scripts.m3_11_unattended.config import Connections
-from scripts.m3_11_unattended.connect_admission import run_digest
+from scripts.m3_11_unattended.connect_admission import Admission, run_digest
 from scripts.m3_11_unattended.connect_auth import Access
+from scripts.m3_11_unattended.connect_configuration import PROVIDER_REFERENCES
 from scripts.m3_11_unattended.github_checkpoint import (
     MINIMUM_START_CAPACITY,
     REPOSITORY,
@@ -34,13 +41,14 @@ from scripts.m3_11_unattended.github_checkpoint import (
 )
 from scripts.m3_11_unattended.journal import event
 from scripts.m3_11_unattended.lifecycle import Lifecycle
-from scripts.m3_11_unattended.model import Authority, LifecycleError, digest
+from scripts.m3_11_unattended.model import Authority, Intent, LifecycleError, digest
 
 
 def selected(case: GenesisCase) -> dict[str, object]:
     return {
         "format": action.FORMAT,
         "stage": "active",
+        "active_helper": case.journal.witness.helper,
         "request": case.approved,
         "receipt": case.initialize(),
     }
@@ -164,6 +172,33 @@ def test_reconciliation_without_dispatch_cannot_admit_creation(tmp_path: Path) -
     assert result["status"] == "ready" and not case.journal.controller.confirmed(case.run)
 
 
+def test_cleanup_bootstrap_binds_cloudflare_targets_as_well_as_storage() -> None:
+    configured = reader_config("cleanup")
+    targets = dataclasses.asdict(TARGETS)
+    bundle: dict[str, object] = {
+        "format": "lowerduckpond-m3-11-connect-bootstrap-v1",
+        "targets": targets,
+        "journal_vault": VAULTS["journal"],
+        "cleanup": {
+            **{key: f"op://{VAULTS['cleanup']}/{'i' * 26}/{key}" for key in PROVIDER_REFERENCES},
+            "service_account_expires_at": "2026-10-10T00:00:00Z",
+        },
+        "token": configured["entry"],
+        "provider_metadata": configured["metadata"],
+        "server_credentials": {"private": CANARY},
+    }
+    approved: dict[str, object] = {
+        "vaults": VAULTS,
+        "targets_sha256": digest(targets),
+        "shared_server": "Q" * 26,
+    }
+    _private, _access, actual, _references = action.bootstrap(bundle, approved)
+    assert actual == TARGETS
+    bundle["targets"] = dataclasses.asdict(dataclasses.replace(TARGETS, zone_id="f" * 32))
+    with pytest.raises(LifecycleError, match="targets differ"):
+        action.bootstrap(bundle, approved)
+
+
 def test_unresolved_existing_intent_blocks_new_reservation_before_any_creation_ack(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -210,6 +245,162 @@ def test_failed_provider_read_and_expired_bootstrap_never_erase_cleanup_obligati
     assert result["status"] == "unresolved"
     assert intent in case.journal.github.checkpoint.records.values()
     assert CANARY not in json.dumps(result)
+
+
+def test_lost_heartbeat_post_does_not_strand_future_cleanup_after_process_restart(
+    tmp_path: Path,
+) -> None:
+    case = AdmissionCase(tmp_path)
+    case.journal.remote.fail = "before"
+    with pytest.raises(LifecycleError):
+        reconcile(case, ProviderDouble())
+    missing = [
+        row
+        for row in case.journal.github.checkpoint.records.values()
+        if row["kind"] == "heartbeat"
+        and cast(dict[str, object], row["payload"]).get("actor") == "github"
+    ]
+    assert not missing
+    case.journal.remote.fail = ""
+    case.journal.github = case.journal.independent(directory="fresh-worker")
+    case.journal.github.capacity = lambda: MINIMUM_START_CAPACITY + 10
+    assert reconcile(case, ProviderDouble())["status"] == "ready"
+    assert case.journal.github.cache_complete
+
+
+def test_a_forged_checkpoint_only_receipt_cannot_be_republished_as_independent(
+    tmp_path: Path,
+) -> None:
+    case = AdmissionCase(tmp_path)
+    forged = event("heartbeat", case.run_id, {"actor": "github", "forged": True})
+    case.journal.controller.append(forged)
+    sync(case.journal.shared, case.journal.remote)
+    case.journal.github.persist(forged)
+    with pytest.raises(LifecycleError, match="native author"):
+        case.journal.github.append(forged)
+    assert not case.journal.github.ledger.authored(forged, case.journal.witness.author)
+
+
+def test_cold_replica_waits_for_complete_items_after_vault_authentication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    case = AdmissionCase(tmp_path)
+    case.journal.github.acknowledge(run_id=50, attempt=1, allow=lambda _record: False)
+    for key, item in list(case.journal.remote.items.items()):
+        if str(case.run["event_id"]) in json.dumps(item):
+            del case.journal.remote.items[key]
+            case.journal.remote.version += 1
+    cold = case.journal.independent(directory="cold-replica")
+
+    def ready() -> bool:
+        cold.records()
+        return cold.cache_complete
+
+    assert not ready()
+    monkeypatch.setattr(
+        time, "sleep", lambda _seconds: sync(case.journal.shared, case.journal.remote)
+    )
+    assert action.synchronize(ready) and cold.cache_complete
+    assert not case.journal.controller.confirmed(case.run)
+
+
+def test_cold_replica_wait_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(action, "SYNC_SECONDS", 0)
+    assert not action.synchronize(lambda: False)
+
+
+def test_reviewed_successor_helper_preserves_original_genesis(tmp_path: Path) -> None:
+    case = GenesisCase(tmp_path)
+    value = selected(case)
+    original = copy.deepcopy(value)
+    value["active_helper"] = "f" * 40
+    with pytest.raises(LifecycleError, match="installed revision"):
+        action.selection(value, helper=case.journal.witness.helper)
+    assert action.selection(value, helper="f" * 40) == value
+    assert value["request"] == original["request"] and value["receipt"] == original["receipt"]
+
+
+def test_successor_helper_requires_its_own_fresh_independent_readiness(tmp_path: Path) -> None:
+    case = AdmissionCase(tmp_path)
+    assert reconcile(case, ProviderDouble())["status"] == "ready"
+    sync(case.journal.remote, case.journal.shared)
+    case.journal.witness = dataclasses.replace(case.journal.witness, active_helper="f" * 40)
+    case.journal.controller = case.journal.local()
+    case.journal.github = case.journal.independent(directory="successor")
+    case.journal.github.capacity = lambda: MINIMUM_START_CAPACITY + 10
+    with pytest.raises(LifecycleError, match="another helper"):
+        require_independent_ready(case.journal.controller, helper="f" * 40, now=datetime.now(UTC))
+    assert reconcile(case, ProviderDouble())["status"] == "ready"
+    sync(case.journal.remote, case.journal.shared)
+    require_independent_ready(case.journal.controller, helper="f" * 40, now=datetime.now(UTC))
+
+
+def test_successor_attempt_cannot_start_until_historical_credentials_are_reconciled(
+    tmp_path: Path,
+) -> None:
+    case = AdmissionCase(tmp_path)
+    case.acknowledge(case.reserve())
+    intent_record = case.intent()
+    case.acknowledge(case.admission())
+    intent = Intent.parse(intent_record["payload"])
+    provider = ProviderDouble()
+    credential = provider.create(intent)
+    created = event(
+        "created",
+        case.run_id,
+        {
+            "intent_sha256": intent.sha256,
+            "credential_id": credential.identifier,
+        },
+    )
+    failed = event(
+        "result", case.run_id, {"qualification": "failed", "credential_cleanup": "pending"}
+    )
+    for record in (created, failed):
+        case.journal.controller.append(record)
+    case.journal.witness_once()
+    original_genesis = case.journal.witness.genesis
+    original_binding = case.journal.witness.binding()
+    case.journal.witness = dataclasses.replace(case.journal.witness, active_helper="f" * 40)
+    case.journal.github = case.journal.independent(directory="reviewed-successor")
+    case.journal.github.capacity = lambda: MINIMUM_START_CAPACITY + 10
+    case.journal.controller = case.journal.local()
+    assert case.journal.controller.confirmed(case.run)
+    assert case.journal.witness.binding() == original_binding
+
+    new_id = str(uuid.uuid7())
+    payload = copy.deepcopy(case.payload)
+    cast(dict[str, str], payload["binding"]).update(
+        managed_run_id=new_id,
+        source_revision="f" * 40,
+        helper_revision="f" * 40,
+    )
+    new_run = event("run", new_id, payload)
+    case.journal.controller.append(new_run)
+    sync(case.journal.shared, case.journal.remote)
+    cleaner = Lifecycle(case.journal.github, {"spaces": provider})
+
+    def reserve() -> Admission:
+        admission = Admission(case.journal.github, targets=TARGETS, now=datetime.now(UTC))
+        admission.reserve(
+            run_digest(new_id, payload), case.authority, require_clear=cleaner.require_clear
+        )
+        return admission
+
+    with pytest.raises(LifecycleError, match="outstanding credential obligations"):
+        reserve()
+    assert not case.journal.controller.confirmed(new_run)
+    cleaner.request_revocation(case.run_id)
+    assert cleaner.reconcile(intent, credential).status == "verified"
+    admission = reserve()
+    assert not admission.allow(case.run) and not admission.allow(intent_record)
+    case.journal.github.acknowledge(run_id=51, attempt=1, allow=admission.allow)
+    sync(case.journal.remote, case.journal.shared)
+    assert case.journal.controller.confirmed(new_run)
+    assert case.journal.witness.genesis == original_genesis
+    assert failed in case.journal.github.checkpoint.records.values()
+    assert provider.creates == 1 and provider.deletes == [credential.identifier]
 
 
 def test_secret_canary_cannot_escape_the_action_error_receipt(

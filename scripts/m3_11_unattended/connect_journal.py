@@ -40,12 +40,19 @@ class Witness:
     server: str
     author: str
     genesis: Stored
+    active_helper: str | None = None
 
     def __post_init__(self) -> None:
         identity(self.epoch)
         revision(self.helper)
         account_identity(self.server)
         account_identity(self.author)
+        if self.active_helper is not None:
+            revision(self.active_helper)
+
+    @property
+    def current_helper(self) -> str:
+        return self.active_helper or self.helper
 
     def binding(self) -> dict[str, object]:
         return {
@@ -184,6 +191,15 @@ class IndependentJournal(_Canonical):
         return original
 
     def append(self, record: dict[str, object]) -> None:
+        # Informational receipts must exist with this server's native author
+        # before they enter the authoritative snapshot. Otherwise a lost POST
+        # strands a checkpoint-only heartbeat forever after process restart.
+        # Do not select an arbitrary equal-payload checkpoint row here: that
+        # could relabel a controller's forged receipt as independently authored.
+        self.ledger.stage(record)
+        self.records()
+        if not self.ledger.authored(record, self.witness.author):
+            raise LifecycleError("independent receipt awaits native author readback")
         self.persist(record)
 
     def readiness(self) -> dict[str, object]:

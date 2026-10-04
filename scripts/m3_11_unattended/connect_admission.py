@@ -47,7 +47,7 @@ class Admission:
             record["kind"] != "run"
             or identity(record["run_id"]) != identity(binding["managed_run_id"])
             or revision(binding["source_revision"]) != revision(binding["helper_revision"])
-            or binding["helper_revision"] != self.journal.witness.helper
+            or binding["helper_revision"] != self.journal.witness.current_helper
             or binding["storage_target_sha256"] != self.targets.storage_digest
             or payload["mode"] not in {"rehearsal", "qualification"}
             or not isinstance(payload["approval_sha256"], str)
@@ -159,7 +159,7 @@ class Admission:
         self.records = self.journal.records()
         return True
 
-    def allow(self, record: dict[str, object]) -> bool:
+    def allow(self, record: dict[str, object]) -> bool:  # noqa: PLR0911 - explicit admission gates
         """Cleanup/proof ACKs continue after admission closes; creation ACKs cannot."""
         if record["kind"] not in {"run", "intent"}:
             return True
@@ -171,6 +171,14 @@ class Admission:
         if len(candidates) != 1:
             return False
         run = candidates[0]
+        payload = run["payload"]
+        if isinstance(payload, dict) and isinstance(payload.get("binding"), dict):
+            previous_helper = payload["binding"].get("helper_revision")
+            if (
+                isinstance(previous_helper, str)
+                and previous_helper != self.journal.witness.current_helper
+            ):
+                return False  # Historical attempts keep their evidence and cannot regain CREATE.
         binding = self._run(run)
         reserved = self._reservation(run)
         if reserved is None:

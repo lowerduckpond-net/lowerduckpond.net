@@ -208,7 +208,7 @@ def require_independent_ready(journal: Journal, *, helper: str, now: datetime) -
             raise LifecycleError("independent cleanup checkpoint is invalid")
         checkpoint = Stored(pointer["identity"], pointer["sha256"])
         if (
-            journal.witness.helper != helper
+            journal.witness.current_helper != helper
             or proof["epoch"] != journal.witness.epoch
             or proof["cache_complete"] is not True
             or type(proof["remaining_capacity"]) is not int

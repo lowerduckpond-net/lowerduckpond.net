@@ -76,14 +76,30 @@ def reader(value: object) -> Connect:
 
 def witness(value: object) -> Witness:
     selected = strings(
-        fields(value, {"epoch", "helper", "server", "author", "genesis_id", "genesis_sha256"})
+        fields(
+            value,
+            {
+                "epoch",
+                "helper",
+                "active_helper",
+                "server",
+                "author",
+                "genesis_id",
+                "genesis_sha256",
+            },
+        )
     )
     try:
         genesis = Stored(int(selected["genesis_id"]), selected["genesis_sha256"])
     except ValueError:
         raise LifecycleError("Connect witness genesis is invalid") from None
     return Witness(
-        selected["epoch"], selected["helper"], selected["server"], selected["author"], genesis
+        selected["epoch"],
+        selected["helper"],
+        selected["server"],
+        selected["author"],
+        genesis,
+        active_helper=selected["active_helper"],
     )
 
 

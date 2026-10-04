@@ -6,6 +6,7 @@ authority only; neither provisioning authority nor production inputs are present
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -75,7 +76,7 @@ GENESIS_RECEIPT_FIELDS = {
 
 
 def selection(value: object, *, helper: str) -> dict[str, object]:
-    selected = fields(value, {"format", "stage", "request", "receipt"})
+    selected = fields(value, {"format", "stage", "active_helper", "request", "receipt"})
     if selected["format"] != FORMAT or selected["stage"] not in {"discovery", "genesis", "active"}:
         raise LifecycleError("independent Connect selection is invalid")
     approved = (
@@ -83,7 +84,9 @@ def selection(value: object, *, helper: str) -> dict[str, object]:
         if selected["stage"] == "discovery"
         else connect_genesis.request(selected["request"])
     )
-    if approved["helper_revision"] != revision(helper):
+    if selected["active_helper"] != revision(helper) or (
+        selected["stage"] != "active" and approved["helper_revision"] != helper
+    ):
         raise LifecycleError("independent Connect helper differs from its installed revision")
     if selected["stage"] != "active":
         if selected["receipt"] is not None:
@@ -102,6 +105,10 @@ def selection(value: object, *, helper: str) -> dict[str, object]:
         or receipt["initial"] != initial
         or receipt["independent_server"] == approved["shared_server"]
         or receipt["independent_author"] == approved["shared_author"]
+        or receipt["independent_author"]
+        != cast(
+            dict[str, object], cast(dict[str, object], approved["shared_forgery_probe"])["payload"]
+        )["claimed_author"]
         or receipt["forged_author_ignored"] is not True
         or receipt["shared_forged_author_ignored"] is not True
         or receipt["provider_children_created"] is not False
@@ -114,7 +121,7 @@ def selection(value: object, *, helper: str) -> dict[str, object]:
     return selected
 
 
-def witness(receipt: dict[str, object]) -> Witness:
+def witness(receipt: dict[str, object], *, active_helper: str | None = None) -> Witness:
     pointer = fields(receipt["genesis"], {"identity", "sha256"})
     if type(pointer["identity"]) is not int or not isinstance(pointer["sha256"], str):
         raise LifecycleError("independent Connect genesis pointer is invalid")
@@ -124,6 +131,7 @@ def witness(receipt: dict[str, object]) -> Witness:
         str(receipt["independent_server"]),
         str(receipt["independent_author"]),
         Stored(pointer["identity"], pointer["sha256"]),
+        active_helper=active_helper,
     )
 
 
@@ -153,7 +161,7 @@ def bootstrap(
     if (
         selected["format"] != "lowerduckpond-m3-11-connect-bootstrap-v1"
         or selected["journal_vault"] != vaults["journal"]
-        or targets.storage_digest != approved["targets_sha256"]
+        or digest(dataclasses.asdict(targets)) != approved["targets_sha256"]
         or not isinstance(selected["token"], dict)
         or not isinstance(selected["provider_metadata"], dict)
         or not isinstance(selected["server_credentials"], dict)
@@ -190,7 +198,7 @@ def restore(
     ledger: ConnectLedger, store: GitHubArtifacts, selected: dict[str, object], access: Access
 ) -> IndependentJournal:
     receipt = fields(selected["receipt"], GENESIS_RECEIPT_FIELDS)
-    independent = witness(receipt)
+    independent = witness(receipt, active_helper=revision(selected["active_helper"]))
     if access.server_id != independent.server:
         raise LifecycleError("independent Connect server differs from the installed genesis")
     initial = strings(receipt["initial"])
@@ -244,7 +252,7 @@ def reconcile(  # noqa: PLR0913 - request, execution identity and cleanup fallba
             receipt = cleanup.sweep(
                 lifecycle,
                 actor="github",
-                helper=journal.witness.helper,
+                helper=journal.witness.current_helper,
                 authority_verified=connected is not None,
             )
             next_sweep = time.monotonic() + SWEEP_SECONDS
@@ -291,6 +299,21 @@ def reconcile(  # noqa: PLR0913 - request, execution identity and cleanup fallba
         if time.monotonic() >= until:
             return receipt
         time.sleep(min(POLL_SECONDS, max(0, until - time.monotonic())))
+
+
+def synchronize(ready: Callable[[], bool]) -> bool:
+    """A cold replica may expose its vaults before the referenced items arrive."""
+    until = time.monotonic() + SYNC_SECONDS
+    while True:
+        try:
+            if ready():
+                return True
+        except LifecycleError, OSError, ValueError:
+            pass
+        remaining = until - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(POLL_SECONDS, remaining))
 
 
 def execute(
@@ -368,6 +391,8 @@ def execute(
 
         if operation == "discovery":
             progress("verify-cleanup-policy-and-provenance")
+            if not synchronize(lambda: bool(ledger.records())):
+                raise LifecycleError("Connect discovery inventory is not synchronized")
             connections().authority.require(datetime.now(UTC) + LIFETIME)
             proof = connect_genesis.discover(
                 ledger,
@@ -378,6 +403,8 @@ def execute(
             )
         elif operation == "genesis":
             progress("verify-provenance-and-persist-genesis")
+            if not synchronize(lambda: bool(ledger.records())):
+                raise LifecycleError("Connect genesis inventory is not synchronized")
             proof = connect_genesis.initialize(
                 ledger,
                 store,
@@ -391,6 +418,14 @@ def execute(
             progress("recover-independent-checkpoint")
             independent = restore(ledger, store, selected, access)
             journal = independent
+
+            def complete() -> bool:
+                independent.records()
+                return independent.cache_complete
+
+            # On timeout still attempt cleanup from the authoritative checkpoint;
+            # incomplete replica state can never produce readiness or new ACKs.
+            synchronize(complete)
             progress("reconcile-and-witness")
             proof = reconcile(
                 independent,
