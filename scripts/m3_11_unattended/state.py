@@ -118,18 +118,34 @@ class RunState:
     def cancelled(self) -> bool:
         return (self.directory / "cancel.json").exists()
 
-    def update(self, phase: str, *, cleanup: str) -> None:
+    def update(self, phase: str, *, cleanup: str, preserve_verified: bool = False) -> None:
         if phase not in PHASES or cleanup not in {"pending", "verified", "unresolved"}:
             raise LifecycleError("invalid controller progress")
-        replace_private(
-            self.directory / "status.json",
-            {
-                "format": "lowerduckpond-m3-11-unattended-status-v1",
-                "phase": phase,
-                "credential_cleanup": cleanup,
-                "observed_at": stamp(datetime.now(UTC)),
-            },
+        private_directory(self.directory)
+        descriptor = os.open(
+            self.directory / "status.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600
         )
+        try:
+            # A separate short lock serializes watchdog/controller status writes
+            # without taking the controller's journey-long execution lock.
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            if (
+                preserve_verified
+                and (self.directory / "status.json").exists()
+                and self.status()["credential_cleanup"] == "verified"
+            ):
+                return
+            replace_private(
+                self.directory / "status.json",
+                {
+                    "format": "lowerduckpond-m3-11-unattended-status-v1",
+                    "phase": phase,
+                    "credential_cleanup": cleanup,
+                    "observed_at": stamp(datetime.now(UTC)),
+                },
+            )
+        finally:
+            os.close(descriptor)
 
     def status(self) -> dict[str, object]:
         progress = fields(

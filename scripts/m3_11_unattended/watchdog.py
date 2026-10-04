@@ -79,7 +79,8 @@ def finish_reconciled(
         if not (directory / "journey-result.json").exists():
             continue
         state = RunState(directory)
-        state.update("finished", cleanup="unresolved")
+        # This sweep may predate a concurrent successful controller revocation.
+        state.update("finished", cleanup="unresolved", preserve_verified=True)
         run_id = identity(directory.name)
         expected = {intent.sha256 for intent in owned if intent.run_id == run_id}
         local = {path.stem for path in (directory / "credential-intents").glob("*.json")}

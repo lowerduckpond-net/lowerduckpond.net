@@ -615,3 +615,55 @@ def test_dead_controller_leaves_retry_set_only_after_verified_revocation(
     assert (directory / "runtime-inputs.json").exists() == failed_revocation
     assert (directory / "failed.log").read_text() == CANARY
     assert CANARY not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("completion", ["before-finish", "during-validation"])
+def test_stale_watchdog_failure_preserves_concurrent_verified_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, completion: str
+) -> None:
+    selected, case = subject(tmp_path, monkeypatch)
+    directory = selected.directory.with_name(case.run_id)
+    selected.directory.rename(directory)
+    selected.directory = directory
+    selected.state = RunState(directory)
+    selected.state.begin(selected.binding)
+    for name in ("credential-intents", "credential-cleanup"):
+        (directory / name).mkdir(mode=0o700)
+    case.lifecycle.remember = selected.remember
+    case.lifecycle.remember_intent = selected.remember_intent
+    intent, credential = case.create()
+    selected.state.finish_journey("failed", 1)
+    original = (directory / "journey-result.json").read_bytes()
+    case.lifecycle.request_revocation(case.run_id)
+    case.provider.fail_delete = True
+    stale = cleanup.sweep(
+        case.lifecycle,
+        actor="watchdog",
+        helper=selected.helper,
+        secrets={intent.sha256: credential},
+    )
+    assert stale["status"] == "unresolved"
+    selected.state.update("finished", cleanup="unresolved")
+
+    def finish_controller() -> None:
+        case.provider.fail_delete = False
+        assert selected.revoke()
+        assert selected.state.status()["credential_cleanup"] == "verified"
+
+    if completion == "before-finish":
+        finish_controller()
+    else:
+        retained = worker.retained_credentials
+
+        def finish_during_validation(path: Path) -> dict[str, Credential]:
+            finish_controller()
+            return retained(path)
+
+        monkeypatch.setattr(watchdog, "retained_credentials", finish_during_validation)
+    watchdog.finish_reconciled(case.lifecycle, {directory}, stale)
+    assert selected.state.status()["credential_cleanup"] == "verified"
+    assert selected.state.status()["qualification"] == "failed"
+    assert (directory / "journey-result.json").read_bytes() == original
+    assert not list(directory.glob("watchdog-revocation-*.json"))
+    assert case.provider.creates == 1
+    assert not case.provider.items
