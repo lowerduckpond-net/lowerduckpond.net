@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
+from scripts.m3_11_private_inputs import read_private_bytes
 from scripts.m3_11_unattended.model import LifecycleError
 from scripts.production_qualification_inputs import current_candidate, git, revision
 
@@ -266,6 +267,7 @@ def initialize_run(
     docker: Docker, *, image: str, request: bytes, run_id: str, config: Path
 ) -> None:
     """Copy only newly configured private inputs; no previous workspace data."""
+    configuration = read_private_bytes(config)
     name = "ldp-m311-delivery-" + uuid.uuid4().hex
     docker.command(
         "run",
@@ -305,23 +307,41 @@ with (directory / 'request.json').open('xb') as stream:
         docker.command(
             "exec", "--interactive", name, "python3", "-c", program, run_id, stdin=request
         )
-        docker.command("cp", str(config), name + ":/configuration/controller.json")
-        # Extract the strict cleanup-only subset inside the private daemon volume.
+        # A Docker copy can retain the workspace UID, which the controller's
+        # private-file validator must reject. Create files as the container user
+        # through stdin instead; never transport credentials in arguments.
         program = """
-import json, os
+import json, os, sys, tempfile
 from pathlib import Path
 os.umask(0o077)
 for name in ('/configuration', '/cleanup'):
     Path(name).chmod(0o700)
-config = Path('/configuration/controller.json')
-config.chmod(0o600)
-value = json.loads(config.read_bytes())
+raw = sys.stdin.buffer.read()
+value = json.loads(raw)
 selected = {'format':'lowerduckpond-m3-11-cleanup-config-v1',
     **{key:value[key] for key in ('targets','journal_vault','cleanup')}}
-Path('/cleanup/cleanup.json').write_text(json.dumps(selected,sort_keys=True,separators=(',',':'))+'\\n')
-Path('/cleanup/cleanup.json').chmod(0o600)
+for path, content in (
+    (Path('/configuration/controller.json'), raw),
+    (Path('/cleanup/cleanup.json'),
+        (json.dumps(selected,sort_keys=True,separators=(',',':'))+'\\n').encode()),
+):
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+            temporary.replace(path)
+            descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        finally:
+            temporary.unlink(missing_ok=True)
 """
-        docker.command("exec", name, "python3", "-c", program)
+        docker.command("exec", "--interactive", name, "python3", "-c", program, stdin=configuration)
     finally:
         docker.remove_controller(name)
 

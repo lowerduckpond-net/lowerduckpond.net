@@ -15,6 +15,8 @@ from scripts.m3_11_unattended import docker as docker_module
 from scripts.m3_11_unattended.docker import OWNER, Docker, helper_volume
 from scripts.m3_11_unattended.model import LifecycleError
 
+from .test_m3_11_unattended_delivery import delivery_configuration
+
 # The controller runs the real durable state and lifecycle engine with only the
 # existing local provider double. No bootstrap file, live API or runner is loaded.
 CONTROLLER = """
@@ -103,6 +105,71 @@ def test_admission_reservation_is_atomic_on_daemon(monkeypatch: pytest.MonkeyPat
         assert held["State"]["Status"] == "created"  # type: ignore[index]
     with docker_module.admission(second, image=image):
         assert first.owned(docker_module.ADMISSION)["Id"] != held["Id"]
+
+
+@pytest.mark.skipif(
+    not os.environ.get("LDP_M3_11_DOCKER_SMOKE_REVISION"),
+    reason="explicit prepared Docker host required",
+)
+def test_workspace_config_is_readable_by_container_user(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    docker = Docker()
+    source = os.environ["LDP_M3_11_DOCKER_SMOKE_REVISION"]
+    image = os.environ["LDP_M3_11_DOCKER_SMOKE_IMAGE"]
+    config = tmp_path / "controller.json"
+    delivery_configuration(config)
+    mounts: list[str] = []
+    for constant, destination in (
+        ("EVIDENCE_VOLUME", "/evidence"),
+        ("CONFIG_VOLUME", "/configuration"),
+        ("CLEANUP_VOLUME", "/cleanup"),
+    ):
+        volume = "ldp-m311-smoke-delivery-" + uuid.uuid4().hex
+        monkeypatch.setattr(docker_module, constant, volume)
+        docker.volume(volume)
+        mounts += ["--mount", f"type=volume,source={volume},target={destination},readonly"]
+    docker_module.initialize_run(
+        docker, image=image, request=b"{}\n", run_id=str(uuid.uuid7()), config=config
+    )
+    # Load through the production validators with networking disabled. No real
+    # credentials or provider access are involved. The previous Docker copy
+    # retained UID 1000 and failed this load in the root controller.
+    program = """
+import os, sys
+from pathlib import Path
+from scripts.m3_11_unattended.config import Configuration, cleanup_configuration
+assert os.geteuid() != int(sys.argv[1]), 'exercise distinct workspace/container owners'
+config = Configuration.load(Path('/configuration/controller.json'))
+targets, vault, cleanup = cleanup_configuration(Path('/cleanup/cleanup.json'))
+assert (targets, vault, cleanup) == (config.targets, config.journal_vault, config.cleanup)
+print('private configuration accepted by container; cleanup authority remains separate')
+"""
+    output = docker.command(
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--label",
+        OWNER + "=true",
+        "--mount",
+        f"type=volume,source={helper_volume(source)},target=/opt/lifecycle,readonly",
+        *mounts,
+        image,
+        "uv",
+        "run",
+        "--no-sync",
+        "--frozen",
+        "python",
+        "-c",
+        program,
+        str(os.geteuid()),
+    )
+    assert (
+        output
+        == b"private configuration accepted by container; cleanup authority remains separate\n"
+    )
+    # Retain isolated fake-input volumes; never touch real controller volumes.
 
 
 @pytest.mark.skipif(
