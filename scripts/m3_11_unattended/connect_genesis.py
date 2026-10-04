@@ -37,12 +37,13 @@ REQUEST_FIELDS = {
     "shared_server",
     "shared_author",
     "shared_probe",
+    "shared_forgery_probe",
     "independent_probe",
     "targets_sha256",
 }
 
 
-def request(value: object) -> dict[str, object]:
+def request(value: object) -> dict[str, object]:  # noqa: PLR0912 - explicit immutable probe bindings
     selected = fields(value, REQUEST_FIELDS)
     if selected["format"] != REQUEST_FORMAT:
         raise LifecycleError("Connect genesis request format is invalid")
@@ -78,7 +79,38 @@ def request(value: object) -> dict[str, object]:
             or (role == "independent" and str(probe["event_id"]) in initial)
         ):
             raise LifecycleError("Connect genesis provenance probe is misbound")
+    forged = validate(selected["shared_forgery_probe"])
+    claimed = fields(forged["payload"], {"format", "epoch", "actor", "claimed_author"})
+    account_identity(claimed["claimed_author"])
+    if (
+        forged["kind"] != "run"
+        or forged["run_id"] != epoch
+        or claimed["format"] != PROBE_FORMAT
+        or claimed["epoch"] != epoch
+        or claimed["actor"] != "shared-forgery"
+        or claimed["claimed_author"] == selected["shared_author"]
+        or initial.get(str(forged["event_id"])) != digest(forged)
+    ):
+        raise LifecycleError("Connect shared forgery probe is misbound")
     return selected
+
+
+def discover_author(ledger: ConnectLedger, probe: dict[str, object], *, shared_author: str) -> str:
+    """Before genesis, learn the independent author for the shared-side forgery probe."""
+    validate(probe)
+    payload = fields(probe["payload"], {"format", "epoch", "actor"})
+    if probe["kind"] != "run" or payload != {
+        "format": PROBE_FORMAT,
+        "epoch": identity(probe["run_id"]),
+        "actor": "independent",
+    }:
+        raise LifecycleError("Connect independent discovery probe is invalid")
+    ledger.stage(probe, claimed_author=account_identity(shared_author))
+    ledger.records()
+    authors = ledger.authors(probe)
+    if len(authors) != 1 or shared_author in authors:
+        raise LifecycleError("Connect cannot prove distinct immutable native authors")
+    return authors.pop()
 
 
 def initialize(  # noqa: PLR0913 - independent authority, provider identities and epoch are explicit
@@ -105,6 +137,7 @@ def initialize(  # noqa: PLR0913 - independent authority, provider identities an
     authority.require(now + LIFETIME)
     initial = strings(selected["initial"])
     shared = validate(selected["shared_probe"])
+    shared_forgery = validate(selected["shared_forgery_probe"])
     probe = validate(selected["independent_probe"])
     before = [record for record in ledger.records() if not acknowledgement(record)]
     prior = {str(record["event_id"]): digest(record) for record in before if record != probe}
@@ -112,19 +145,17 @@ def initialize(  # noqa: PLR0913 - independent authority, provider identities an
         prior != initial
         or any(record["kind"] == "intent" for record in before)
         or ledger.authors(shared) != {selected["shared_author"]}
+        or ledger.authors(shared_forgery) != {selected["shared_author"]}
     ):
         raise LifecycleError("Connect genesis inventory or shared provenance differs")
     # Trying to forge the other server's author must not survive native readback.
     # A lost response is reconciled from the original event; it is never replayed.
-    ledger.stage(probe, claimed_author=str(selected["shared_author"]))
+    author = discover_author(ledger, probe, shared_author=str(selected["shared_author"]))
     records = [record for record in ledger.records() if not acknowledgement(record)]
-    authors = ledger.authors(probe)
     complete = {**initial, str(probe["event_id"]): digest(probe)}
-    if (
-        {str(record["event_id"]): digest(record) for record in records} != complete
-        or len(authors) != 1
-        or selected["shared_author"] in authors
-    ):
+    if {str(record["event_id"]): digest(record) for record in records} != complete or fields(
+        shared_forgery["payload"], {"format", "epoch", "actor", "claimed_author"}
+    )["claimed_author"] != author:
         raise LifecycleError("Connect cannot prove distinct immutable native authors")
     checkpoint = Checkpoint(
         store, epoch=str(selected["epoch"]), genesis=None, initial=complete, initialize=True
@@ -146,11 +177,12 @@ def initialize(  # noqa: PLR0913 - independent authority, provider identities an
         "initial": complete,
         "genesis": {"identity": genesis.identity, "sha256": genesis.sha256},
         "independent_server": server,
-        "independent_author": authors.pop(),
+        "independent_author": author,
         "shared_author": selected["shared_author"],
         "authority_sha256": authority.identity_sha256,
         "authority_expires_at": stamp(authority.valid_until),
         "observed_at": stamp(now),
         "forged_author_ignored": True,
+        "shared_forged_author_ignored": True,
         "provider_children_created": False,
     }

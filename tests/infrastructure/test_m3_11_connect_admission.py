@@ -153,6 +153,9 @@ def test_controller_authored_capacity_receipt_cannot_authorize_creation_even_if_
     case.acknowledge(case.admission())
     assert case.journal.controller.confirmed(forged)
     assert not case.journal.controller.confirmed(case.run)
+    case.now += timedelta(minutes=3)
+    with pytest.raises(LifecycleError, match="fresh independent capacity"):
+        case.reserve()  # Checkpoint membership cannot launder the forged author.
 
 
 def test_reservation_window_cannot_extend_when_worker_restarts(tmp_path: Path) -> None:
@@ -178,3 +181,45 @@ def test_creation_intent_must_match_exact_reserved_authority_and_revision(
     assert isinstance(payload, dict)
     payload[field] = "0" * (64 if field == "cleanup_authority_sha256" else 40)
     assert not case.admission().allow(intent)
+
+
+def test_native_reservation_recovers_after_checkpoint_failure_without_changing_window(
+    tmp_path: Path,
+) -> None:
+    case = Case(tmp_path)
+    case.journal.store.failure = "before-upload"
+    with pytest.raises(LifecycleError):
+        case.reserve()
+    count = case.journal.remote.posts
+    case.journal.store.failure = ""
+    case.journal.github = case.journal.independent(directory="restarted")
+    case.now += timedelta(minutes=3)
+    admission = case.reserve()
+    case.acknowledge(admission)
+    assert case.journal.controller.confirmed(case.run)
+    assert case.journal.remote.posts == count + 2
+
+
+def test_late_lost_post_after_ephemeral_restart_remains_one_exact_decision(tmp_path: Path) -> None:
+    case = Case(tmp_path)
+    case.journal.remote.fail = "before"
+    with pytest.raises(LifecycleError):
+        case.reserve()
+    late = case.journal.remote.late
+    assert late is not None
+    case.journal.remote.fail = ""
+    case.journal.github = case.journal.independent(directory="restarted")
+    case.journal.github.capacity = lambda: MINIMUM_START_CAPACITY + 10
+    case.now += timedelta(seconds=1)
+    case.reserve()
+    case.journal.remote.items[late[0]] = late[1]
+    case.journal.remote.version += 1
+    admission = case.reserve()
+    case.acknowledge(admission)
+    assert case.journal.controller.confirmed(case.run)
+    reservations = [
+        record
+        for record in case.journal.github.records()
+        if isinstance(record["payload"], dict) and record["payload"].get("format") == FORMAT
+    ]
+    assert len(reservations) == 1

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
+import uuid
 from datetime import datetime, timedelta
 
 from scripts.m3_11_qualification_evidence import fields
@@ -57,7 +59,9 @@ class Admission:
             raise LifecycleError("Connect creation request differs from its approved binding")
         return binding
 
-    def _reservation(self, record: dict[str, object]) -> dict[str, object] | None:
+    def _reservation(
+        self, record: dict[str, object], *, durable: bool = True
+    ) -> dict[str, object] | None:
         wanted = run_digest(
             identity(record["run_id"]),
             fields(record["payload"], {"binding", "mode", "approval_sha256"}),
@@ -72,10 +76,13 @@ class Admission:
                 and payload.get("format") == FORMAT
                 and payload.get("run_sha256") == wanted
                 and payload.get("witness") == self.journal.witness.binding()
-                and self.journal.checkpoint.records.get(str(value["event_id"])) == value
+                and (
+                    not durable
+                    or self.journal.checkpoint.records.get(str(value["event_id"])) == value
+                )
                 and self.journal.ledger.authored(value, self.journal.witness.author)
             ):
-                matches.append(payload)
+                matches.append(value)
         if len(matches) > 1:
             raise LifecycleError("Connect creation reservation is ambiguous")
         return matches[0] if matches else None
@@ -97,7 +104,13 @@ class Admission:
             raise LifecycleError("Connect witness dispatch request is ambiguous")
         record = matches[0]
         self._run(record)
-        if self._reservation(record) is not None:
+        previous = self._reservation(record, durable=False)
+        if previous is not None:
+            # A native receipt can survive a failed checkpoint upload. Persist
+            # that exact decision; a merely checkpointed controller record never
+            # qualifies for this recovery path.
+            self.journal.persist(previous)
+            self.records = self.journal.records()
             return True  # Restart keeps the original capacity reservation and window.
         if (
             not self.journal.cache_complete
@@ -106,31 +119,40 @@ class Admission:
         ):
             raise LifecycleError("Connect attempt lacks fresh independent capacity")
         authority.require(self.now + WINDOW + LIFETIME)
-        accepted = self.now.replace(microsecond=0)
-        receipt = self.journal.persist(
-            event(
-                "heartbeat",
-                identity(record["run_id"]),
-                {
-                    "format": FORMAT,
-                    "run_sha256": expected,
-                    "witness": self.journal.witness.binding(),
-                    "accepted_at": stamp(accepted),
-                    "create_before": stamp(accepted + WINDOW),
-                    "authority_expires_at": stamp(authority.valid_until),
-                    "provider_authorities": {
-                        kind: authority.provider_identity(kind)
-                        for kind in ("spaces", "cloudflare-account", "cloudflare-user")
-                    },
-                    "reserved_capacity": MINIMUM_START_CAPACITY,
+        # Anchor both timing and event identity to the immutable dispatched run.
+        # Even a late POST after ephemeral-spool loss produces identical copies,
+        # rather than another window or an ambiguous logical decision.
+        accepted = instant(record["recorded_at"]).replace(microsecond=0)
+        receipt = event(
+            "heartbeat",
+            identity(record["run_id"]),
+            {
+                "format": FORMAT,
+                "run_sha256": expected,
+                "witness": self.journal.witness.binding(),
+                "accepted_at": stamp(accepted),
+                "create_before": stamp(accepted + WINDOW),
+                "authority_expires_at": stamp(authority.valid_until),
+                "provider_authorities": {
+                    kind: authority.provider_identity(kind)
+                    for kind in ("spaces", "cloudflare-account", "cloudflare-user")
                 },
-            )
+                "reserved_capacity": MINIMUM_START_CAPACITY,
+            },
         )
+        raw_id = bytearray(uuid.UUID(identity(record["run_id"])).bytes)
+        raw_id[6:] = hashlib.sha256(("connect-reservation:" + expected).encode()).digest()[6:16]
+        raw_id[6], raw_id[8] = (raw_id[6] & 0x0F) | 0x70, (raw_id[8] & 0x3F) | 0x80
+        receipt["event_id"] = str(uuid.UUID(bytes=bytes(raw_id)))
+        receipt["recorded_at"] = record["recorded_at"]
+        self.journal.ledger.stage(receipt)
         self.records = self.journal.records()
         if not self.journal.cache_complete or not self.journal.ledger.authored(
             receipt, self.journal.witness.author
         ):
             raise LifecycleError("Connect capacity reservation awaits native readback")
+        self.journal.persist(receipt)
+        self.records = self.journal.records()
         return True
 
     def allow(self, record: dict[str, object]) -> bool:
@@ -146,9 +168,22 @@ class Admission:
             return False
         run = candidates[0]
         binding = self._run(run)
-        receipt = self._reservation(run)
-        if receipt is None:
+        reserved = self._reservation(run)
+        if reserved is None:
             return False
+        receipt = fields(
+            reserved["payload"],
+            {
+                "format",
+                "run_sha256",
+                "witness",
+                "accepted_at",
+                "create_before",
+                "authority_expires_at",
+                "provider_authorities",
+                "reserved_capacity",
+            },
+        )
         accepted, before = instant(receipt["accepted_at"]), instant(receipt["create_before"])
         if before - accepted != WINDOW or not accepted <= self.now <= before:
             return False

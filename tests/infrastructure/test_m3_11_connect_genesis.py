@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -27,7 +28,7 @@ from scripts.m3_11_unattended.model import Authority, LifecycleError, digest
 
 
 class Case:
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, *, claimed_author: str = REMOTE_AUTHOR) -> None:
         self.journal = JournalCase(tmp_path)
         self.now = datetime.now(UTC)
         self.authority = Authority("a" * 64, self.now + timedelta(days=7))
@@ -36,6 +37,17 @@ class Case:
             "run", self.epoch, {"format": PROBE_FORMAT, "epoch": self.epoch, "actor": "shared"}
         )
         self.journal.controller.append(shared)
+        shared_forgery = event(
+            "run",
+            self.epoch,
+            {
+                "format": PROBE_FORMAT,
+                "epoch": self.epoch,
+                "actor": "shared-forgery",
+                "claimed_author": claimed_author,
+            },
+        )
+        self.journal.controller.ledger.stage(shared_forgery, claimed_author=claimed_author)
         sync(self.journal.shared, self.journal.remote)
         records = self.journal.controller.records()
         self.approved: dict[str, object] = {
@@ -55,6 +67,7 @@ class Case:
             "shared_server": "Q" * 26,
             "shared_author": LOCAL_AUTHOR,
             "shared_probe": shared,
+            "shared_forgery_probe": shared_forgery,
             "independent_probe": event(
                 "run",
                 self.epoch,
@@ -85,6 +98,7 @@ def test_initial_inventory_matches_all_recoverable_genesis_records_and_native_au
     assert result["shared_author"] == LOCAL_AUTHOR
     assert result["independent_author"] == REMOTE_AUTHOR
     assert result["forged_author_ignored"] is True
+    assert result["shared_forged_author_ignored"] is True
     assert result["provider_children_created"] is False
     latest = case.store.latest()
     assert latest is not None
@@ -163,3 +177,26 @@ def test_existing_progress_cannot_be_reinitialized_as_an_empty_genesis(tmp_path:
     with pytest.raises(LifecycleError, match="progressed"):
         case.initialize()
     assert case.store.values == before
+
+
+def test_shared_endpoint_accepting_the_independent_author_cannot_install_genesis(
+    tmp_path: Path,
+) -> None:
+    case = Case(tmp_path)
+    forged = cast(dict[str, object], case.approved["shared_forgery_probe"])
+    for replica in (case.journal.shared, case.journal.remote):
+        for item in replica.items.values():
+            fields = cast(list[dict[str, str]], item["fields"])
+            if json.loads(fields[0]["value"])["event_id"] == forged["event_id"]:
+                item["lastEditedBy"] = REMOTE_AUTHOR
+                replica.version += 1
+    with pytest.raises(LifecycleError, match="shared provenance"):
+        case.initialize()
+    assert not case.store.values
+
+
+def test_shared_probe_must_claim_the_actual_independent_author(tmp_path: Path) -> None:
+    case = Case(tmp_path, claimed_author="X" * 26)
+    with pytest.raises(LifecycleError, match="distinct immutable native authors"):
+        case.initialize()
+    assert not case.store.values
