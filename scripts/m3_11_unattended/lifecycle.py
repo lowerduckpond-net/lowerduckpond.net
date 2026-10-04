@@ -19,6 +19,7 @@ from scripts.m3_11_unattended.model import (
     LifecycleError,
     ProviderKind,
     Targets,
+    identity,
     instant,
     stamp,
 )
@@ -78,6 +79,48 @@ def known_id(journal: Journal, intent: Intent) -> str | None:
     if len(matches) > 1:
         raise LifecycleError("credential creation returned conflicting identities")
     return next(iter(matches), None)
+
+
+def pending_authentication(observations: list[dict[str, object]]) -> set[str]:
+    """Only a denied proof covering a marker can discharge its authentication check.
+
+    An independent actor may finish a stale inventory read after another actor
+    records a failed probe. Its secretless resolution cannot clear that marker.
+    New proofs bind event IDs, so inter-host clocks do not decide coverage.
+    """
+    markers = {
+        identity(record["event_id"]): record
+        for record in observations
+        if record["kind"] == "cleanup"
+    }
+    covered: set[str] = set()
+    for record in observations:
+        value = record["payload"]
+        if (
+            record["kind"] != "resolved"
+            or not isinstance(value, dict)
+            or value.get("negative_authentication") != "denied"
+        ):
+            continue
+        if "negative_authentication_markers" in value:
+            references = value["negative_authentication_markers"]
+            if not isinstance(references, list):
+                raise LifecycleError("authentication proof has invalid marker bindings")
+            selected = {identity(reference) for reference in references}
+            if not selected <= markers.keys() or len(selected) != len(references):
+                raise LifecycleError("authentication proof has unknown or duplicate markers")
+            covered.update(selected)
+        else:
+            # Preserve the original ordering interpretation only for legacy
+            # markers. An older helper can never discharge a new explicit one.
+            covered.update(
+                key
+                for key, marker in markers.items()
+                if isinstance(marker["payload"], dict)
+                and marker["payload"].get("proof_binding") is None
+                and key < str(record["event_id"])
+            )
+    return markers.keys() - covered
 
 
 def _owned(intent: Intent, metadata: dict[str, object], *, known: str | None) -> str:
@@ -218,6 +261,7 @@ class Lifecycle:
                 ),
                 key=lambda record: str(record["event_id"]),
             )
+            pending = pending_authentication(observations)
             client = self.providers[intent.provider]
             if client.authority_sha256 != intent.cleanup_authority_sha256:
                 raise LifecycleError("cleanup authority differs from the original obligation")
@@ -264,23 +308,24 @@ class Lifecycle:
                 for item in client.inventory()
             ):
                 raise LifecycleError("deleted credential remains in inventory")
-            if credential is None and observations and observations[-1]["kind"] == "cleanup":
+            if credential is None and pending:
                 raise LifecycleError("a failed authentication rejection still needs its credential")
             if credential is not None:
                 # Losing this actor after DELETE must not let a later actor
                 # discard a failed negative probe by omitting the retained key.
                 # Reuse an outstanding marker; each retry still probes afresh.
-                if not observations or observations[-1]["kind"] != "cleanup":
-                    self.journal.append(
-                        event(
-                            "cleanup",
-                            intent.run_id,
-                            {
-                                "intent_sha256": intent.sha256,
-                                "negative_authentication": "required",
-                            },
-                        )
+                if not pending:
+                    marker = event(
+                        "cleanup",
+                        intent.run_id,
+                        {
+                            "intent_sha256": intent.sha256,
+                            "negative_authentication": "required",
+                            "proof_binding": "event-id",
+                        },
                     )
+                    self.journal.append(marker)
+                    pending.add(identity(marker["event_id"]))
                 if known != credential.identifier or not client.denied(intent, credential):
                     raise LifecycleError(
                         "revoked credential still authenticates or rejection is unproven"
@@ -292,7 +337,11 @@ class Lifecycle:
                 "provider_readback": "absent",
                 "negative_authentication": negative,
             }
-            prior = observations[-1] if observations else None
+            if credential is not None:
+                proof["negative_authentication_markers"] = sorted(pending)
+            prior = next(
+                (record for record in reversed(observations) if record["kind"] == "resolved"), None
+            )
             if (
                 credential is not None
                 or prior is None

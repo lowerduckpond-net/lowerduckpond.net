@@ -10,8 +10,9 @@ from pathlib import Path
 
 import pytest
 
+from scripts.m3_11_unattended import cleanup
 from scripts.m3_11_unattended.journal import FileJournal, event
-from scripts.m3_11_unattended.lifecycle import Lifecycle, intents
+from scripts.m3_11_unattended.lifecycle import Lifecycle, intents, pending_authentication
 from scripts.m3_11_unattended.model import (
     LIFETIME,
     Authority,
@@ -231,6 +232,64 @@ def test_cleanup_interrupted_after_delete_requires_new_provider_readback(
     result = case.lifecycle.reconcile(intent, secret)
     assert result.status == "verified"
     assert result.negative_authentication == "denied"
+
+
+def test_stale_independent_resolution_cannot_hide_failed_authentication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = Case(tmp_path)
+    intent, secret = case.create()
+    case.lifecycle.request_revocation(case.run_id)
+    independent = Lifecycle(FileJournal(tmp_path), {"spaces": case.provider}, clock=lambda: NOW)
+    inventory = case.provider.inventory
+    started = False
+
+    def interleave() -> list[dict[str, object]]:
+        nonlocal started
+        if not started:
+            started = True
+            case.provider.still_authenticates = True
+            assert case.lifecycle.reconcile(intent, secret).status == "unresolved"
+        return inventory()
+
+    monkeypatch.setattr(case.provider, "inventory", interleave)
+    # This actor began before the probe marker existed. Its stale completion
+    # must not discharge that separate, explicit authentication obligation.
+    independent.reconcile(intent)
+    assert any(record["kind"] == "resolved" for record in case.journal.records())
+    assert independent.reconcile(intent).status == "unresolved"
+    with pytest.raises(LifecycleError, match="outstanding"):
+        independent.require_clear()
+    status = cleanup.status_document(case.journal, helper="f" * 40, now=NOW + LIFETIME)
+    assert status["outstanding"] == 1
+    assert status["overdue"] == 0  # exact deadline; overdue is strictly later
+    case.provider.still_authenticates = False
+    assert case.lifecycle.reconcile(intent, secret).status == "verified"
+    independent.require_clear()
+    assert cleanup.status_document(case.journal, helper="f" * 40, now=NOW)["outstanding"] == 0
+
+
+def test_denied_proof_covers_explicit_markers_without_clock_ordering() -> None:
+    run = str(uuid.uuid7())
+    proof_value: dict[str, object] = {"negative_authentication": "denied"}
+    proof = event("resolved", run, proof_value)
+    # The marker sorts after its proof, as can happen across corrected clocks.
+    marker = event("cleanup", run, {"proof_binding": "event-id"})
+    assert str(proof["event_id"]) < str(marker["event_id"])
+    assert pending_authentication([proof, marker]) == {marker["event_id"]}
+    proof_value["negative_authentication_markers"] = [marker["event_id"]]
+    assert pending_authentication([proof, marker]) == set()
+    later = event("cleanup", run, {"proof_binding": "event-id"})
+    stale = event("resolved", run, {"negative_authentication": "unavailable"})
+    assert pending_authentication([proof, marker, later, stale]) == {later["event_id"]}
+
+
+def test_legacy_denied_proof_cannot_cover_new_explicit_marker() -> None:
+    run = str(uuid.uuid7())
+    legacy = event("cleanup", run, {"negative_authentication": "required"})
+    explicit = event("cleanup", run, {"proof_binding": "event-id"})
+    proof = event("resolved", run, {"negative_authentication": "denied"})
+    assert pending_authentication([legacy, explicit, proof]) == {explicit["event_id"]}
 
 
 def test_unknown_creation_absence_cannot_manufacture_resolution_after_timeout(

@@ -9,8 +9,12 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event, current_thread
 from types import SimpleNamespace
 from typing import cast
 
@@ -24,7 +28,7 @@ from scripts.m3_11_unattended.journal import OnePassword, OpJournal, event
 from scripts.m3_11_unattended.journal_cache import JournalCache
 from scripts.m3_11_unattended.lifecycle import Lifecycle
 from scripts.m3_11_unattended.model import ROLES, Credential, LifecycleError, stamp
-from scripts.m3_11_unattended.state import RunState, replace_private
+from scripts.m3_11_unattended.state import RunState, cleanup_lock, replace_private
 
 from .test_m3_11_unattended_controller import subject
 from .test_m3_11_unattended_lifecycle import CANARY, TARGETS, Case
@@ -331,6 +335,7 @@ def test_local_death_detection_does_not_wait_for_hourly_remote_poll(
     clock = [0.0]
     calls = []
     case = Case(tmp_path)
+    (tmp_path / "runs").mkdir(mode=0o700)
     cli = CountedCli()
 
     def connect(*_args: object) -> Lifecycle:
@@ -757,5 +762,110 @@ def test_stale_watchdog_failure_preserves_concurrent_verified_cleanup(
     assert selected.state.status()["qualification"] == "failed"
     assert (directory / "journey-result.json").read_bytes() == original
     assert not list(directory.glob("watchdog-revocation-*.json"))
+    assert case.provider.creates == 1
+    assert not case.provider.items
+
+
+@pytest.mark.parametrize("first", ["controller", "watchdog"])
+def test_local_cleanup_serializes_refresh_probe_and_secret_disposal(  # noqa: PLR0915 - real actor interleave
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, first: str
+) -> None:
+    selected, case = subject(tmp_path, monkeypatch)
+    root = tmp_path / "runs"
+    root.mkdir(mode=0o700)
+    directory = root / case.run_id
+    selected.directory.rename(directory)
+    selected.directory, selected.state = directory, RunState(directory)
+    selected.state.begin(selected.binding)
+    for name in ("credential-intents", "credential-cleanup"):
+        (directory / name).mkdir(mode=0o700)
+    cli = CountedCli()
+    case.lifecycle = Lifecycle(
+        OpJournal(cast(OnePassword, cli), "a" * 26),
+        {"spaces": case.provider},
+        clock=lambda: case.now,
+        remember=selected.remember,
+        remember_intent=selected.remember_intent,
+    )
+    case.create()
+    selected.state.finish_journey("failed", 1)
+    original_result = (directory / "journey-result.json").read_bytes()
+    entered, waiting, release, follower_connected = Event(), Event(), Event(), Event()
+    inventory = case.provider.inventory
+    denied = case.provider.denied
+
+    def pause_inventory() -> list[dict[str, object]]:
+        if not entered.is_set():
+            entered.set()
+            assert release.wait(10)
+        return inventory()
+
+    def connect(*_args: object) -> Lifecycle:
+        if current_thread().name == "follower":
+            follower_connected.set()
+        return Lifecycle(
+            OpJournal(cast(OnePassword, cli), "a" * 26),
+            {"spaces": case.provider},
+            clock=lambda: case.now,
+        )
+
+    @contextmanager
+    def locking(path: Path) -> Iterator[None]:
+        if current_thread().name == "follower":
+            waiting.set()
+        with cleanup_lock(path):
+            yield
+
+    monkeypatch.setattr(case.provider, "inventory", pause_inventory)
+    monkeypatch.setattr(
+        case.provider,
+        "denied",
+        lambda intent, credential: current_thread().name != "leader" and denied(intent, credential),
+    )
+    monkeypatch.setattr(cleanup, "connect_cleanup", connect)
+    monkeypatch.setattr(worker, "cleanup_lock", locking)
+    monkeypatch.setattr(cleanup, "cleanup_lock", locking)
+    monkeypatch.setattr(
+        cleanup, "cleanup_configuration", lambda _path: (TARGETS, "a" * 26, Bootstrap({}))
+    )
+    monkeypatch.setattr(
+        cleanup,
+        "parse_arguments",
+        lambda: SimpleNamespace(
+            runs=root,
+            actor="watchdog",
+            watch=False,
+            config=Path("/unused"),
+            journal_cache=None,
+            journal_cache_output=None,
+        ),
+    )
+    monkeypatch.setattr(
+        docker, "Docker", lambda: SimpleNamespace(owned=lambda _name: {"State": {"Running": False}})
+    )
+
+    def execute(actor: str, name: str) -> bool:
+        current_thread().name = name
+        return selected.revoke() if actor == "controller" else cleanup.main() == 0
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        leader = pool.submit(execute, first, "leader")
+        try:
+            assert entered.wait(10)
+            other = "watchdog" if first == "controller" else "controller"
+            follower = pool.submit(execute, other, "follower")
+            assert waiting.wait(10)
+            assert not follower_connected.is_set()
+            assert worker.retained_credentials(directory)
+        finally:
+            release.set()
+        assert leader.result(timeout=10) is False
+        assert follower.result(timeout=10) is True
+    assert follower_connected.is_set()
+    assert not worker.retained_credentials(directory)
+    assert selected.revoke()
+    assert selected.state.status()["credential_cleanup"] == "verified"
+    assert selected.state.status()["qualification"] == "failed"
+    assert (directory / "journey-result.json").read_bytes() == original_result
     assert case.provider.creates == 1
     assert not case.provider.items
