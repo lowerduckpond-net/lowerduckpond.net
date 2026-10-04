@@ -127,6 +127,37 @@ class OnePassword:
         return raw.decode("utf-8")
 
 
+def _note_content(value: object) -> str:
+    if not isinstance(value, list) or any(not isinstance(entry, dict) for entry in value):
+        raise LifecycleError("credential journal item content is unavailable")
+    notes = [entry for entry in value if entry.get("id") == "notesPlain"]
+    if len(notes) == 2:  # noqa: PLR2004 - exact legacy op representation
+        # The original writer omitted purpose, so op added an empty built-in
+        # note beside its custom notesPlain field. Preserve those immutable
+        # entries, accepting only that exact, unambiguous representation.
+        blank = [
+            entry
+            for entry in notes
+            if entry.get("purpose") == "NOTES"
+            and entry.get("type") == "STRING"
+            and entry.get("section") is None
+            and entry.get("value") in (None, "")
+        ]
+        custom = [
+            entry
+            for entry in notes
+            if entry.get("purpose") is None
+            and entry.get("type") == "STRING"
+            and entry.get("section") is None
+        ]
+        if len(blank) != 1 or len(custom) != 1:
+            raise LifecycleError("credential journal item content is ambiguous")
+        notes = custom
+    if len(notes) != 1 or not isinstance(content := notes[0].get("value"), str):
+        raise LifecycleError("credential journal item content is unavailable")
+    return content
+
+
 class OpJournal:
     def __init__(self, op: OnePassword, vault: str) -> None:
         if re.fullmatch(r"[a-z0-9]{26}", vault) is None:
@@ -162,18 +193,9 @@ class OpJournal:
             or item.get("tags") != [TAG]
         ):
             raise LifecycleError("credential journal item metadata changed")
-        content = item.get("fields")
-        if not isinstance(content, list):
-            raise LifecycleError("credential journal item content is unavailable")
-        notes = [
-            entry.get("value")
-            for entry in content
-            if isinstance(entry, dict) and entry.get("id") == "notesPlain"
-        ]
-        if len(notes) != 1 or not isinstance(notes[0], str):
-            raise LifecycleError("credential journal item content is unavailable")
-        record = validate(json.loads(notes[0]))
-        if item.get("title") != self._title(record) or canonical_bytes(record).decode() != notes[0]:
+        content = _note_content(item.get("fields"))
+        record = validate(json.loads(content))
+        if item.get("title") != self._title(record) or canonical_bytes(record).decode() != content:
             raise LifecycleError("credential journal item content changed")
         return record
 
@@ -222,6 +244,7 @@ class OpJournal:
                 {
                     "id": "notesPlain",
                     "type": "STRING",
+                    "purpose": "NOTES",
                     "label": "notesPlain",
                     "value": canonical_bytes(record).decode(),
                 }

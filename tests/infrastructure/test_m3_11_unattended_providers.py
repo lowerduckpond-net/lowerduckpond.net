@@ -237,6 +237,18 @@ class JournalCli:
             assert stdin is not None
             self.creates += 1
             item = json.loads(stdin)
+            # op 2.33 adds its empty built-in note when the template only
+            # supplies a custom field, even when both IDs are notesPlain.
+            if not any(field.get("purpose") == "NOTES" for field in item["fields"]):
+                item["fields"].insert(
+                    0,
+                    {
+                        "id": "notesPlain",
+                        "type": "STRING",
+                        "purpose": "NOTES",
+                        "label": "notesPlain",
+                    },
+                )
             selected = str(self.creates).zfill(26)
             item["id"], item["version"] = selected, 1
             self.items[selected] = item
@@ -252,6 +264,86 @@ class JournalCli:
                 for item in self.items.values()
             ]
         ).encode()
+
+
+def test_journal_creation_populates_the_builtin_note(tmp_path: Path) -> None:
+    cli = JournalCli()
+    journal = OpJournal(cast(OnePassword, cli), "a" * 26)
+    record = event("result", Case(tmp_path).run_id, {"setup": "independent-journal-read-write"})
+    journal.append(record)
+    assert journal.records() == [record]
+    fields = next(iter(cli.items.values()))["fields"]
+    assert isinstance(fields, list) and len(fields) == 1
+    assert fields[0]["purpose"] == "NOTES"
+
+
+@pytest.mark.parametrize("blank_value", [None, ""])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_old_journal_notes_remain_readable_without_rewriting(
+    tmp_path: Path, blank_value: str | None, reverse: bool
+) -> None:
+    cli = JournalCli()
+    journal = OpJournal(cast(OnePassword, cli), "a" * 26)
+    record = event("result", Case(tmp_path).run_id, {"setup": "independent-journal-read-write"})
+    # Preserve the exact old writer input and the real CLI's synthesized field.
+    item = {
+        "title": journal._title(record),
+        "category": "SECURE_NOTE",
+        "vault": {"id": "a" * 26},
+        "tags": ["ldp-m3-11-credential-obligations-v1"],
+        "fields": [
+            {
+                "id": "notesPlain",
+                "type": "STRING",
+                "label": "notesPlain",
+                "value": json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n",
+            }
+        ],
+    }
+    cli.command("item", "create", stdin=json.dumps(item).encode())
+    stored = next(iter(cli.items.values()))
+    fields = cast(list[dict[str, object]], stored["fields"])
+    if blank_value is not None:
+        fields[0]["value"] = blank_value
+    if reverse:
+        fields.reverse()
+    original = copy.deepcopy(cli.items)
+    assert journal.records() == [record]
+    journal.refresh()
+    assert journal.records() == [record]
+    assert cli.items == original
+    assert cli.creates == 1
+
+
+@pytest.mark.parametrize(
+    "defect",
+    ["two-values", "same-value", "two-custom", "two-default", "whitespace", "wrong-purpose"],
+)
+def test_journal_duplicate_note_ambiguity_still_fails_closed(tmp_path: Path, defect: str) -> None:
+    cli = JournalCli()
+    journal = OpJournal(cast(OnePassword, cli), "a" * 26)
+    record = event("result", Case(tmp_path).run_id, {"test": "safe"})
+    journal.append(record)
+    item = next(iter(cli.items.values()))
+    fields = cast(list[dict[str, object]], item["fields"])
+    payload = fields[0]
+    payload.pop("purpose")
+    extra: dict[str, object] = {"id": "notesPlain", "type": "STRING", "purpose": "NOTES"}
+    if defect == "two-values":
+        extra["value"] = '{"another":"obligation"}\n'
+    elif defect == "same-value":
+        extra["value"] = cast(str, payload["value"])
+    elif defect == "two-custom":
+        extra.pop("purpose")
+    elif defect == "two-default":
+        payload["purpose"] = "NOTES"
+    elif defect == "whitespace":
+        extra["value"] = " "
+    else:
+        extra["purpose"] = "USERNAME"
+    fields.insert(0, extra)
+    with pytest.raises(LifecycleError, match="content"):
+        journal.records()
 
 
 def test_lost_op_item_creation_is_reconciled_once_and_edits_fail_closed(tmp_path: Path) -> None:
