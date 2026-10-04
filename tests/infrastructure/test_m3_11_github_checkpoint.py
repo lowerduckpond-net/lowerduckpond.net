@@ -16,7 +16,8 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from scripts.m3_11_unattended import github_checkpoint as github
-from scripts.m3_11_unattended.connect_checkpoint import Stored
+from scripts.m3_11_unattended.connect_checkpoint import Checkpoint, Stored
+from scripts.m3_11_unattended.journal import event
 from scripts.m3_11_unattended.model import LifecycleError, digest
 
 CANARY = "github-checkpoint-private-canary"
@@ -24,18 +25,37 @@ CANARY = "github-checkpoint-private-canary"
 
 class Registry(github.GitHubArtifacts):
     def __init__(self, directory: Path) -> None:
-        super().__init__(epoch=str(uuid.uuid7()), token=CANARY, directory=directory)
+        super().__init__(
+            epoch=str(uuid.uuid7()), registry_revision="a" * 40, token=CANARY, directory=directory
+        )
         self.runs: list[dict[str, object]] = [
             {"id": 3, "status": "in_progress", "head_branch": "main"}
         ]
         self.artifacts: dict[int, list[dict[str, object]]] = {3: []}
         self.archives: dict[int, bytes] = {}
         self.fail_download = False
+        self.statuses: list[dict[str, object]] = []
+        self.lose_status_reply = False
 
     @override
-    def _api(self, path: str, *, binary: bool = False) -> object:
+    def _api(
+        self, path: str, *, binary: bool = False, body: dict[str, object] | None = None
+    ) -> object:
         page = int(parse_qs(urlsplit(path).query).get("page", ["1"])[0])
         start = (page - 1) * github.PAGE_SIZE
+        if "/statuses/" in path:
+            assert body is not None
+            row = {
+                **body,
+                "id": len(self.statuses) + 1,
+                "creator": {"id": github.STATUS_AUTHOR, "type": "Bot"},
+            }
+            self.statuses.insert(0, row)
+            if self.lose_status_reply:
+                raise LifecycleError("registry response lost")
+            return copy.deepcopy(row)
+        if "/commits/" in path:
+            return copy.deepcopy(self.statuses[start : start + github.PAGE_SIZE])
         if "/workflows/" in path:
             return {
                 "workflow_runs": copy.deepcopy(self.runs[start : start + github.PAGE_SIZE]),
@@ -53,12 +73,11 @@ class Registry(github.GitHubArtifacts):
             if self.fail_download:
                 raise LifecycleError("download unavailable")
             return self.archives[selected]
-        return next(
-            copy.deepcopy(row)
-            for rows in self.artifacts.values()
-            for row in rows
-            if row["id"] == selected
-        )
+        for rows in self.artifacts.values():
+            for row in rows:
+                if row["id"] == selected:
+                    return copy.deepcopy(row)
+        raise LifecycleError("artifact is missing")
 
     def add(
         self, *, name: str, raw: bytes, run_id: int = 3, expired: bool = False
@@ -147,7 +166,7 @@ def test_encrypted_checkpoint_roundtrip_and_clean_uploader_boundary(
     assert CANARY not in captured.out + captured.err
 
 
-def test_lost_upload_response_remains_discoverable_without_another_upload(
+def test_uncertain_upload_cannot_advance_registry_but_preserves_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     action_environment(tmp_path, monkeypatch)
@@ -157,9 +176,100 @@ def test_lost_upload_response_remains_discoverable_without_another_upload(
     with pytest.raises(LifecycleError, match="uncertain") as error:
         registry.create(value)
     assert CANARY not in str(error.value)
+    assert registry.latest() is None  # No ACK can have been issued for this orphan upload.
+    assert len(registry.archives) == 1
+
+
+def test_lost_registry_reply_recovers_exact_head_without_another_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    registry.lose_status_reply = True
+    value: dict[str, object] = {"records": ["owned-intent-and-returned-id"]}
+    with pytest.raises(LifecycleError, match="response lost"):
+        registry.create(value)
     stored = registry.latest()
     assert stored is not None and registry.read(stored) == value
     assert len(registry.archives) == 1
+
+
+def test_deleted_newest_payload_remains_the_head_after_process_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    older = registry.create({"records": ["old"]})
+    newer = registry.create({"records": ["old", "acknowledged-intent"]})
+    registry.artifacts[3].pop()
+    restarted = Registry(tmp_path / "restarted")
+    restarted.context, restarted.prefix = registry.context, registry.prefix
+    restarted.epoch = registry.epoch
+    restarted.statuses = copy.deepcopy(registry.statuses)
+    restarted.artifacts, restarted.archives = registry.artifacts, registry.archives
+    assert restarted.latest() == newer
+    with pytest.raises(LifecycleError, match="missing"):
+        restarted.read(newer)
+    assert restarted.read(older) == {"records": ["old"]}  # Available, never silently adopted.
+
+
+def test_roundtrip_above_private_file_default_size(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    value: dict[str, object] = {"records": ["x" * 300_000]}
+    stored = registry.create(value)
+    assert registry.read(stored) == value
+
+
+def test_missing_payload_cannot_forget_an_acknowledged_intent_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    anchor = event("run", str(uuid.uuid7()), {"initial": True})
+    initial = {str(anchor["event_id"]): digest(anchor)}
+    checkpoint = Checkpoint(
+        registry, epoch=registry.epoch, genesis=None, initial=initial, initialize=True
+    )
+    genesis = checkpoint.persist([anchor])
+    intent = event("intent", str(anchor["run_id"]), {"name": "acknowledged-owned-double"})
+    checkpoint.persist([anchor, intent])
+    registry.artifacts[3].pop()
+    restarted = Checkpoint(registry, epoch=registry.epoch, genesis=genesis, initial=initial)
+    with pytest.raises(LifecycleError, match="missing"):
+        restarted.restore()
+    assert not restarted.records  # No older snapshot is accepted as complete.
+
+
+@pytest.mark.parametrize("fault", ["creator", "state", "url", "digest", "context-case"])
+def test_newest_registry_entry_cannot_be_skipped_when_untrusted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    registry.create({"records": ["old"]})
+    registry.create({"records": ["old", "latest"]})
+    row = registry.statuses[0]
+    if fault == "creator":
+        row["creator"] = {"id": 1, "type": "User"}
+    elif fault == "state":
+        row["state"] = "failure"
+    elif fault == "url":
+        row["target_url"] = "https://untrusted.example/credential-canary"
+    elif fault == "digest":
+        row["description"] = "not-a-digest"
+    else:
+        row["context"] = registry.context.upper()
+        row["description"] = "not-a-digest"
+    with pytest.raises(LifecycleError, match="untrusted"):
+        registry.latest()
 
 
 def test_older_workflow_rerun_cannot_write_over_newer_checkpoint(
@@ -197,6 +307,8 @@ def test_complete_pagination_and_newest_run_without_checkpoint(
     for value in range(101):
         registry.add(name=f"unrelated-{value}", raw=b"not-a-checkpoint")
     # All pages are examined even when the API order is not chronological.
+    assert len(registry._runs()) == len(registry.runs)
+    assert len(registry._artifacts(3)) == len(registry.artifacts[3])
     assert registry.latest() == stored
 
 
@@ -208,10 +320,12 @@ def test_incomplete_inventory_never_selects_an_older_checkpoint(
     registry = Registry(tmp_path / "private")
     original = registry._api
 
-    def changed(path: str, *, binary: bool = False) -> object:
+    def changed(
+        path: str, *, binary: bool = False, body: dict[str, object] | None = None
+    ) -> object:
         target = "/workflows/" if inventory == "runs" else "/runs/"
         if target not in path:
-            return original(path, binary=binary)
+            return original(path, binary=binary, body=body)
         page = int(parse_qs(urlsplit(path).query)["page"][0])
         field = "workflow_runs" if inventory == "runs" else "artifacts"
         row = {"id": 3, "status": "completed", "head_branch": "main"}
@@ -222,7 +336,7 @@ def test_incomplete_inventory_never_selects_an_older_checkpoint(
 
     monkeypatch.setattr(registry, "_api", changed)
     with pytest.raises(LifecycleError):
-        registry.latest()
+        registry._runs() if inventory == "runs" else registry._artifacts(3)
 
 
 @pytest.mark.parametrize("field,value", [("head_branch", "untrusted"), ("id", True)])
@@ -232,7 +346,7 @@ def test_workflow_identity_mismatch_stops_registry_discovery(
     registry = Registry(tmp_path / "private")
     registry.runs[0][field] = value
     with pytest.raises(LifecycleError):
-        registry.latest()
+        registry._runs()
 
 
 @pytest.mark.parametrize(
@@ -249,8 +363,9 @@ def test_latest_checkpoint_failure_never_falls_back(
     value = registry.artifacts[3][-1]
     if fault == "expired":
         value["expired"] = True
+        assert registry.latest() == newer
         with pytest.raises(LifecycleError, match="expired"):
-            registry.latest()
+            registry.read(newer)
         return
     if fault == "download":
         registry.fail_download = True
@@ -293,7 +408,10 @@ def test_gh_cli_error_suppresses_stdout_stderr_and_token(
 ) -> None:
     monkeypatch.setenv("GH_TOKEN", CANARY)
     client = github.GitHubArtifacts(
-        epoch=str(uuid.uuid7()), token=CANARY, directory=tmp_path / "private"
+        epoch=str(uuid.uuid7()),
+        registry_revision="a" * 40,
+        token=CANARY,
+        directory=tmp_path / "private",
     )
 
     def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:

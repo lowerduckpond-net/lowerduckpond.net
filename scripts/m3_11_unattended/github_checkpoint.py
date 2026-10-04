@@ -1,8 +1,8 @@
 """Encrypted immutable checkpoints in the protected cleanup workflow's artifacts.
 
-Only the serialized main-branch workflow writes. Its run IDs must advance, so a
-rerun of an older job cannot publish over a newer checkpoint. Reads discover the
-latest checkpoint through GitHub, never an opportunistic Actions cache.
+Only the serialized main-branch workflow writes. Append-only commit statuses
+retain the latest artifact identity independently of the deletable payloads.
+Missing payloads therefore cannot silently roll cleanup back to an older head.
 """
 
 from __future__ import annotations
@@ -24,10 +24,12 @@ from typing import cast
 from urllib.parse import urlencode
 
 from scripts.m3_11_private_inputs import write_private
+from scripts.m3_11_qualification_evidence import canonical_bytes
 from scripts.m3_11_unattended.connect_checkpoint import Stored
 from scripts.m3_11_unattended.journal_cache import MAX_CACHE_BYTES, JournalCache
 from scripts.m3_11_unattended.model import LifecycleError, digest, identity
 from scripts.m3_11_unattended.state import private_directory
+from scripts.production_qualification_inputs import revision
 
 REPOSITORY = "lowerduckpond-net/lowerduckpond.net"
 WORKFLOW = "m3-11-credential-cleanup.yml"
@@ -37,6 +39,7 @@ MAX_RUN_PAGES = 10
 MAX_ARTIFACTS = 500
 IO_SECONDS = 30
 SCAN_SECONDS = 90
+STATUS_AUTHOR = 41898282  # github-actions[bot], immutable GitHub user identity
 
 
 def _number(value: object) -> int:
@@ -46,8 +49,10 @@ def _number(value: object) -> int:
 
 
 class GitHubArtifacts:
-    def __init__(self, *, epoch: str, token: str, directory: Path) -> None:
+    def __init__(self, *, epoch: str, registry_revision: str, token: str, directory: Path) -> None:
         self.epoch = identity(epoch)
+        self.registry_revision = revision(registry_revision)
+        self.context = "m3-11/connect-checkpoint/" + self.epoch
         self.prefix = "m311-connect-" + uuid.UUID(epoch).hex + "-"
         self._token, self.directory = token, directory
         self._environment = {
@@ -61,14 +66,20 @@ class GitHubArtifacts:
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         private_directory(directory)
         self._until = 0.0
+        self._published_runs: dict[int, int] = {}
 
-    def _api(self, path: str, *, binary: bool = False) -> object:
+    def _api(
+        self, path: str, *, binary: bool = False, body: dict[str, object] | None = None
+    ) -> object:
         remaining = min(IO_SECONDS, self._until - time.monotonic())
         if remaining <= 0:
             raise LifecycleError("GitHub checkpoint operation exceeded its deadline")
         try:
+            command = [self._executable, "api", "--hostname", "github.com", "--method"]
+            command.extend(["GET", path] if body is None else ["POST", path, "--input", "-"])
             result = subprocess.run(  # noqa: S603 - fixed API origin/paths; token only in env
-                [self._executable, "api", "--hostname", "github.com", "--method", "GET", path],
+                command,
+                input=None if body is None else canonical_bytes(body),
                 env=self._environment,
                 capture_output=True,
                 check=False,
@@ -167,28 +178,53 @@ class GitHubArtifacts:
 
     def latest(self) -> Stored | None:
         self._until = time.monotonic() + SCAN_SECONDS
-        for run in self._runs():
-            run_id = _number(run["id"])
-            candidates = [
-                row
-                for row in self._artifacts(run_id)
-                if isinstance(row.get("name"), str)
-                and cast(str, row["name"]).startswith(self.prefix)
-            ]
-            if candidates:
-                # Writers reject older run IDs, including manual reruns. Within
-                # one serialized run, the artifact identity supplies the order.
-                return self._reference(
-                    max(candidates, key=lambda row: _number(row["id"])), run_id=run_id
-                )
-        return None
+        # GitHub returns individual statuses newest first. Unlike artifacts,
+        # these records have no expiry, replacement or deletion API. Never
+        # infer the head from the surviving artifact inventory.
+        for page in range(1, MAX_RUN_PAGES + 1):
+            rows = self._api(
+                f"repos/{REPOSITORY}/commits/{self.registry_revision}/statuses"
+                f"?per_page={PAGE_SIZE}&page={page}"
+            )
+            if not isinstance(rows, list) or len(rows) > PAGE_SIZE:
+                raise LifecycleError("independent checkpoint registry is unavailable")
+            for row in rows:
+                if not isinstance(row, dict) or not isinstance(row.get("context"), str):
+                    raise LifecycleError("independent checkpoint registry is malformed")
+                if cast(str, row["context"]).lower() == self.context:
+                    return self._status_reference(row)
+            if len(rows) < PAGE_SIZE:
+                return None
+        raise LifecycleError("independent checkpoint registry exceeds its scan bound")
+
+    def _status_reference(self, row: dict[str, object]) -> Stored:
+        author, description = row.get("creator"), row.get("description")
+        match = re.fullmatch(
+            re.escape(f"https://github.com/{REPOSITORY}/actions/runs/")
+            + r"([1-9][0-9]*)/artifacts/([1-9][0-9]*)",
+            str(row.get("target_url")),
+        )
+        if (
+            match is None
+            or not isinstance(author, dict)
+            or author.get("id") != STATUS_AUTHOR
+            or author.get("type") != "Bot"
+            or row.get("state") != "success"
+            or not isinstance(description, str)
+            or re.fullmatch(r"sha256:[0-9a-f]{64}", description) is None
+        ):
+            raise LifecycleError("latest checkpoint registry entry is untrusted or malformed")
+        _number(row.get("id"))
+        stored = Stored(int(match[2]), description.removeprefix("sha256:"))
+        self._published_runs[stored.identity] = int(match[1])
+        return stored
 
     def read(self, stored: Stored) -> dict[str, object]:
         self._until = time.monotonic() + SCAN_SECONDS
         metadata = self._api(f"repos/{REPOSITORY}/actions/artifacts/{stored.identity}")
         if (
             not isinstance(metadata, dict)
-            or self._reference(metadata) != stored
+            or self._reference(metadata, run_id=self._published_runs.get(stored.identity)) != stored
             or type(metadata.get("size_in_bytes")) is not int
             or not 0 < metadata["size_in_bytes"] <= MAX_CACHE_BYTES
         ):
@@ -211,7 +247,7 @@ class GitHubArtifacts:
                 encrypted = json.loads(archive.read(entries[0]))
             with tempfile.TemporaryDirectory(dir=self.directory) as temporary:
                 path = Path(temporary) / "checkpoint.json"
-                write_private(path, encrypted)
+                write_private(path, encrypted, maximum=MAX_CACHE_BYTES)
                 value = JournalCache(path, token=self._token, vault="connect:" + self.epoch).read()
             if digest(value) != stored.sha256:
                 raise LifecycleError("GitHub checkpoint plaintext binding changed")
@@ -233,6 +269,7 @@ class GitHubArtifacts:
         runs = self._runs()
         if not runs or runs[0].get("id") != run_id:
             raise LifecycleError("an older cleanup run cannot publish over a newer checkpoint")
+        previous = self.latest()
         action = (
             Path(os.environ["RUNNER_WORKSPACE"]).parent
             / "_actions/actions/upload-artifact"
@@ -282,4 +319,23 @@ class GitHubArtifacts:
         matches = [row for row in self._artifacts(run_id) if row.get("name") == name]
         if len(matches) != 1:
             raise LifecycleError("checkpoint upload has no unique registry readback")
-        return self._reference(matches[0], run_id=run_id)
+        created = self._reference(matches[0], run_id=run_id)
+        if self.read(created) != document:
+            raise LifecycleError("checkpoint upload has no exact plaintext readback")
+        if self.latest() != previous:
+            raise LifecycleError("checkpoint registry advanced during this upload")
+        self._api(
+            f"repos/{REPOSITORY}/statuses/{self.registry_revision}",
+            body={
+                "context": self.context,
+                "state": "success",
+                "description": "sha256:" + created.sha256,
+                "target_url": (
+                    f"https://github.com/{REPOSITORY}/actions/runs/{run_id}"
+                    f"/artifacts/{created.identity}"
+                ),
+            },
+        )
+        if self.latest() != created:
+            raise LifecycleError("checkpoint registry publication remains unconfirmed")
+        return created
