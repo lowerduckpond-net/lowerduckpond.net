@@ -202,8 +202,10 @@ request is retried. Missing or ambiguous ownership remains unresolved.
 Terminal cleanup, a separate persistent watchdog, and the protected GitHub
 workflow independently reconcile those obligations. The watchdog checks local
 processes every minute and immediately reconciles a newly detected terminal path.
-Unresolved terminal cleanup retries at five-minute intervals. Routine remote
-reconciliation and GitHub scheduling are hourly; GitHub execution may be delayed. Stale execution,
+Unresolved terminal cleanup first retries after five minutes, then backs off through
+10, 20 and 40 minutes to hourly retries. A newly detected terminal path still triggers
+immediate reconciliation. Routine remote reconciliation and GitHub scheduling are
+hourly; GitHub execution may be delayed. Stale execution,
 overdue obligations and provider failures remain visible. No exact-time Spaces
 deletion guarantee is made. A successful DELETE alone is insufficient: require
 fresh complete inventory and detail absence, plus negative authentication where
@@ -228,8 +230,9 @@ quota metadata, requiring headroom for the journey, retained journal history and
 cleanup. This observes capacity; it cannot reserve it against unrelated account
 activity. Quota exhaustion never clears an obligation or suppresses revocation.
 The hourly remote cadence avoids consuming the quota with idle one-minute reads.
-The GitHub workflow retains an encrypted cache of immutable journal reads, keyed
-by its cleanup service account and vault. It contains no provider credentials or
+The controller and watchdog share an encrypted cache of immutable journal reads
+on the private evidence volume; GitHub retains its own cache independently. Each
+cache is keyed by its cleanup service account and vault. It contains no provider credentials or
 production inputs. Every sweep still lists the live vault and validates each
 cached record against its current metadata and content-hash title; new records
 are fetched, and changed or disappeared records fail closed. Provider removal
@@ -239,7 +242,11 @@ Cache loss requires fresh journal reads and may need more quota. See
 An invalid or unreadable cache triggers complete live journal reads. A cache that
 is too large or cannot be written is omitted without blocking credential cleanup.
 The GitHub workflow separates restored input from newly validated encrypted output
-and saves only the latter after successful reconciliation.
+and saves only the latter, including when provider revocation fails. Repeated failures
+reuse an outstanding negative-authentication obligation rather than appending identical
+markers. Every retry still requires fresh provider readback and authentication checks
+where credentials remain available; reduced journal traffic cannot turn a failure into
+verified cleanup.
 
 ## Repository identity and audit lineage
 

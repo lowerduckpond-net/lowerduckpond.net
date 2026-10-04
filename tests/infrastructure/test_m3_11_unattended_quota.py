@@ -6,6 +6,7 @@ import copy
 import dataclasses
 import json
 import os
+import subprocess
 import sys
 import time
 from datetime import UTC, datetime, timedelta
@@ -14,6 +15,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
+import yaml  # type: ignore[import-untyped]
 
 from scripts.m3_11_private_inputs import write_private
 from scripts.m3_11_unattended import cleanup, docker, journal_cache, quota, watchdog, worker
@@ -21,7 +23,7 @@ from scripts.m3_11_unattended.config import Bootstrap, Configuration, Connection
 from scripts.m3_11_unattended.journal import OnePassword, OpJournal, event
 from scripts.m3_11_unattended.journal_cache import JournalCache
 from scripts.m3_11_unattended.lifecycle import Lifecycle
-from scripts.m3_11_unattended.model import Credential, LifecycleError, stamp
+from scripts.m3_11_unattended.model import ROLES, Credential, LifecycleError, stamp
 from scripts.m3_11_unattended.state import RunState, replace_private
 
 from .test_m3_11_unattended_controller import subject
@@ -31,6 +33,7 @@ from .test_m3_11_unattended_providers import JournalCli
 DAY_SECONDS = 24 * 60 * 60
 DAILY_SWEEPS = 2 * 24
 IDLE_REQUEST_BUDGET = 600
+DAILY_REQUEST_BUDGET = 1000
 
 
 class CountedCli(JournalCli):
@@ -168,16 +171,57 @@ def test_quota_metadata_fails_closed(fault: str) -> None:
         quota.limits(cast(OnePassword, QuotaCli(value)))
 
 
-def test_full_day_of_real_cleanup_loops_stays_below_idle_quota(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def prepare_cleanup_day(
+    tmp_path: Path,
+    cli: CountedCli,
+    selected: worker.Worker,
+    case: Case,
+    failed_cleanup: str | None,
+) -> Path:
+    runs = tmp_path / "runs"
+    runs.mkdir(mode=0o700)
+    directory = runs / case.run_id
+    selected.directory.rename(directory)
+    selected.directory = directory
+    selected.state = RunState(directory)
+    initial = OpJournal(cast(OnePassword, cli), "a" * 26)
+    for number in range(100 if failed_cleanup else 20):
+        initial.append(event("result", case.run_id, {"historical_record": number}))
+    if failed_cleanup:
+        selected.state.begin(selected.binding)
+        for name in ("credential-intents", "credential-cleanup"):
+            (selected.directory / name).mkdir(mode=0o700)
+        case.lifecycle = Lifecycle(
+            initial,
+            {"spaces": case.provider},
+            clock=lambda: case.now,
+            remember=selected.remember,
+            remember_intent=selected.remember_intent,
+        )
+        for role in ROLES:
+            case.create(role=role)
+        selected.state.finish_journey("failed", 1)
+        case.provider.fail_delete = failed_cleanup == "deletion"
+        case.provider.still_authenticates = failed_cleanup == "authentication"
+    cli.requests = 0
+    return runs
+
+
+@pytest.mark.parametrize(
+    "failed_cleanup",
+    [pytest.param(None, id="idle"), "deletion", "authentication"],
+)
+def test_full_day_of_cleanup_stays_within_quota_and_preserves_unresolved_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failed_cleanup: str | None,
 ) -> None:
     tmp_path.chmod(0o700)
     cli = CountedCli()
-    case = Case(tmp_path / "case")
-    initial = OpJournal(cast(OnePassword, cli), "a" * 26)
-    for number in range(20):
-        initial.append(event("result", case.run_id, {"historical_record": number}))
-    cli.requests = 0
+    selected, case = subject(tmp_path, monkeypatch)
+    runs = prepare_cleanup_day(tmp_path, cli, selected, case, failed_cleanup)
+    directory = selected.directory
     clock = [0.0]
     connections = []
 
@@ -193,7 +237,20 @@ def test_full_day_of_real_cleanup_loops_stays_below_idle_quota(
 
     def sleep(seconds: float) -> None:
         clock[0] += seconds
+        # The actual worker entry point's matching cadence is checked separately.
+        if failed_cleanup and clock[0] in {
+            300,
+            900,
+            2100,
+            4500,
+            *range(8100, DAY_SECONDS, 3600),
+        }:
+            assert not selected.revoke()
         if clock[0] % 3600 == 0:
+            output = tmp_path / "journal.json"
+            restored = tmp_path / "restored.json"
+            if output.exists():
+                output.replace(restored)
             with monkeypatch.context() as context:
                 context.setattr(
                     sys,
@@ -205,10 +262,15 @@ def test_full_day_of_real_cleanup_loops_stays_below_idle_quota(
                         "--config",
                         "/unused",
                         "--journal-cache",
+                        str(restored),
+                        "--journal-cache-output",
                         str(tmp_path / "journal.json"),
                     ],
                 )
-                assert cleanup.main() == 0
+                assert cleanup.main() == (1 if failed_cleanup else 0)
+                # Save only newly validated output, including when the provider
+                # is unavailable; never republish the restored input file.
+                assert output.exists()
         if clock[0] >= DAY_SECONDS:
             raise KeyboardInterrupt
 
@@ -225,7 +287,11 @@ def test_full_day_of_real_cleanup_loops_stays_below_idle_quota(
         cleanup, "cleanup_configuration", lambda _path: (TARGETS, "a" * 26, Bootstrap({}))
     )
     monkeypatch.setattr(cleanup, "connect_cleanup", connect)
-    monkeypatch.setattr(docker, "Docker", SimpleNamespace)
+    monkeypatch.setattr(
+        docker,
+        "Docker",
+        lambda: SimpleNamespace(owned=lambda _name: {"State": {"Running": True}}),
+    )
     monkeypatch.setattr(
         sys,
         "argv",
@@ -237,13 +303,24 @@ def test_full_day_of_real_cleanup_loops_stays_below_idle_quota(
             "--config",
             "/unused",
             "--runs",
-            str(tmp_path / "runs"),
+            str(runs),
+            "--journal-cache",
+            str(selected.cleanup_cache),
         ],
     )
+    if failed_cleanup:
+        assert not selected.revoke()
     with pytest.raises(KeyboardInterrupt):
         cleanup.main()
-    assert len(connections) == DAILY_SWEEPS
-    assert cli.requests < IDLE_REQUEST_BUDGET
+    if failed_cleanup:
+        assert selected.state.status()["credential_cleanup"] == "unresolved"
+        assert selected.state.status()["qualification"] == "failed"
+        assert worker.retained_credentials(directory)
+        assert bool(case.provider.items) == (failed_cleanup == "deletion")
+        assert cli.requests < DAILY_REQUEST_BUDGET
+    else:
+        assert len(connections) == DAILY_SWEEPS
+        assert cli.requests < IDLE_REQUEST_BUDGET
     assert CANARY not in capsys.readouterr().out
 
 
@@ -300,7 +377,7 @@ def test_surviving_controller_bounds_failed_cleanup_retries_and_stops_after_reco
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recovers: bool
 ) -> None:
     clock = [0.0]
-    recovery_at, stop_at = 600, 1200
+    recovery_at, stop_at = 600, 12000
     monkeypatch.setattr(time, "monotonic", lambda: clock[0])
     selected, case = subject(tmp_path, monkeypatch)
     calls = []
@@ -359,7 +436,7 @@ def test_surviving_controller_bounds_failed_cleanup_retries_and_stops_after_reco
             worker.main()
     finally:
         os.umask(previous_umask)
-    assert calls == ([0, 300, 600] if recovers else [0, 300, 600, 900])
+    assert calls == ([0, 300, 900] if recovers else [0, 300, 900, 2100, 4500, 8100, 11700])
     assert len(set(outcomes)) == 1
     assert selected.state.status()["qualification"] == "failed"
     assert selected.state.status()["closure"] == "unresolved"
@@ -451,17 +528,32 @@ def test_invalid_restore_is_cold_read_and_only_fresh_validated_output_is_saved(
 ) -> None:
     tmp_path.chmod(0o700)
     cli = CountedCli()
-    restored, output = tmp_path / "restored.json", tmp_path / "journal.json"
+    directory = tmp_path / "m3-11-journal-cache"
+    directory.mkdir(mode=0o700)
+    restored, output = directory / "restored.json", directory / "journal.json"
     record = event("result", Case(tmp_path / "case").run_id, {"test": CANARY})
-    initial = cached(cli, restored)
+    initial = cached(cli, output)
     initial.append(record)
     initial.records()
     if fault == "tamper":
-        replace_private(restored, {"ciphertext": "invalid"})
+        replace_private(output, {"ciphertext": "invalid"})
     else:
         # This models a separately authorized service-account replacement, not
         # automatic rotation. The live obligation vault remains authoritative.
-        JournalCache(restored, token=CANARY + "previous-account", vault="a" * 26).write({})
+        JournalCache(output, token=CANARY + "previous-account", vault="a" * 26).write({})
+    workflow = yaml.safe_load(Path(".github/workflows/m3-11-credential-cleanup.yml").read_text())
+    stage = next(
+        step for step in workflow["jobs"]["reconcile"]["steps"] if step.get("id") == "cache_input"
+    )
+    # Execute the workflow's real boundary: a subsequent cleanup failure must
+    # never leave unvalidated restored bytes at the path its save action uploads.
+    subprocess.run(  # noqa: S603 - fixed workflow step with isolated non-secret paths
+        ["/usr/bin/bash", "-e", "-o", "pipefail", "-c", stage["run"]],
+        env={"PATH": os.environ["PATH"], "RUNNER_TEMP": str(tmp_path)},
+        check=True,
+        capture_output=True,
+    )
+    assert not output.exists()
     rejected = restored.read_bytes()
     cli.fail_list = True
     with pytest.raises(LifecycleError, match="unavailable"):
@@ -601,7 +693,7 @@ def test_dead_controller_leaves_retry_set_only_after_verified_revocation(
     )
     with pytest.raises(KeyboardInterrupt):
         cleanup.main()
-    assert calls == ([0, *range(60, 2 * 3600, 300)] if failed_revocation else [0, 60, 3660])
+    assert calls == ([0, 60, 360, 960, 2160, 4560] if failed_revocation else [0, 60, 3660])
     assert state.status()["qualification"] == "interrupted"
     assert state.status()["credential_cleanup"] == (
         "unresolved" if failed_revocation else "verified"

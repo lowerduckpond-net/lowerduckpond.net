@@ -58,6 +58,7 @@ def subject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[worker.Wor
         },
     )
     selected = worker.Worker(directory, configuration(), tmp_path / "source")
+    selected.cleanup_cache = tmp_path / "cleanup-journal-cache.json"
     monkeypatch.setattr(selected, "_verify_source", lambda: None)
     monkeypatch.setattr(
         worker,

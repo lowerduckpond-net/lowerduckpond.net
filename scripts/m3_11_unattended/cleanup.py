@@ -128,12 +128,15 @@ def sweep(
         and record["payload"].get("actor") == actor
     ]
     newest = max(prior, key=lambda value: str(value.get("observed_at"))) if prior else None
-    # Avoid an unbounded one-item-per-minute trail when nothing changes. GitHub
-    # always records its independent run, including delayed/stale execution.
+    # GitHub records every execution; the watchdog records at least hourly.
+    # Controller retries keep local status timestamps and journal only changes.
     if (
         actor == "github"
         or newest is None
-        or now - instant(newest["observed_at"]) >= timedelta(seconds=REMOTE_SECONDS)
+        or (
+            actor == "watchdog"
+            and now - instant(newest["observed_at"]) >= timedelta(seconds=REMOTE_SECONDS)
+        )
         or any(
             newest.get(key) != receipt[key]
             for key in ("helper_revision", "status", "overdue", "results")
@@ -254,6 +257,7 @@ def main() -> int:
     status = 1
     journal: OpJournal | None = None
     next_remote = next_retry = 0.0
+    retry_seconds = RETRY_SECONDS
     last_due: set[Path] = set()
     while True:
         try:
@@ -276,9 +280,10 @@ def main() -> int:
                 continue
             # Local process checks remain every minute. Remote reconciliation is
             # hourly, or immediate on an unresolved local terminal path, with a
-            # bounded five-minute retry interval after failure. Never burn the
-            # account-wide daily quota rereading idle bootstrap fields each minute.
-            next_remote, next_retry = now + REMOTE_SECONDS, now + RETRY_SECONDS
+            # five-minute first retry and backoff to hourly after failure. Avoid
+            # consuming the daily quota rereading idle bootstrap every minute.
+            retry_seconds = RETRY_SECONDS if newly_due else retry_seconds
+            next_remote, next_retry = now + REMOTE_SECONDS, now + retry_seconds
             last_due = due
             targets, vault, bootstrap = cleanup_configuration(args.config)
             lifecycle = connect_cleanup(bootstrap, targets, vault)
@@ -308,6 +313,7 @@ def main() -> int:
                 flush=True,
             )
             status = 1
+        retry_seconds = RETRY_SECONDS if status == 0 else min(2 * retry_seconds, REMOTE_SECONDS)
         if not args.watch:
             return status
         time.sleep(POLL_SECONDS)

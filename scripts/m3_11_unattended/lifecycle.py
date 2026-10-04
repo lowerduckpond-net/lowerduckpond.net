@@ -269,16 +269,18 @@ class Lifecycle:
             if credential is not None:
                 # Losing this actor after DELETE must not let a later actor
                 # discard a failed negative probe by omitting the retained key.
-                self.journal.append(
-                    event(
-                        "cleanup",
-                        intent.run_id,
-                        {
-                            "intent_sha256": intent.sha256,
-                            "negative_authentication": "required",
-                        },
+                # Reuse an outstanding marker; each retry still probes afresh.
+                if not observations or observations[-1]["kind"] != "cleanup":
+                    self.journal.append(
+                        event(
+                            "cleanup",
+                            intent.run_id,
+                            {
+                                "intent_sha256": intent.sha256,
+                                "negative_authentication": "required",
+                            },
+                        )
                     )
-                )
                 if known != credential.identifier or not client.denied(intent, credential):
                     raise LifecycleError(
                         "revoked credential still authenticates or rejection is unproven"

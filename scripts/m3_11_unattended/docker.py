@@ -402,6 +402,8 @@ def launch(docker: Docker, *, source: str, image: str, run_id: str, daemon_socke
             "--watch",
             "--runs",
             "/evidence/runs",
+            "--journal-cache",
+            "/evidence/cleanup-journal-cache.json",
         )
     docker.command(
         "run",

@@ -189,6 +189,10 @@ def test_failed_revocation_blocks_closure_and_new_start(tmp_path: Path, fault: s
     assert result.status == "unresolved"
     assert CANARY not in repr(result)
     assert not any(record["kind"] == "resolved" for record in case.journal.records())
+    retained = case.journal.records()
+    for _ in range(2):
+        assert case.lifecycle.reconcile(intent, credential).status == "unresolved"
+        assert case.journal.records() == retained
     with pytest.raises(LifecycleError):
         case.lifecycle.require_clear()
     setattr(case.provider, fault, False)

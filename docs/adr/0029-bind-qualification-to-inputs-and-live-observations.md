@@ -150,13 +150,15 @@ scheduler/provider availability precludes an exact-time Spaces expiry guarantee.
 
 Cleanup also depends on 1Password's shared account request quota. Admission
 requires observed request headroom; it cannot reserve that quota. Local death
-checks remain independent of hourly remote polling. Encrypted immutable journal
-read caches reduce repeated reads, but every sweep requires live vault inventory
+checks remain independent of hourly remote polling. Terminal cleanup is immediate;
+persistent failures back off from a five-minute first retry to hourly retries.
+Encrypted immutable journal read caches reduce repeated reads, but every sweep
+requires live vault inventory
 and exact metadata/content-hash agreement, followed by fresh provider readback.
 Neither a cached receipt nor exhausted quota resolves an outstanding obligation.
 Invalid cache inputs require a cold live read; cache write failures or size bounds
 do not prevent credential reconciliation. Only newly validated encrypted cache
-output may be saved for reuse.
+output may be saved for reuse, including after a provider revocation failure.
 
 Restart is reconciliation of one immutable attempt, not a retry of qualification.
 Changed executable inputs require a new correctly bound attempt. Complete live
