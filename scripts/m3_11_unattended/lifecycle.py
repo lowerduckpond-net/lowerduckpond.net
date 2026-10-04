@@ -375,13 +375,13 @@ class Lifecycle:
                     and prior["payload"] != proof
                 )
             ):
-                record = event("resolved", intent.run_id, proof)
-                if credential is None:
-                    self.journal.append(record)
-                else:
-                    # Retain the key and unresolved state until the independent
-                    # actor has observed the successful negative proof as well.
-                    self.journal.persist(record)
+                proof_record = event("resolved", intent.run_id, proof)
+            else:
+                proof_record = prior
+            # A secretless retry and a new-start check must not mistake a staged
+            # proof for external closure either. The GitHub actor persists its
+            # own proofs in recoverable off-host checkpoints before returning.
+            self.journal.persist(proof_record)
             return CleanupResult(intent.sha256, "verified", negative)
         except LifecycleError, OSError, ValueError, KeyError, TypeError:
             # Never copy provider exception payloads into status or erase intent.

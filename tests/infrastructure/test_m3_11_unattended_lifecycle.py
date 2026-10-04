@@ -163,6 +163,9 @@ def test_staged_denial_keeps_closure_pending_and_reuses_exact_proof(tmp_path: Pa
     journal.pending_kind = "resolved"
     assert case.lifecycle.reconcile(intent, credential).status == "unresolved"
     originals = [row for row in journal.records() if row["kind"] in {"cleanup", "resolved"}]
+    assert case.lifecycle.reconcile(intent).status == "unresolved"
+    with pytest.raises(LifecycleError, match="outstanding"):
+        case.lifecycle.require_clear()
     assert case.lifecycle.reconcile(intent, credential).status == "unresolved"
     assert [row for row in journal.records() if row["kind"] in {"cleanup", "resolved"}] == originals
     # A delayed ACK cannot replace the required fresh provider absence checks.
