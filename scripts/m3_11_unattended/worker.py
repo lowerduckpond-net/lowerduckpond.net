@@ -76,6 +76,50 @@ def retained_credentials(directory: Path) -> dict[str, Credential]:
     return values
 
 
+def persist_terminal_result(lifecycle: Lifecycle, directory: Path) -> None:
+    """Do not publish closure until the exact terminal event is independently durable."""
+    state = RunState(directory)
+    request = read_private(directory / "request.json")
+    binding = fields(request["binding"], inputs.BINDING)
+    if read_private(directory / "attempt.json")["binding"] != binding:
+        raise LifecycleError("terminal result differs from the original attempt binding")
+    run_id = identity(binding["managed_run_id"])
+    status = state.status()
+    expected = {
+        **status,
+        "binding": binding,
+        "approval_sha256": request["approval_sha256"],
+        "phase": "finished",
+        "credential_cleanup": "verified",
+        "closure": "complete" if status["qualification"] == "passed" else "unresolved",
+    }
+    records = [
+        record
+        for record in lifecycle.journal.records()
+        if record["kind"] == "result" and record["run_id"] == run_id
+    ]
+    path = directory / "terminal-journal-event.json"
+    original = (
+        read_private(path)
+        if path.exists()
+        else (records[0] if len(records) == 1 else event("result", run_id, expected))
+    )
+    payload = original.get("payload")
+    if (
+        len(records) > 1
+        or (records and records != [original])
+        or original.get("kind") != "result"
+        or original.get("run_id") != run_id
+        or not isinstance(payload, dict)
+        or {key: value for key, value in payload.items() if key != "observed_at"}
+        != {key: value for key, value in expected.items() if key != "observed_at"}
+    ):
+        raise LifecycleError("terminal journal event changed or is ambiguous")
+    if not path.exists():
+        write_private(path, original)
+    lifecycle.journal.persist(original)
+
+
 class Worker:
     def __init__(self, directory: Path, config: Configuration, source: Path) -> None:
         self.state, self.config, self.source = RunState(directory), config, source
@@ -486,31 +530,14 @@ class Worker:
                 and (value.get("intent_sha256") not in own or value.get("status") == "verified")
                 for value in results
             )
+            if verified and (self.directory / "journey-result.json").exists():
+                persist_terminal_result(lifecycle, self.directory)
             if verified:
                 for path in (self.directory / "credential-cleanup").glob("*.json"):
                     path.unlink()
                 if not (self.directory / "revocation.json").exists():
                     write_private(self.directory / "revocation.json", receipt)
             self.state.update("finished", cleanup="verified" if verified else "unresolved")
-            if (
-                verified
-                and (self.directory / "journey-result.json").exists()
-                and not any(
-                    record["kind"] == "result" and record["run_id"] == self.run_id
-                    for record in lifecycle.journal.records()
-                )
-            ):
-                lifecycle.journal.persist(
-                    event(
-                        "result",
-                        self.run_id,
-                        {
-                            "binding": self.binding,
-                            "approval_sha256": self.request["approval_sha256"],
-                            **self.state.status(),
-                        },
-                    )
-                )
             return verified
         except RuntimeError, OSError, ValueError, KeyError, TypeError:
             self.state.update("finished", cleanup="unresolved")

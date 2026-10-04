@@ -12,7 +12,7 @@ from scripts.m3_11_unattended.docker import Docker, controller_name
 from scripts.m3_11_unattended.lifecycle import Lifecycle, intents
 from scripts.m3_11_unattended.model import Credential, identity, instant
 from scripts.m3_11_unattended.state import RunState
-from scripts.m3_11_unattended.worker import retained_credentials
+from scripts.m3_11_unattended.worker import persist_terminal_result, retained_credentials
 
 
 def due_processes(root: Path, docker: Docker) -> list[Path]:
@@ -102,6 +102,10 @@ def finish_reconciled(
             len(verified) != len(expected)
             or {value["intent_sha256"] for value in verified} != expected
         ):
+            continue
+        try:
+            persist_terminal_result(lifecycle, directory)
+        except RuntimeError, OSError, ValueError, KeyError, TypeError:
             continue
         proof = {
             "format": "lowerduckpond-m3-11-watchdog-revocation-v1",

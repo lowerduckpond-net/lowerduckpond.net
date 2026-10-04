@@ -30,7 +30,7 @@ from scripts.m3_11_unattended.lifecycle import Lifecycle
 from scripts.m3_11_unattended.model import ROLES, Credential, LifecycleError, stamp
 from scripts.m3_11_unattended.state import RunState, cleanup_lock, replace_private
 
-from .test_m3_11_unattended_controller import subject
+from .test_m3_11_unattended_controller import bound, subject
 from .test_m3_11_unattended_lifecycle import CANARY, TARGETS, Case
 from .test_m3_11_unattended_providers import JournalCli
 
@@ -638,7 +638,11 @@ def test_dead_controller_leaves_retry_set_only_after_verified_revocation(
     for name in ("credential-intents", "credential-cleanup"):
         (directory / name).mkdir(mode=0o700)
     state = RunState(directory)
-    state.begin({"managed_run_id": case.run_id})
+    state.begin(bound(case))
+    write_private(
+        directory / "request.json",
+        {"binding": bound(case), "approval_sha256": "c" * 64},
+    )
     intent, credential = case.create()
     case.provider.fail_delete = failed_revocation
     write_private(directory / "credential-intents" / (intent.sha256 + ".json"), intent.document())
