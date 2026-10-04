@@ -62,6 +62,7 @@ def _issue_artifact_without_handoff(
 import os
 import pathlib
 import sys
+import time
 from datetime import UTC, datetime
 from io import BytesIO
 
@@ -74,6 +75,7 @@ from lowerduckpond_static_host_agent import (
     StateRepository,
     VerifiedArtifact,
 )
+from lowerduckpond_static_host_agent.locks import StateBusyError
 
 raw_request = bytes.fromhex({request_hex!r})
 payload = bytes.fromhex({artifact_hex!r})
@@ -89,21 +91,30 @@ with (
         read=BytesIO(payload).read,
         blocking=True,
     ) as lease:
-        try:
-            issued = AuthorizationIssuer(
-                repository,
-                gate=CommandPublicationGate(pathlib.Path({support.PUBLICATION_GATE!r})),
-                entropy=os.getrandom,
-            ).issue(
-                raw_request,
-                operator_principal="molecule-m3-8-operator-v1",
-                now=datetime.now(UTC),
-                artifact=lease.artifact.verified,
-                blocking=True,
-            )
-        except CorrelationRateLimitError as error:
-            print(str(error), file=sys.stderr)
-            raise SystemExit({support.RATE_LIMIT_EXIT_STATUS}) from error
+        issuer = AuthorizationIssuer(
+            repository,
+            gate=CommandPublicationGate(pathlib.Path({support.PUBLICATION_GATE!r})),
+            entropy=os.getrandom,
+        )
+        # Preliminary source reads can refuse tenant-state even when admission
+        # is blocking. Keep one intake lease and repeat only known contention.
+        for attempt in range({support._BUSY_RETRY_ATTEMPTS}):
+            try:
+                issued = issuer.issue(
+                    raw_request,
+                    operator_principal="molecule-m3-8-operator-v1",
+                    now=datetime.now(UTC),
+                    artifact=lease.artifact.verified,
+                    blocking=True,
+                )
+                break
+            except CorrelationRateLimitError as error:
+                print(str(error), file=sys.stderr)
+                raise SystemExit({support.RATE_LIMIT_EXIT_STATUS}) from error
+            except StateBusyError:
+                if attempt == {support._BUSY_RETRY_ATTEMPTS - 1}:
+                    raise
+                time.sleep({support._BUSY_RETRY_SECONDS})
         lease.commit()
         print(issued.job_id)
 """
