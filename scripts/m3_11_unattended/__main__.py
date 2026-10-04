@@ -18,6 +18,7 @@ from scripts.m3_11_unattended.docker import (
     OWNER,
     ROOT,
     Docker,
+    admission,
     controller_name,
     helper_volume,
     initialize_run,
@@ -46,49 +47,54 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
         or value["qualification_inputs_sha256"] != fingerprint(ROOT, source)
     ):
         raise LifecycleError("approved revision, targets, helper or Docker host changed")
-    # One active attempt globally, including unresolved cleanup. Never silently
-    # remove or replace another controller. Local admission also serializes starts.
-    names = (
-        docker.command(
-            "ps",
-            "--all",
-            "--filter",
-            "label=" + OWNER + "=true",
-            "--filter",
-            "name=ldp-m311-controller-",
-            "--format",
-            "{{.Names}}",
-        )
-        .decode()
-        .splitlines()
-    )
-    for name in names:
-        previous = identity(str(uuid.UUID(name.removeprefix("ldp-m311-controller-"))))
-        status = json.loads(operate(docker, previous, "status"))
-        progress = status.get("status", {})
-        if progress.get("credential_cleanup") != "verified" or progress.get("phase") != "finished":
-            raise LifecycleError("an active attempt or unresolved revocation blocks new starts")
-    run_id = str(uuid.uuid7())
-    request = {
-        "format": "lowerduckpond-m3-11-unattended-request-v1",
-        "binding": {
-            "managed_run_id": run_id,
-            "source_revision": source,
-            "helper_revision": source,
-            "qualification_inputs_sha256": value["qualification_inputs_sha256"],
-            "storage_target_sha256": configuration.targets.storage_digest,
-            "artifact_sha256": prepared["artifact_sha256"],
-        },
-        "mode": mode,
-        "approval_sha256": digest(value),
-        "controller_image": prepared["controller_image"],
-    }
     image = str(prepared["controller_image"])
-    initialize_run(
-        docker, image=image, request=canonical_bytes(request), run_id=run_id, config=config
-    )
-    launch(docker, source=source, image=image, run_id=run_id, daemon_socket=daemon_socket)
-    return run_id
+    with admission(docker, image=image):
+        # One active attempt globally, including unresolved cleanup. Never silently
+        # remove or replace another controller. The daemon reservation serializes starts.
+        names = (
+            docker.command(
+                "ps",
+                "--all",
+                "--filter",
+                "label=" + OWNER + "=true",
+                "--filter",
+                "name=ldp-m311-controller-",
+                "--format",
+                "{{.Names}}",
+            )
+            .decode()
+            .splitlines()
+        )
+        for name in names:
+            previous = identity(str(uuid.UUID(name.removeprefix("ldp-m311-controller-"))))
+            status = json.loads(operate(docker, previous, "status"))
+            progress = status.get("status", {})
+            if (
+                progress.get("credential_cleanup") != "verified"
+                or progress.get("phase") != "finished"
+            ):
+                raise LifecycleError("an active attempt or unresolved revocation blocks new starts")
+        run_id = str(uuid.uuid7())
+        request = {
+            "format": "lowerduckpond-m3-11-unattended-request-v1",
+            "binding": {
+                "managed_run_id": run_id,
+                "source_revision": source,
+                "helper_revision": source,
+                "qualification_inputs_sha256": value["qualification_inputs_sha256"],
+                "storage_target_sha256": configuration.targets.storage_digest,
+                "artifact_sha256": prepared["artifact_sha256"],
+            },
+            "mode": mode,
+            "approval_sha256": digest(value),
+            "controller_image": prepared["controller_image"],
+            "daemon": prepared["daemon"],
+        }
+        initialize_run(
+            docker, image=image, request=canonical_bytes(request), run_id=run_id, config=config
+        )
+        launch(docker, source=source, image=image, run_id=run_id, daemon_socket=daemon_socket)
+        return run_id
 
 
 def operate(docker: Docker, run_id: str, action: str) -> bytes:

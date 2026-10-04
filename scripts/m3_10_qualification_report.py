@@ -44,7 +44,7 @@ EMPTY_ACCOUNTING = {
 }
 
 
-def verify_report(  # noqa: PLR0913 - candidate bindings plus explicit milestone selection
+def verify_report(  # noqa: PLR0912, PLR0913 - independent evidence gates and explicit candidate bindings
     path: Path,
     *,
     source: str,
@@ -52,6 +52,7 @@ def verify_report(  # noqa: PLR0913 - candidate bindings plus explicit milestone
     repository: Path | None = None,
     storage_target: str | None = None,
     milestone: str = "3.10",
+    managed_binding: dict[str, object] | None = None,
 ) -> bytes:
     """Return the exact report bytes accepted by every gate below.
 
@@ -64,6 +65,8 @@ def verify_report(  # noqa: PLR0913 - candidate bindings plus explicit milestone
     if not isinstance(report.get("format"), str):
         raise ValueError("qualification report format is invalid")
     managed = report.get("format") == MANAGED_FORMAT
+    if managed_binding is not None and not managed:
+        raise ValueError("managed qualification requires its credential receipts")
     input_bound = report.get("format") in {
         INPUT_BOUND_FORMAT,
         combined.REPORT_FORMAT,
@@ -121,7 +124,7 @@ def verify_report(  # noqa: PLR0913 - candidate bindings plus explicit milestone
             raise ValueError("M3.11 qualification envelope must be canonical")
         _verify_combined(report, maximum_age=maximum_age)
         if managed:
-            _verify_managed(report, maximum_age=maximum_age)
+            _verify_managed(report, maximum_age=maximum_age, binding=managed_binding)
     if (
         not isinstance(report["storage_report_sha256"], str)
         or re.fullmatch(r"[0-9a-f]{64}", report["storage_report_sha256"]) is None
@@ -347,11 +350,20 @@ def _add_managed(report: dict[str, object], directory: Path) -> None:
     _verify_combined(report, maximum_age=timedelta(hours=24))
 
 
-def _verify_managed(report: dict[str, object], *, maximum_age: timedelta) -> None:
+def _verify_managed(
+    report: dict[str, object],
+    *,
+    maximum_age: timedelta,
+    binding: dict[str, object] | None = None,
+) -> None:
     credential = combined.fields(
         report["managed_credentials"],
         managed_inputs.BINDING | {"format", "receipts", "receipts_sha256"},
     )
+    if binding is not None and combined.fields(binding, managed_inputs.BINDING) != {
+        key: credential[key] for key in managed_inputs.BINDING
+    }:
+        raise ValueError("managed credential evidence belongs to another controller attempt")
     if (
         credential["format"] != "lowerduckpond-m3-11-managed-credentials-v1"
         or any(

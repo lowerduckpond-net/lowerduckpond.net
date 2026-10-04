@@ -11,7 +11,9 @@ from pathlib import Path
 
 import pytest
 
+from scripts.m3_11_unattended import docker as docker_module
 from scripts.m3_11_unattended.docker import OWNER, Docker, helper_volume
+from scripts.m3_11_unattended.model import LifecycleError
 
 # The controller runs the real durable state and lifecycle engine with only the
 # existing local provider double. No bootstrap file, live API or runner is loaded.
@@ -83,6 +85,24 @@ def wait_for(docker: Docker, name: str, path: str) -> None:
         except RuntimeError:
             time.sleep(0.5)
     pytest.fail("detached smoke did not reach its bounded checkpoint")
+
+
+@pytest.mark.skipif(
+    not os.environ.get("LDP_M3_11_DOCKER_SMOKE_IMAGE"),
+    reason="explicit prepared Docker image required",
+)
+def test_admission_reservation_is_atomic_on_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Isolate the smoke from any concurrently running qualification launcher.
+    monkeypatch.setattr(docker_module, "ADMISSION", "ldp-m311-smoke-admission-" + uuid.uuid4().hex)
+    first, second = Docker(), Docker()
+    image = os.environ["LDP_M3_11_DOCKER_SMOKE_IMAGE"]
+    with docker_module.admission(first, image=image):
+        with pytest.raises(LifecycleError), docker_module.admission(second, image=image):
+            pytest.fail("a second client acquired the same daemon reservation")
+        held = first.owned(docker_module.ADMISSION)
+        assert held["State"]["Status"] == "created"  # type: ignore[index]
+    with docker_module.admission(second, image=image):
+        assert first.owned(docker_module.ADMISSION)["Id"] != held["Id"]
 
 
 @pytest.mark.skipif(

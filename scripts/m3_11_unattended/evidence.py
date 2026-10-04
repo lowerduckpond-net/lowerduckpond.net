@@ -87,6 +87,7 @@ def export(directory: Path, *, repository: Path, include_report: bool) -> dict[s
             repository=repository,
             storage_target=str(binding["storage_target_sha256"]),
             milestone="3.11",
+            managed_binding=binding,
         )
         result["qualification_report"] = json.loads(raw)
     return result

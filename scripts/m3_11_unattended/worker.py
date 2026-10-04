@@ -21,6 +21,7 @@ from scripts.m3_11_qualification_evidence import canonical_bytes, fields
 from scripts.m3_11_unattended import cleanup, inputs
 from scripts.m3_11_unattended.cloudflare import Cloudflare
 from scripts.m3_11_unattended.config import Configuration, connect
+from scripts.m3_11_unattended.docker import SOCKET, Docker
 from scripts.m3_11_unattended.journal import event
 from scripts.m3_11_unattended.lifecycle import Lifecycle, intents
 from scripts.m3_11_unattended.model import (
@@ -80,7 +81,7 @@ class Worker:
         self.state, self.config, self.source = RunState(directory), config, source
         self.request = fields(
             read_private(directory / "request.json"),
-            {"format", "binding", "mode", "approval_sha256", "controller_image"},
+            {"format", "binding", "mode", "approval_sha256", "controller_image", "daemon"},
         )
         self.binding = fields(self.request["binding"], inputs.BINDING)
         self.run_id = identity(self.binding["managed_run_id"])
@@ -130,6 +131,11 @@ class Worker:
         with artifact.open("rb") as stream:
             if hashlib.file_digest(stream, "sha256").hexdigest() != self.binding["artifact_sha256"]:
                 raise LifecycleError("prepared artifact differs from live approval")
+
+    def _verify_daemon(self) -> None:
+        docker = Docker()
+        if docker.endpoint != "unix://" + SOCKET or docker.info() != self.request["daemon"]:
+            raise LifecycleError("controller socket does not reach the approved Docker host")
 
     def _command(
         self,
@@ -500,6 +506,7 @@ class Worker:
             self.pending = pending
             fresh = self.state.begin(self.binding)
             try:
+                self._verify_daemon()
                 self._verify_source()
                 if not fresh:
                     self.state.interrupted()
@@ -564,6 +571,7 @@ class Worker:
                         repository=self.source,
                         storage_target=self.config.targets.storage_digest,
                         milestone="3.11",
+                        managed_binding=self.binding,
                     )
                 self.state.finish_journey("passed" if status == 0 else "failed", status)
                 return status

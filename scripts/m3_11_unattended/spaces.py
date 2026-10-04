@@ -109,10 +109,13 @@ class Spaces:
         try:
             self._probe(intent, credential)
         except ClientError as error:
-            return error.response.get("Error", {}).get("Code") in {
-                "InvalidAccessKeyId",
-                "AccessDenied",
-            } and error.response.get("ResponseMetadata", {}).get("HTTPStatusCode") in {
+            # Authorization failures can occur while the key remains usable on
+            # another bucket. Only invalid authentication proves revocation.
+            return error.response.get("Error", {}).get(
+                "Code"
+            ) == "InvalidAccessKeyId" and error.response.get("ResponseMetadata", {}).get(
+                "HTTPStatusCode"
+            ) in {
                 HTTPStatus.FORBIDDEN,
                 HTTPStatus.UNAUTHORIZED,
             }

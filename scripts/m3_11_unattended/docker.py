@@ -11,6 +11,8 @@ import subprocess
 import tarfile
 import tempfile
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
@@ -23,6 +25,7 @@ LEASE_VOLUME = "ldp-m311-storage-leases"
 CONFIG_VOLUME = "ldp-m311-controller-config"
 CLEANUP_VOLUME = "ldp-m311-cleanup-config"
 SOCKET = "/var/run/docker.sock"
+ADMISSION = "ldp-m311-admission"
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -97,6 +100,35 @@ class Docker:
     def remove_controller(self, name: str) -> None:
         self.owned(name)
         self.command("rm", "--force", name)
+
+
+@contextmanager
+def admission(docker: Docker, *, image: str) -> Iterator[None]:
+    """Reserve admission atomically on the daemon, across all clients/revisions.
+
+    A lost launcher leaves this inert reservation in place for reconciliation;
+    it can never restart and silently begin a deferred attempt.
+    """
+    selected = (
+        docker.command(
+            "create",
+            "--name",
+            ADMISSION,
+            "--label",
+            OWNER + "=true",
+            "--network",
+            "none",
+            image,
+            "true",
+        )
+        .decode()
+        .strip()
+    )
+    try:
+        yield
+    finally:
+        # Use the returned identity so we never remove a replacement by name.
+        docker.remove_controller(selected)
 
 
 def image_name(source: str) -> str:
@@ -303,6 +335,8 @@ def launch(docker: Docker, *, source: str, image: str, run_id: str, daemon_socke
         "unless-stopped",
         "--network",
         "host",
+        "--env",
+        "DOCKER_HOST=unix://" + SOCKET,
         "--label",
         OWNER + "=true",
         "--mount",

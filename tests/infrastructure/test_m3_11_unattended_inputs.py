@@ -14,12 +14,13 @@ import pytest
 
 from scripts import m3_10_qualification_report as reports
 from scripts.m3_11_private_inputs import write_private
-from scripts.m3_11_unattended import inputs
+from scripts.m3_11_unattended import evidence, inputs
 from scripts.m3_11_unattended.model import ROLES, LifecycleError, Targets, digest, stamp
 from scripts.production_qualification_inputs import fingerprint
 
 from .test_m3_11_qualification_report import ARTIFACT, TARGET, Run
 from .test_m3_11_qualification_report import run as run  # noqa: PLC0414 - shared pytest fixture
+from .test_m3_11_unattended_controller import subject
 
 TARGETS = Targets(
     "nyc3", "example-archive", "example-backup", "a" * 32, "b" * 32, "c" * 32, "d" * 32
@@ -99,6 +100,65 @@ def test_real_managed_packaging_and_verifier_keep_production_distinct(run: Run) 
             "started_at"
         ]
     )
+
+
+@pytest.mark.parametrize("consumer", ["worker", "export"])
+@pytest.mark.parametrize("change", ["none", "managed_run_id", "helper_revision", "missing"])
+def test_controller_consumers_reject_whole_receipt_transplants(
+    run: Run, monkeypatch: pytest.MonkeyPatch, consumer: str, change: str
+) -> None:
+    report = run.create() if change == "missing" else managed_report(run)
+    wrapper = mapping(report.get("managed_credentials", binding(run)))
+    expected = {key: wrapper[key] for key in inputs.BINDING}
+    if change not in {"none", "missing"}:
+        # Transplant a complete, internally consistent wrapper: checking each
+        # nested receipt against the wrapper alone still accepts this report.
+        replacement = str(uuid.uuid7()) if change == "managed_run_id" else "f" * 40
+        wrapper[change] = replacement
+        receipts = mapping(wrapper["receipts"])
+        for receipt in receipts.values():
+            mapping(receipt)[change] = replacement
+        wrapper["receipts_sha256"] = digest(receipts)
+    raw = run.verify(report)
+    # The production targets are irrelevant to these local receipt consumers.
+    monkeypatch.setattr(Targets, "storage_digest", property(lambda _self: TARGET))
+    selected, _case = subject(run.directory.parent, monkeypatch)
+    selected.binding, selected.revision, selected.helper = expected, run.source, run.source
+    selected.run_id = str(expected["managed_run_id"])
+    request = {**selected.request, "binding": expected}
+    (selected.directory / "request.json").unlink()
+    write_private(selected.directory / "request.json", request)
+
+    def journey(_environment: dict[str, str]) -> int:
+        directory = selected.directory / "qualification/result"
+        directory.mkdir(parents=True)
+        (directory / "qualification.json").write_bytes(raw)
+        return 0
+
+    selected.source = run.repository
+    if consumer == "worker":
+        monkeypatch.setattr(selected, "_provision", lambda: ({}, {}))
+        monkeypatch.setattr(selected, "_production", lambda _credentials: {})
+        monkeypatch.setattr(selected, "_deliver", lambda *_args: {})
+        monkeypatch.setattr(selected, "_journey", journey)
+        assert selected.run() == (0 if change == "none" else 1)
+        assert selected.state.status()["qualification"] == (
+            "passed" if change == "none" else "failed"
+        )
+    else:
+        selected.state.begin(expected)
+        selected.state.finish_journey("passed", 0)
+        journey({})
+        if change == "none":
+            assert (
+                evidence.export(selected.directory, repository=run.repository, include_report=True)[
+                    "qualification_report"
+                ]
+                == report
+            )
+        else:
+            with pytest.raises(ValueError, match="managed"):
+                evidence.export(selected.directory, repository=run.repository, include_report=True)
 
 
 @pytest.mark.parametrize(

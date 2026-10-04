@@ -9,6 +9,7 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -16,11 +17,14 @@ import pytest
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_unattended import approval, cleanup, evidence, setup, worker
 from scripts.m3_11_unattended.config import Bootstrap, Configuration
+from scripts.m3_11_unattended.docker import SOCKET
 from scripts.m3_11_unattended.journal import OpJournal, event
 from scripts.m3_11_unattended.model import Credential, LifecycleError, stamp
 from scripts.m3_11_unattended.state import RunState, replace_private
 
 from .test_m3_11_unattended_lifecycle import CANARY, TARGETS, Case
+
+DAEMON = dict.fromkeys(("ID", "Name", "DockerRootDir", "ServerVersion"), "approved-daemon")
 
 
 def configuration() -> Configuration:
@@ -50,12 +54,39 @@ def subject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[worker.Wor
             "mode": "qualification",
             "approval_sha256": "c" * 64,
             "controller_image": "sha256:" + "d" * 64,
+            "daemon": DAEMON,
         },
     )
     selected = worker.Worker(directory, configuration(), tmp_path / "source")
     monkeypatch.setattr(selected, "_verify_source", lambda: None)
+    monkeypatch.setattr(
+        worker,
+        "Docker",
+        lambda: SimpleNamespace(endpoint="unix://" + SOCKET, info=lambda: DAEMON),
+    )
     monkeypatch.setattr(cleanup, "connect_cleanup", lambda *_args: case.lifecycle)
     return selected, case
+
+
+@pytest.mark.parametrize("field", ["ID", "Name", "DockerRootDir", "ServerVersion", "endpoint"])
+def test_mounted_socket_must_reach_approved_daemon_before_provisioning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    selected, case = subject(tmp_path, monkeypatch)
+    selected._verify_daemon()
+    daemon = {**DAEMON, **({field: "unapproved-daemon"} if field != "endpoint" else {})}
+    monkeypatch.setattr(
+        worker,
+        "Docker",
+        lambda: SimpleNamespace(
+            endpoint="unix:///other.sock" if field == "endpoint" else "unix://" + SOCKET,
+            info=lambda: daemon,
+        ),
+    )
+    monkeypatch.setattr(selected, "_provision", lambda: pytest.fail("must not provision"))
+    assert selected.run() == 1
+    assert selected.state.status()["qualification"] == "failed"
+    assert case.provider.creates == 0
 
 
 def test_restart_revokes_original_attempt_without_replaying_and_preserves_failed_evidence(

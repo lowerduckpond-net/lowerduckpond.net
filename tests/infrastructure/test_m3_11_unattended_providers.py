@@ -14,12 +14,13 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 
 from scripts import check_m3_10_provider as production
 from scripts import m3_11_fixture_tokens as fixture
 from scripts.check_m3_7_production_edge import ProductionEdgePreflightError
 from scripts.m3_11_private_inputs import write_private
-from scripts.m3_11_unattended import cleanup, cloudflare
+from scripts.m3_11_unattended import cleanup, cloudflare, config
 from scripts.m3_11_unattended import production as isolated
 from scripts.m3_11_unattended.cloudflare import Cloudflare
 from scripts.m3_11_unattended.config import Bootstrap
@@ -75,6 +76,86 @@ def test_spaces_deletion_requires_explicit_provider_acknowledgement() -> None:
     provider = Spaces(Responses(Response(403, {})).api())
     with pytest.raises(LifecycleError):
         provider.delete("credential00001")
+
+
+@pytest.mark.parametrize(
+    ("code", "status", "denied"),
+    [
+        ("InvalidAccessKeyId", 403, True),
+        ("InvalidAccessKeyId", 401, True),
+        ("InvalidAccessKeyId", 503, False),
+        ("AccessDenied", 403, False),
+        ("SignatureDoesNotMatch", 403, False),
+        ("NoSuchBucket", 404, False),
+    ],
+)
+def test_spaces_revocation_requires_invalid_authentication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: str, status: int, denied: bool
+) -> None:
+    case = Case(tmp_path)
+    intent, credential = case.create()
+    provider = Spaces(Responses().api())
+
+    def probe(*_args: object) -> None:
+        raise ClientError(
+            {"Error": {"Code": code}, "ResponseMetadata": {"HTTPStatusCode": status}},
+            "ListObjectsV2",
+        )
+
+    monkeypatch.setattr(provider, "_probe", probe)
+    assert provider.denied(intent, credential) is denied
+    # Even authenticated inventory absence cannot close a cleanup obligation
+    # while the retained key only demonstrates loss of bucket authorization.
+    monkeypatch.setattr(case.provider, "denied", provider.denied)
+    case.lifecycle.request_revocation(case.run_id)
+    result = case.lifecycle.sweep({intent.sha256: credential})[0]
+    assert result.status == ("verified" if denied else "unresolved")
+
+
+@pytest.mark.parametrize("account", [True, False])
+@pytest.mark.parametrize("condition", [None, {}, {"request_ip": {"in": ["192.0.2.0/24"]}}, [], ""])
+def test_cloudflare_authority_rejects_conditions_outside_its_expiry_boundary(
+    account: bool, condition: object
+) -> None:
+    now = datetime.now(UTC)
+    selected, permission = "f" * 32, "e" * 32
+    name = "Account API Tokens Write" if account else "API Tokens Write"
+    scope = "com.cloudflare.api.account" if account else "com.cloudflare.api.user"
+    expiry = now + timedelta(days=7)
+    details = {
+        "id": selected,
+        "status": "active",
+        "expires_on": stamp(expiry),
+        "condition": condition,
+        "policies": [
+            {
+                "effect": "allow",
+                "resources": {
+                    scope + "." + (TARGETS.account_id if account else TARGETS.user_id): "*"
+                },
+                "permission_groups": [{"id": permission, "name": name}],
+            }
+        ],
+    }
+    api = Responses(
+        *(
+            Response(200, {"success": True, "result": value})
+            for value in (
+                {"id": selected, "status": "active"},
+                details,
+                [{"id": permission, "name": name, "scopes": [scope]}],
+            )
+        )
+    )
+    client = Cloudflare(api.api(), account=TARGETS.account_id if account else None)
+    if condition in (None, {}):
+        assert config._cloudflare_authority(client, target=TARGETS, now=now) == (
+            selected,
+            expiry,
+        )
+    else:
+        with pytest.raises(LifecycleError, match="conditions"):
+            config._cloudflare_authority(client, target=TARGETS, now=now)
 
 
 def test_page_rules_provisioning_audits_complete_permission_policy(

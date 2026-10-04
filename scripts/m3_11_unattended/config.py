@@ -206,6 +206,8 @@ def _cloudflare_authority(
         expected_resources=resources,
         label="cleanup authority",
     )
+    if details.get("condition") not in (None, {}):
+        raise LifecycleError("cleanup Cloudflare authority must not have token conditions")
     expiry = instant(details.get("expires_on"))
     if expiry <= now or (details.get("not_before") and instant(details["not_before"]) > now):
         raise LifecycleError("cleanup Cloudflare authority is expired or not yet valid")

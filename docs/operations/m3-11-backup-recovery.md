@@ -31,6 +31,8 @@ for this implementation, the workspace and Docker daemon have different network
 namespaces. Docker's data directory is in the template's persistent Docker volume;
 qualification code, private evidence, configuration and storage leases use inner
 named volumes. Controller and watchdog use `unless-stopped` restart policies.
+Before provisioning, the controller verifies that its mounted socket reaches
+the exact Docker-host identity recorded in the approved preparation.
 
 Terminal disconnection does not own these containers. A workspace-agent exit
 does not intrinsically stop a sibling daemon container. Coder stop/rebuild can
@@ -73,6 +75,9 @@ initial bootstrap lifetime. The helper never rolls or extends existing credentia
 Cloudflare's user-token bootstrap uses its **Create additional tokens** template;
 the User/API Tokens permission is not available in the ordinary custom builder.
 Its policy must bind the approved `com.cloudflare.api.user.USER_ID` resource.
+Provisioning and cleanup Cloudflare authorities must have no token conditions,
+including IP restrictions that could prevent the independent cleanup actor from
+using them. Expiry alone must bound their availability.
 
 DigitalOcean's public Spaces API does not expose PAT scope/expiry introspection.
 After inspecting the exact scopes and expiry in the provider console, run
@@ -157,6 +162,14 @@ mise exec -- just m3-11-unattended evidence RUN_UUID
 mise exec -- just m3-11-unattended cancel RUN_UUID
 mise exec -- just m3-11-unattended cleanup-status --config /private/controller.json
 ```
+
+Start reserves the daemon-wide container name `ldp-m311-admission` before checking
+existing controllers or writing run inputs, and releases it after launch. A
+concurrent start fails immediately. If a launcher dies before releasing this
+inert reservation, new starts remain blocked. Confirm that no launcher is still
+running, inspect existing controllers and retained run state, and reconcile any
+credential obligations before removing that reservation by its inspected
+container ID. Never remove another launcher's reservation or prune the daemon.
 
 The rehearsal performs bounded real production/fixture probes, delivers private
 inputs, signals the controller's cancellation handler, revokes and records the
