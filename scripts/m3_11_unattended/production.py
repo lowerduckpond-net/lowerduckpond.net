@@ -17,9 +17,11 @@ from scripts.check_m3_10_provider import check_caddy_token
 from scripts.m3_11_private_inputs import write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
 from scripts.m3_11_unattended.connect_api import Connect
+from scripts.m3_11_unattended.connect_diagnostics import retain_failure
 from scripts.m3_11_unattended.inputs import BINDING, PRODUCTION_FORMAT, PRODUCTION_RESULT
 from scripts.m3_11_unattended.journal import OnePassword
 from scripts.m3_11_unattended.model import LifecycleError, Targets, stamp, strings
+from scripts.m3_11_unattended.state import private_directory
 from scripts.production_qualification_inputs import current_candidate, fingerprint, revision
 
 REFERENCES = frozenset(
@@ -33,6 +35,24 @@ REFERENCES = frozenset(
 )
 MAX_INPUT_BYTES = 256 * 1024
 CHECK_SECONDS = 25 * 60
+
+
+def _failure(request: object, *, stage: str, error: Exception, repository: Path) -> None:
+    try:
+        if not isinstance(request, dict) or not isinstance(request.get("output"), str):
+            return
+        output = Path(request["output"])
+        if not output.is_absolute() or output.is_relative_to(repository):
+            return
+        private_directory(output.parent)
+        retain_failure(
+            output.with_name("production-failure.json"),
+            binding=fields(request["binding"], BINDING),
+            stage=stage,
+            error=error,
+        )
+    except Exception:
+        return  # Preserve the failed result even when private diagnostics cannot be written.
 
 
 def _request() -> dict[str, object]:
@@ -103,6 +123,13 @@ def bootstrap(request: dict[str, object], repository: Path) -> int:
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    if result.returncode:
+        _failure(
+            request,
+            stage="bootstrap",
+            error=LifecycleError("production state reader or validator failed"),
+            repository=repository,
+        )
     return result.returncode
 
 
@@ -210,13 +237,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("bootstrap", "validate"))
     args = parser.parse_args()
+    request: object = None
+    repository = Path(__file__).resolve().parents[2]
     try:
-        repository = Path(__file__).resolve().parents[2]
         request = _request()
         if args.action == "bootstrap":
             return bootstrap(request, repository)
         validate(request, repository)
-    except RuntimeError, ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError:
+    except (
+        RuntimeError,
+        ValueError,
+        OSError,
+        KeyError,
+        TypeError,
+        subprocess.SubprocessError,
+    ) as error:
+        _failure(request, stage=args.action, error=error, repository=repository)
         print(
             "Actual production credential validation failed; no receipt was issued.",
             file=sys.stderr,

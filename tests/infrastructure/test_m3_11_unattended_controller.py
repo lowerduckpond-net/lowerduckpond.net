@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import sys
 import threading
@@ -10,21 +11,51 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast
+from typing import cast, override
 
 import pytest
 
 from scripts.m3_11_private_inputs import read_private, write_private
-from scripts.m3_11_unattended import approval, cleanup, evidence, setup, watchdog, worker
-from scripts.m3_11_unattended.config import Bootstrap, Configuration
+from scripts.m3_11_unattended import (
+    approval,
+    cleanup,
+    evidence,
+    inputs,
+    production,
+    setup,
+    watchdog,
+    worker,
+)
+from scripts.m3_11_unattended.cloudflare import Cloudflare
+from scripts.m3_11_unattended.config import Bootstrap, Configuration, Connections
 from scripts.m3_11_unattended.docker import SOCKET, Docker
 from scripts.m3_11_unattended.journal import OpJournal, event
-from scripts.m3_11_unattended.lifecycle import Lifecycle, intents, known_id
-from scripts.m3_11_unattended.model import Credential, Intent, LifecycleError, stamp
+from scripts.m3_11_unattended.lifecycle import (
+    CreationRecorder,
+    Lifecycle,
+    Provider,
+    intents,
+    known_id,
+)
+from scripts.m3_11_unattended.model import (
+    ROLES,
+    Authority,
+    Credential,
+    Intent,
+    LifecycleError,
+    ProviderKind,
+    stamp,
+)
 from scripts.m3_11_unattended.state import RunState, replace_private
 
 from .test_m3_11_creation_identities import CreationApi, provision
-from .test_m3_11_unattended_lifecycle import CANARY, TARGETS, Case, DelayedPersistence
+from .test_m3_11_unattended_lifecycle import (
+    CANARY,
+    TARGETS,
+    Case,
+    DelayedPersistence,
+    ProviderDouble,
+)
 
 DAEMON = dict.fromkeys(("ID", "Name", "DockerRootDir", "ServerVersion"), "approved-daemon")
 
@@ -527,3 +558,205 @@ def test_status_exposes_real_supervisor_phase_but_never_raw_failure_payloads(
     result = evidence.export(selected.directory, repository=selected.source, include_report=False)
     assert result["last_qualification_phase"] == "verify"
     assert CANARY not in json.dumps(result)
+
+
+def test_worker_retains_closed_preflight_and_cleanup_diagnostics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selected, _case = subject(tmp_path, monkeypatch)
+    selected.request["daemon"] = {**DAEMON, "ID": CANARY}
+
+    def unavailable(*_args: object, **_kwargs: object) -> object:
+        raise LifecycleError(CANARY)
+
+    monkeypatch.setattr(cleanup, "connect_cleanup", unavailable)
+    assert selected.run() == 1
+    exported = json.loads(
+        json.dumps(
+            evidence.export(selected.directory, repository=selected.source, include_report=False)
+        )
+    )
+    assert exported["status"]["credential_cleanup"] == "unresolved"
+    assert exported["status"]["qualification"] == "failed"
+    assert exported["worker_diagnostic"]["stage"] == "starting"
+    assert exported["worker_diagnostic"]["failure"]["origin"]["function"] == "_verify_daemon"
+    assert exported["cleanup_diagnostic"]["stage"] == "revoking"
+    assert CANARY not in json.dumps(exported)
+    original = (selected.directory / "worker-failure.json").read_bytes()
+    selected._failure(RuntimeError(CANARY))
+    assert (selected.directory / "worker-failure.json").read_bytes() == original
+
+
+@pytest.mark.parametrize(
+    "field", ["binding", "stage", "category", "path", "function", "line", "extra"]
+)
+def test_worker_diagnostic_canaries_and_transplants_are_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    selected, _case = subject(tmp_path, monkeypatch)
+    selected.request["daemon"] = {**DAEMON, "ID": CANARY}
+    assert selected.run() == 1
+    path = selected.directory / "worker-failure.json"
+    value = json.loads(path.read_text())
+    if field in {"binding", "stage", "extra"}:
+        value[field] = CANARY
+    elif field == "category":
+        value["failure"][field] = CANARY
+    else:
+        value["failure"]["origin"][field] = CANARY
+    replace_private(path, value)
+    with pytest.raises((LifecycleError, ValueError)):
+        evidence.export(selected.directory, repository=selected.source, include_report=False)
+
+
+def test_broken_failure_diagnostics_cannot_prevent_terminal_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selected, case = subject(tmp_path, monkeypatch)
+    case.create()
+    selected.request["daemon"] = {**DAEMON, "ID": CANARY}
+
+    def broken(*_args: object, **_kwargs: object) -> None:
+        raise OSError(CANARY)
+
+    monkeypatch.setattr(worker, "retain_failure", broken)
+    assert selected.run() == 1
+    assert selected.state.status()["qualification"] == "failed"
+    assert selected.state.status()["credential_cleanup"] == "verified"
+    assert not case.provider.items
+
+
+def test_rehearsal_keeps_all_worker_stages_and_revokes_all_seven_delivered_roles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selected, case = subject(tmp_path, monkeypatch)
+    selected.request["mode"] = "rehearsal"
+    replace_private(selected.directory / "request.json", selected.request)
+    now = datetime.now(UTC)
+    boot = Bootstrap({}, connect_settings={})
+    selected.config = dataclasses.replace(
+        selected.config,
+        provision=boot,
+        cleanup=boot,
+        production={"connect": {"private-canary": CANARY}},
+    )
+
+    class Tokens(ProviderDouble, Cloudflare):
+        @override
+        def scope(self, role: str, _targets: object) -> dict[str, object]:
+            return {"role": role}
+
+        @override
+        def create(self, intent: Intent, *, record: CreationRecorder) -> Credential:
+            def returned(identifier: str, secret: str | None) -> None:
+                record(identifier, None if secret is None else secret + intent.role)
+
+            credential = super().create(intent, record=returned)
+            return dataclasses.replace(credential, secret=credential.secret + intent.role)
+
+    kinds: tuple[ProviderKind, ...] = ("spaces", "cloudflare-account", "cloudflare-user")
+    providers = {kind: Tokens() for kind in kinds}
+    for kind, provider in providers.items():
+        provider.kind = kind
+        provider.items["existing-production"] = {"id": "existing-production"}
+    # Each double must return identities unique across both provider families.
+    for index, provider in enumerate(providers.values()):
+        provider.creates = index * 10
+    authority = Authority("d" * 64, now + timedelta(days=3))
+    connected = Connections(case.journal, cast(dict[ProviderKind, Provider], providers), authority)
+    monkeypatch.setattr(worker, "connect", lambda *_args, **_kwargs: connected)
+    case.lifecycle.providers = providers
+    case.journal.append(
+        event(
+            "heartbeat",
+            case.run_id,
+            {
+                "actor": "github",
+                "helper_revision": selected.helper,
+                "observed_at": stamp(now),
+                "status": "ready",
+                "overdue": 0,
+                "results": [],
+            },
+        )
+    )
+    monkeypatch.setattr(inputs, "current_candidate", lambda *_args: None)
+    monkeypatch.setattr(
+        inputs, "fingerprint", lambda *_args: selected.binding["qualification_inputs_sha256"]
+    )
+    delivered = []
+
+    def command(arguments: list[str], **kwargs: object) -> None:
+        if kwargs["log"] == "production-check.log":
+            request = json.loads(cast(bytes, kwargs["stdin"]))
+            assert CANARY not in repr(arguments)
+            assert set(request["fixture"]) == {
+                "audit",
+                "observer",
+                "archive_id",
+                "backup_id",
+                "caddy_id",
+            }
+            observed = stamp(datetime.now(UTC))
+            write_private(
+                Path(request["output"]),
+                {
+                    "format": inputs.PRODUCTION_FORMAT,
+                    **request["binding"],
+                    "started_at": observed,
+                    "completed_at": observed,
+                    "checks": inputs.PRODUCTION_RESULT,
+                    "identities_sha256": {
+                        role: hashlib.sha256(("production-" + role).encode()).hexdigest()
+                        for role in ("archive", "backup", "caddy")
+                    },
+                },
+            )
+        else:
+            assert kwargs["log"] == "rehearsal-probes.log"
+            environment = cast(dict[str, str], kwargs["environment"])
+            assert not any(str(key).startswith(inputs.FORBIDDEN_PREFIXES) for key in environment)
+            delivered.append(read_private(selected.directory / "runtime-inputs.json"))
+
+    # External process endpoints are doubles; provisioning, receipts, delivery,
+    # actual signal handling and terminal reconciliation remain the real worker.
+    monkeypatch.setattr(selected, "_command", command)
+    assert selected.run() == 0
+    assert len(delivered) == 1
+    assert len(intents(case.journal)) == len(ROLES)
+    assert selected.state.status()["qualification"] == "rehearsal-interrupted"
+    assert selected.state.status()["credential_cleanup"] == "verified"
+    assert all(set(provider.items) == {"existing-production"} for provider in providers.values())
+    assert not (selected.directory / "runtime-inputs.json").exists()
+    assert CANARY not in json.dumps(
+        evidence.export(selected.directory, repository=selected.source, include_report=False)
+    )
+
+
+@pytest.mark.parametrize("action", ["bootstrap", "validate"])
+def test_short_production_process_retains_only_bound_static_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], action: str
+) -> None:
+    selected, _case = subject(tmp_path, monkeypatch)
+    selected.state.begin(selected.binding)
+    request = {
+        "binding": selected.binding,
+        "output": str(selected.directory / "production-check.json"),
+    }
+    monkeypatch.setattr(production, "_request", lambda: request)
+    monkeypatch.setattr(sys, "argv", ["production", action])
+
+    def rejected(*_args: object) -> None:
+        raise LifecycleError(CANARY)
+
+    monkeypatch.setattr(production, action, rejected)
+    assert production.main() == 1
+    exported = json.loads(
+        json.dumps(
+            evidence.export(selected.directory, repository=selected.source, include_report=False)
+        )
+    )
+    assert exported["production_diagnostic"]["stage"] == action
+    assert exported["production_diagnostic"]["failure"]["origin"]["function"] == "main"
+    captured = capsys.readouterr()
+    assert CANARY not in json.dumps(exported) + captured.out + captured.err

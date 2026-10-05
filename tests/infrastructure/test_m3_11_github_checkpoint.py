@@ -7,6 +7,7 @@ import hashlib
 import io
 import subprocess
 import sys
+import time
 import uuid
 import zipfile
 from collections.abc import Callable
@@ -164,9 +165,18 @@ def uploader(
         assert CANARY not in repr(command)
         path = Path(environment["INPUT_PATH"])
         assert CANARY.encode() not in path.read_bytes()
-        registry.add(name=environment["INPUT_NAME"], raw=archive(path))
+        row = registry.add(name=environment["INPUT_NAME"], raw=archive(path))
         if uncertain:
             raise subprocess.TimeoutExpired(command, 1, output=CANARY.encode())
+        outputs = {
+            "artifact-id": str(row["id"]),
+            "artifact-digest": str(row["digest"]).removeprefix("sha256:"),
+            "artifact-url": f"https://github.com/{github.REPOSITORY}/actions/runs/3/artifacts/{row['id']}",
+        }
+        with Path(environment["GITHUB_OUTPUT"]).open("a") as stream:
+            for key, value in outputs.items():
+                delimiter = "ghadelimiter_" + str(uuid.uuid4())
+                stream.write(f"{key}<<{delimiter}\n{value}\n{delimiter}\n")
         return subprocess.CompletedProcess(command, 0, CANARY.encode(), CANARY.encode())
 
     return run
@@ -198,7 +208,6 @@ def test_uploader_can_publish_outputs_after_upload_without_losing_registry_ackno
     def require_runner_output(
         command: list[str], **kwargs: object
     ) -> subprocess.CompletedProcess[bytes]:
-        uploaded = upload(command, **kwargs)
         environment = kwargs["env"]
         assert isinstance(environment, dict)
         # The pinned Actions toolkit checks existence before appending outputs.
@@ -211,17 +220,14 @@ def test_uploader_can_publish_outputs_after_upload_without_losing_registry_ackno
                 "p = pathlib.Path(os.environ['GITHUB_OUTPUT'])\n"
                 "assert p.is_file() and not p.is_symlink()\n"
                 "assert stat.S_IMODE(p.stat().st_mode) == 0o600\n"
-                "assert p.read_bytes() == b''\n"
-                "fd = os.open(p, os.O_WRONLY | os.O_APPEND)\n"
-                "os.write(fd, b'artifact-id=10\\n')\n"
-                "os.close(fd)\n",
+                "assert p.read_bytes() == b''\n",
             ],
             env=environment,
             capture_output=True,
             check=False,
             timeout=10,
         )
-        return uploaded if result.returncode == 0 else result
+        return upload(command, **kwargs) if result.returncode == 0 else result
 
     monkeypatch.setattr(subprocess, "run", require_runner_output)
     document: dict[str, object] = {"records": ["owned-intent"]}
@@ -244,6 +250,134 @@ def test_uncertain_upload_cannot_advance_registry_but_preserves_artifact(
         registry.create(value)
     assert CANARY not in str(error.value)
     assert registry.latest() is None  # No ACK can have been issued for this orphan upload.
+    assert len(registry.archives) == 1
+
+
+def test_upload_readback_uses_returned_identity_without_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    api = registry._api
+
+    def no_inventory(
+        path: str, *, binary: bool = False, body: dict[str, object] | None = None
+    ) -> object:
+        assert not ("/runs/" in path and "/artifacts" in path)
+        return api(path, binary=binary, body=body)
+
+    monkeypatch.setattr(registry, "_api", no_inventory)
+    document: dict[str, object] = {"records": ["owned"]}
+    stored = registry.create(document)
+    assert registry.read(stored) == document
+    assert len(registry.archives) == len(registry.statuses) == 1
+
+
+@pytest.mark.parametrize("fault", ["empty", "duplicate", "truncated", "unknown", "url", "id"])
+def test_invalid_upload_outputs_never_register_or_repeat_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    upload = uploader(registry)
+
+    def changed(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        result = upload(command, **kwargs)
+        environment = kwargs["env"]
+        assert isinstance(environment, dict)
+        output = Path(environment["GITHUB_OUTPUT"])
+        raw = output.read_text()
+        alternatives = {
+            "empty": "",
+            "duplicate": raw + raw,
+            "truncated": raw.rsplit("\n", 2)[0],
+            "unknown": raw.replace("artifact-digest", CANARY),
+            "url": raw.replace("https://github.com/", "https://untrusted.invalid/"),
+            "id": raw.replace("\n10000\n", "\n" + CANARY + "\n"),
+        }
+        output.write_text(alternatives[fault])
+        return result
+
+    monkeypatch.setattr(subprocess, "run", changed)
+    with pytest.raises(LifecycleError, match="outputs") as error:
+        registry.create({"records": ["owned"]})
+    assert CANARY not in str(error.value)
+    assert len(registry.archives) == 1
+    assert registry.statuses == []
+
+
+@pytest.mark.parametrize("route", ["metadata", "archive"])
+@pytest.mark.parametrize("settles", [True, False])
+def test_uploaded_reads_settle_with_one_deadline_and_one_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str, settles: bool
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    clock = [0.0]
+    bound, visible = 3, 2
+    monkeypatch.setattr(github, "SCAN_SECONDS", bound)
+    monkeypatch.setattr(github, "READ_POLL_SECONDS", 1)
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    original = registry._api
+
+    def delayed(
+        path: str, *, binary: bool = False, body: dict[str, object] | None = None
+    ) -> object:
+        target = "/artifacts/" in path and binary == (route == "archive")
+        if target and (not settles or clock[0] < visible):
+            raise github._UnavailableError(CANARY)
+        return original(path, binary=binary, body=body)
+
+    monkeypatch.setattr(registry, "_api", delayed)
+    if settles:
+        assert registry.create({"records": ["owned"]}) == registry.latest()
+        assert clock[0] == visible
+    else:
+        with pytest.raises(LifecycleError, match="readback remains unavailable") as error:
+            registry.create({"records": ["owned"]})
+        assert CANARY not in str(error.value)
+        assert clock[0] == bound
+        assert registry.statuses == []
+    assert len(registry.archives) == 1
+
+
+@pytest.mark.parametrize("fault", ["id", "name", "run", "digest", "size", "expired"])
+def test_uploaded_metadata_mismatch_is_fatal_without_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    monkeypatch.setattr(time, "sleep", lambda *_args: pytest.fail("must not retry mismatch"))
+    original = registry._api
+
+    def altered(
+        path: str, *, binary: bool = False, body: dict[str, object] | None = None
+    ) -> object:
+        value = original(path, binary=binary, body=body)
+        if "/artifacts/" in path and not binary:
+            assert isinstance(value, dict)
+            if fault == "run":
+                value["workflow_run"] = {"id": 99, "head_branch": "main"}
+            else:
+                key = "size_in_bytes" if fault == "size" else fault
+                value[key] = {
+                    "id": 999,
+                    "name": CANARY,
+                    "digest": "sha256:" + "f" * 64,
+                    "size": 0,
+                    "expired": True,
+                }[fault]
+        return value
+
+    monkeypatch.setattr(registry, "_api", altered)
+    with pytest.raises(LifecycleError) as error:
+        registry.create({"records": ["owned"]})
+    assert CANARY not in str(error.value)
+    assert registry.statuses == []
     assert len(registry.archives) == 1
 
 
@@ -599,14 +733,12 @@ def test_complete_pagination_and_newest_run_without_checkpoint(
         registry.add(name=f"unrelated-{value}", raw=b"not-a-checkpoint")
     # All pages are examined even when the API order is not chronological.
     assert len(registry._runs()) == len(registry.runs)
-    assert len(registry._artifacts(3)) == len(registry.artifacts[3])
     assert registry.latest() == stored
 
 
-@pytest.mark.parametrize("inventory", ["runs", "artifacts"])
 @pytest.mark.parametrize("fault", ["duplicate", "count-change", "partial"])
 def test_incomplete_inventory_never_selects_an_older_checkpoint(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inventory: str, fault: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
 ) -> None:
     registry = Registry(tmp_path / "private")
     original = registry._api
@@ -614,11 +746,10 @@ def test_incomplete_inventory_never_selects_an_older_checkpoint(
     def changed(
         path: str, *, binary: bool = False, body: dict[str, object] | None = None
     ) -> object:
-        target = "/workflows/" if inventory == "runs" else "/runs/"
-        if target not in path:
+        if "/workflows/" not in path:
             return original(path, binary=binary, body=body)
         page = int(parse_qs(urlsplit(path).query)["page"][0])
-        field = "workflow_runs" if inventory == "runs" else "artifacts"
+        field = "workflow_runs"
         row = {
             "id": 3,
             "run_number": 20,
@@ -633,7 +764,7 @@ def test_incomplete_inventory_never_selects_an_older_checkpoint(
 
     monkeypatch.setattr(registry, "_api", changed)
     with pytest.raises(LifecycleError):
-        registry._runs() if inventory == "runs" else registry._artifacts(3)
+        registry._runs()
 
 
 @pytest.mark.parametrize(

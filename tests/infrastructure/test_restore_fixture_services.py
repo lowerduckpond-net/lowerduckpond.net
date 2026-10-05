@@ -357,7 +357,7 @@ def test_provider_fault_reports_failed_restore_without_waiting_for_a_dns_timeout
 
 
 @pytest.mark.parametrize("name", ["deniedDns", "deniedAcme"])
-@pytest.mark.parametrize("live", [False, True])
+@pytest.mark.parametrize("history", ["fresh", "live", "complete"])
 @pytest.mark.parametrize(
     "timeline",
     [(450, 450), (None, 0), (0, None), (180, 301), (1820, None)],
@@ -367,10 +367,12 @@ def test_provider_observer_separates_live_verification_from_provider_readiness(
     installed_module: Callable[[str], ModuleType],
     name: str,
     *,
-    live: bool,
+    history: str,
     timeline: tuple[int | None, int | None],
 ) -> None:
     fixture_module = installed_module("restore_fixture")
+    full_history = history != "fresh"
+    seconds = fixture_module.COORDINATOR_SECONDS + 30 if history == "complete" else None
     ready_at, denied_at = timeline
     elapsed = 0.0
 
@@ -380,7 +382,7 @@ def test_provider_observer_separates_live_verification_from_provider_readiness(
 
     fixture = SimpleNamespace(
         acme=object(),
-        live_storage=object() if live else None,
+        live_storage=object() if history == "live" else None,
         destination=SimpleNamespace(
             service=lambda _: SimpleNamespace(
                 is_running=ready_at is not None and elapsed >= ready_at
@@ -396,29 +398,31 @@ def test_provider_observer_separates_live_verification_from_provider_readiness(
     monkeypatch.setattr(
         fixture_module, "time", SimpleNamespace(monotonic=lambda: elapsed, sleep=sleep)
     )
-    if live and ready_at == denied_at == 450:  # noqa: PLR2004 - delayed live startup
-        fixture_module.Fixture.fault_observed(fixture, name)
+    if full_history and ready_at == denied_at == 450:  # noqa: PLR2004 - delayed live startup
+        fixture_module.Fixture.fault_observed(fixture, name, seconds=seconds)
         assert elapsed == 450  # noqa: PLR2004
     else:
         with pytest.raises(AssertionError, match="native Caddy did not observe"):
-            fixture_module.Fixture.fault_observed(fixture, name)
+            fixture_module.Fixture.fault_observed(fixture, name, seconds=seconds)
         expected = min(
-            fixture_module.COORDINATOR_SECONDS + 30 if live else 120,
+            fixture_module.COORDINATOR_SECONDS + 30 if full_history else 120,
             ready_at + 120 if ready_at is not None else float("inf"),
         )
         assert elapsed == expected
 
 
 @pytest.mark.parametrize("outcome", ["installed", "complete", "pending", "stalled", "failed"])
-@pytest.mark.parametrize("live", [False, True])
+@pytest.mark.parametrize("history", ["fresh", "live", "complete"])
 def test_restore_phase_wait_requires_progress_within_one_fixed_deadline(
     monkeypatch: pytest.MonkeyPatch,
     installed_module: Callable[[str], ModuleType],
     outcome: str,
     *,
-    live: bool,
+    history: str,
 ) -> None:
     fixture_module = installed_module("restore_fixture")
+    full_history = history != "fresh"
+    seconds = fixture_module.COORDINATOR_SECONDS + 30 if history == "complete" else None
     observations: list[dict[str, object]] = []
 
     def status() -> dict[str, object]:
@@ -443,10 +447,12 @@ def test_restore_phase_wait_requires_progress_within_one_fixed_deadline(
         return SimpleNamespace(stdout="failed" if outcome == "failed" else "activating")
 
     fixture = SimpleNamespace(
-        status=status, destination=SimpleNamespace(run=run), live_storage=object() if live else None
+        status=status,
+        destination=SimpleNamespace(run=run),
+        live_storage=object() if history == "live" else None,
     )
-    deadline = fixture_module.COORDINATOR_SECONDS + 30 if live else 300
-    clock = iter((0, 1, 669 if live else 181, deadline - 1, deadline + 1))
+    deadline = fixture_module.COORDINATOR_SECONDS + 30 if full_history else 300
+    clock = iter((0, 1, 669 if full_history else 181, deadline - 1, deadline + 1))
     monkeypatch.setattr(
         fixture_module,
         "time",
@@ -454,12 +460,12 @@ def test_restore_phase_wait_requires_progress_within_one_fixed_deadline(
     )
     phases = {"complete"} if outcome in {"complete", "pending"} else {"installed"}
     if outcome in {"installed", "complete"}:
-        assert fixture_module.Fixture.wait(fixture, phases) == observations[-1]
+        assert fixture_module.Fixture.wait(fixture, phases, seconds=seconds) == observations[-1]
         assert observations[-1]["phase"] in phases
     else:
         message = "restore failed" if outcome == "failed" else "expected phase"
         with pytest.raises(AssertionError, match=message):
-            fixture_module.Fixture.wait(fixture, phases)
+            fixture_module.Fixture.wait(fixture, phases, seconds=seconds)
     assert len(observations) == (1 if outcome == "failed" else 3)
     assert commands and all(
         command == ("systemctl show --value --property=ActiveState %s", fixture_module.UNIT)
@@ -521,3 +527,33 @@ def test_tls_fault_repair_observes_service_outcome_beyond_ordinary_phase_window(
             scenario.test_installed_restore_tls_bootstrap(object(), tmp_path)
         assert elapsed == fixture_module.COORDINATOR_SECONDS + 30
         assert not finished
+
+
+@pytest.mark.parametrize("complete_history", [False, True])
+def test_combined_journey_selects_existing_service_budget_for_retained_history(
+    installed_module: Callable[[str], ModuleType],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    complete_history: bool,
+) -> None:
+    combined = installed_module("combined_reconstruction")
+    observed = []
+
+    class WaitObservedError(Exception):
+        pass
+
+    def wait(phases: set[str], *, seconds: int | None = None) -> None:
+        observed.append((phases, seconds))
+        raise WaitObservedError
+
+    fixture = SimpleNamespace(fault=lambda _: None, start=lambda: None, wait=wait)
+    monkeypatch.setattr(combined, "backup_mutation", lambda *_args, **_kwargs: (object(), {}))
+    monkeypatch.setattr(combined, "protected_rotation", lambda *_args: {})
+    monkeypatch.setattr(
+        combined.restore, "capture_source", lambda *_args, **_kwargs: (fixture, [], {})
+    )
+    with pytest.raises(WaitObservedError):
+        combined.run(object(), tmp_path, existing_namespace=complete_history)
+    assert observed == [
+        ({"installed"}, combined.COORDINATOR_SECONDS + 30 if complete_history else None)
+    ]

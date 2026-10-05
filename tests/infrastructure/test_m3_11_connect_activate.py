@@ -27,6 +27,7 @@ from scripts.m3_11_unattended import connect_activate as activate
 from scripts.m3_11_unattended import connect_configuration as backend
 from scripts.m3_11_unattended import connect_control as control
 from scripts.m3_11_unattended import connect_genesis as genesis
+from scripts.m3_11_unattended.cleanup import ReadinessPendingError, require_independent_ready
 from scripts.m3_11_unattended.config import Configuration, Connections
 from scripts.m3_11_unattended.connect_auth import Access
 from scripts.m3_11_unattended.connect_ledger import ConnectLedger
@@ -965,7 +966,9 @@ def test_unrelated_private_controller_is_preserved(
     assert read_private(case.output) == {"unrelated": CANARY}
 
 
-@pytest.mark.parametrize("fault", ["none", "dispatch", "execution", "attempt", "stopped"])
+@pytest.mark.parametrize(
+    "fault", ["none", "dispatch", "execution", "attempt", "stopped", "pending", "stopped-pending"]
+)
 def test_launcher_requires_current_durable_witness_for_exact_attempt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
 ) -> None:
@@ -1008,8 +1011,26 @@ def test_launcher_requires_current_durable_witness_for_exact_attempt(
             return {**run(run_id), "status": "completed"}
 
         monkeypatch.setattr(case.github, "run", stopped)
+    if fault in {"pending", "stopped-pending"}:
+        readiness = require_independent_ready
+        observations = []
+
+        def delayed(*args: object, **kwargs: object) -> None:
+            observations.append(True)
+            if len(observations) == 1:
+                if fault == "stopped-pending":
+                    native_run = case.github.run
+                    monkeypatch.setattr(
+                        case.github,
+                        "run",
+                        lambda run_id: {**native_run(run_id), "status": "completed"},
+                    )
+                raise ReadinessPendingError("native receipt awaits ACK")
+            readiness(*args, **kwargs)  # type: ignore[arg-type] # typed production entrypoint, fault wrapper
+
+        monkeypatch.setattr(control, "require_independent_ready", delayed)
     path = tmp_path / "dispatch" / run_id
-    if fault == "none":
+    if fault in {"none", "pending"}:
         control.await_witness(configuration, request, directory=path)
         proof = read_private(path / "witness-ready.json")
         assert proof["github_run_id"] == 4

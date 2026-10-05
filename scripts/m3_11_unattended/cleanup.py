@@ -10,6 +10,7 @@ import os
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,7 +26,12 @@ from scripts.m3_11_unattended.config import (
     cleanup_configuration,
 )
 from scripts.m3_11_unattended.connect_checkpoint import Stored
-from scripts.m3_11_unattended.connect_journal import ConnectJournal, IndependentJournal
+from scripts.m3_11_unattended.connect_journal import (
+    ACK_POLL_SECONDS,
+    ACK_WAIT_SECONDS,
+    ConnectJournal,
+    IndependentJournal,
+)
 from scripts.m3_11_unattended.github_checkpoint import MINIMUM_START_CAPACITY
 from scripts.m3_11_unattended.http import Api
 from scripts.m3_11_unattended.journal import Journal, OpJournal, event
@@ -46,6 +52,10 @@ HEARTBEAT_MAX_AGE = timedelta(minutes=90)
 POLL_SECONDS = 60
 REMOTE_SECONDS = 3600
 RETRY_SECONDS = 300
+
+
+class ReadinessPendingError(LifecycleError):
+    """A valid native readiness receipt is visible before its independent ACK."""
 
 
 def connect_cleanup(
@@ -231,10 +241,32 @@ def require_independent_ready(journal: Journal, *, helper: str, now: datetime) -
                 checkpoint.identity == journal.witness.genesis.identity
                 and checkpoint != journal.witness.genesis
             )
-            or not journal.confirmed(newest)
             or not journal.ledger.authored(newest, journal.witness.author)
         ):
             raise LifecycleError("independent Connect readiness or cleanup capacity is unverified")
+        if not journal.confirmed(newest):
+            raise ReadinessPendingError("independent Connect readiness awaits acknowledgement")
+
+
+def wait_independent_ready(
+    journal: Journal, *, helper: str, deadline: float, check_cancelled: Callable[[], None]
+) -> None:
+    until = min(deadline, time.monotonic() + ACK_WAIT_SECONDS)
+    while True:
+        check_cancelled()
+        if time.monotonic() >= until:
+            raise ReadinessPendingError(
+                "independent Connect readiness exceeded its acknowledgement wait"
+            )
+        try:
+            require_independent_ready(journal, helper=helper, now=datetime.now(UTC))
+            check_cancelled()
+            return
+        except ReadinessPendingError:
+            remaining = until - time.monotonic()
+            if remaining <= 0:
+                raise
+            time.sleep(min(ACK_POLL_SECONDS, remaining))
 
 
 def status_document(journal: Journal, *, helper: str, now: datetime) -> dict[str, object]:

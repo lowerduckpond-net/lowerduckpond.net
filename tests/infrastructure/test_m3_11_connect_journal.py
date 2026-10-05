@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,10 +22,16 @@ from infrastructure.test_m3_11_connect_ledger import (
 )
 from infrastructure.test_m3_11_unattended_controller import subject
 from infrastructure.test_m3_11_unattended_lifecycle import Case as LifecycleCase
+from scripts.m3_11_unattended import cleanup
 from scripts.m3_11_unattended.cleanup import require_independent_ready, status_document
 from scripts.m3_11_unattended.connect_api import Response
 from scripts.m3_11_unattended.connect_checkpoint import Checkpoint
-from scripts.m3_11_unattended.connect_journal import ConnectJournal, IndependentJournal, Witness
+from scripts.m3_11_unattended.connect_journal import (
+    ACK_POLL_SECONDS,
+    ConnectJournal,
+    IndependentJournal,
+    Witness,
+)
 from scripts.m3_11_unattended.github_checkpoint import MINIMUM_START_CAPACITY
 from scripts.m3_11_unattended.journal import event
 from scripts.m3_11_unattended.model import ROLES, LifecycleError, digest, stamp
@@ -364,3 +371,99 @@ def test_rehearsal_gate_needs_durable_result_and_independently_authored_revocati
     else:
         with pytest.raises(LifecycleError):
             selected._require_rehearsal(case.controller)
+
+
+def pending_readiness(case: Case, *, fault: str = "none") -> None:
+    case.github.capacity = lambda: MINIMUM_START_CAPACITY + 1
+    now = datetime.now(UTC)
+    value = {
+        "actor": "github",
+        "helper_revision": case.witness.helper,
+        "observed_at": stamp(now),
+        "status": "ready",
+        "overdue": 0,
+        "results": [],
+        "connect": case.github.readiness(),
+    }
+    if fault == "unresolved":
+        value["status"] = "unresolved"
+    elif fault == "helper":
+        value["helper_revision"] = "f" * 40
+    elif fault == "stale":
+        value["observed_at"] = stamp(now - timedelta(hours=2))
+    elif fault == "malformed":
+        value["extra"] = "never-export-canary"
+    case.github.persist(event("heartbeat", str(uuid.uuid7()), value))
+    sync(case.remote, case.shared)
+
+
+def test_new_native_readiness_waits_for_its_ack_without_falling_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = Case(tmp_path)
+    pending_readiness(case)
+    case.witness_once()
+    require_independent_ready(case.controller, helper=case.witness.helper, now=datetime.now(UTC))
+    pending_readiness(case)
+    with pytest.raises(cleanup.ReadinessPendingError):
+        require_independent_ready(
+            case.controller, helper=case.witness.helper, now=datetime.now(UTC)
+        )
+    waits = []
+
+    def acknowledge(seconds: float) -> None:
+        waits.append(seconds)
+        case.witness_once()
+
+    monkeypatch.setattr(time, "sleep", acknowledge)
+    cleanup.wait_independent_ready(
+        case.controller,
+        helper=case.witness.helper,
+        deadline=time.monotonic() + 30,
+        check_cancelled=lambda: None,
+    )
+    assert waits == [ACK_POLL_SECONDS]
+
+
+@pytest.mark.parametrize("fault", ["unresolved", "helper", "stale", "malformed"])
+def test_new_adverse_readiness_is_never_waited_past_or_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    case = Case(tmp_path)
+    pending_readiness(case)
+    case.witness_once()
+    pending_readiness(case, fault=fault)
+    monkeypatch.setattr(time, "sleep", lambda *_args: pytest.fail("adverse receipt must fail"))
+    with pytest.raises((LifecycleError, ValueError)) as error:
+        cleanup.wait_independent_ready(
+            case.controller,
+            helper=case.witness.helper,
+            deadline=time.monotonic() + 30,
+            check_cancelled=lambda: None,
+        )
+    assert not isinstance(error.value, cleanup.ReadinessPendingError)
+
+
+@pytest.mark.parametrize("cancel", [True, False])
+def test_readiness_wait_preserves_original_deadline_and_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel: bool
+) -> None:
+    case = Case(tmp_path)
+    pending_readiness(case)
+    clock = [0.0]
+    limit = 3.0
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+
+    def cancelled() -> None:
+        if cancel and clock[0] >= limit:
+            raise LifecycleError("cancelled")
+
+    with pytest.raises(LifecycleError, match="cancelled" if cancel else "acknowledgement wait"):
+        cleanup.wait_independent_ready(
+            case.controller,
+            helper=case.witness.helper,
+            deadline=limit,
+            check_cancelled=cancelled,
+        )
+    assert clock[0] == limit

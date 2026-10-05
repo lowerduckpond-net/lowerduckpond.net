@@ -18,6 +18,7 @@ import test_audit_rotation as rotation_checks
 import test_backup_coherence as backups
 import test_backup_identity as identity
 import test_lifecycle as support
+from lowerduckpond_static_host_agent.host_restore_coordinator import COORDINATOR_SECONDS
 from restore_fixture import RECOVERY, UNIT, Fixture
 from testinfra.host import Host
 
@@ -54,7 +55,13 @@ def run(
         measure("combined-reconstruction"),
         recorder.phase("reconstruction") if recorder else nullcontext({}) as observations,
     ):
-        fixture, restored = reconstruction(host, tmp_path, history, live_storage=live_storage)
+        fixture, restored = reconstruction(
+            host,
+            tmp_path,
+            history,
+            live_storage=live_storage,
+            existing_namespace=existing_namespace,
+        )
         observations.update(restored)
     with (
         measure("combined-reboot"),
@@ -176,18 +183,22 @@ def reconstruction(
     history: restore.SourceHistory,
     *,
     live_storage: LiveStorage | None = None,
+    existing_namespace: bool = False,
 ) -> tuple[Fixture, dict[str, object]]:
     fixture, tenants, replay = restore.capture_source(
         host, tmp_path, history, live_storage=live_storage
     )
     fixture.fault("dns")
     fixture.start()
-    fixture.wait({"installed"})
+    # Complete local qualification carries the preceding groups' history too.
+    # Observe the existing coordinator budget; do not change its service deadline.
+    seconds = COORDINATOR_SECONDS + 30 if existing_namespace else None
+    fixture.wait({"installed"}, seconds=seconds)
     for unit in ("lowerduckpond-health.timer", "lowerduckpond-health.service"):
         assert fixture.destination.run(
             "systemctl show --value --property=ActiveState %s", unit
         ).stdout.strip() in {"inactive", "failed"}
-    fixture.fault_observed("deniedDns")
+    fixture.fault_observed("deniedDns", seconds=seconds)
     restore.gate_closed(fixture)
     restore_peer.check(fixture, opened=False)
     assert fixture.destination.run("systemctl stop %s", UNIT).rc == 0
@@ -195,7 +206,7 @@ def reconstruction(
     assert fixture.status()["phase"] == "installed"
     fixture.fault("none")
     fixture.start()
-    fixture.wait({"complete"})
+    fixture.wait({"complete"}, seconds=seconds)
     journal = fixture.destination.file(f"{RECOVERY}/host-restore.json").content
     assert journal != interrupted
     assert not fixture.destination.file("/var/lib/lowerduckpond/recovery/restore-gate.json").exists

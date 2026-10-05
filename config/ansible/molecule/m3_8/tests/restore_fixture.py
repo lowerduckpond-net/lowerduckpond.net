@@ -666,12 +666,13 @@ with urllib.request.urlopen(request, timeout=10) as response:
             path, container=self.destination_id, transport_path=self.transport
         )
 
-    def fault_observed(self, name: str) -> None:
+    def fault_observed(self, name: str, *, seconds: int | None = None) -> None:
         assert name in {"deniedDns", "deniedAcme"}
         # Installed-root verification precedes Caddy startup and can cover the
         # full live journey's history. Observe that work under the same service
         # bound as wait(); keep the provider's own observation window at 120s.
-        seconds = COORDINATOR_SECONDS + 30 if self.live_storage is not None else 120
+        if seconds is None:
+            seconds = COORDINATOR_SECONDS + 30 if self.live_storage is not None else 120
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             value = json.loads(

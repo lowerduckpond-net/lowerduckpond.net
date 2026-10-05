@@ -361,6 +361,13 @@ predecessor and sequence checks. Artifact IDs and status IDs are opaque identiti
 a newer artifact may have a smaller ID. Workflow writer order uses the workflow's
 incrementing `run_number`. A helper upgrade reads the existing registry, including
 such lower-ID successors, without replacing genesis or replaying an attempt.
+Upload readback uses the exact ID and archive digest returned by the pinned
+uploader, then checks native workflow metadata and decrypted checkpoint contents.
+Temporary read failures share one bounded deadline; identity or integrity conflicts
+fail immediately. Readback retries never repeat uploads or acknowledge an
+unresolved checkpoint.
+Startup may wait briefly for an otherwise valid native readiness receipt's ACK.
+It never skips a newer adverse receipt or extends the qualification deadline.
 The unchanged immediate cleanup, watchdog and hourly GitHub reconciliation paths
 continue to require provider removal and available negative-authentication proof.
 
@@ -430,6 +437,10 @@ dependency and exposes overdue obligations and stale GitHub execution. Logs
 stay in `ldp-m311-evidence` under `/evidence/runs/RUN_UUID`. Named helper/source
 volumes retain the clean checkouts. `evidence` exports validated status and
 revocation receipts, and the existing strictly verified passing report.
+Worker, short production-check and cleanup failures retain separate bound
+diagnostics. Export accepts only fixed stages, error categories and locations in
+the pinned source; exception messages, locals and provider responses stay excluded.
+Diagnostic failure cannot prevent cleanup or change the original journey outcome.
 
 ### Independent revocation and unresolved results
 

@@ -11,13 +11,16 @@ from scripts.m3_10_qualification_report import verify_report
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_qualification_evidence import digest as sha256
 from scripts.m3_11_qualification_evidence import fields
+from scripts.m3_11_unattended.connect_diagnostics import verified_failure
 from scripts.m3_11_unattended.inputs import BINDING
 from scripts.m3_11_unattended.model import LifecycleError, identity, instant, stamp
-from scripts.m3_11_unattended.state import RunState
+from scripts.m3_11_unattended.state import PHASES, RunState
 from scripts.production_qualification_inputs import revision
 
 
-def export(directory: Path, *, repository: Path, include_report: bool) -> dict[str, object]:
+def export(  # noqa: PLR0912 - each evidence family has its own closed validation
+    directory: Path, *, repository: Path, include_report: bool
+) -> dict[str, object]:
     state = RunState(directory)
     request = read_private(directory / "request.json")
     binding = fields(request["binding"], BINDING)
@@ -27,6 +30,14 @@ def export(directory: Path, *, repository: Path, include_report: bool) -> dict[s
     for name in BINDING - {"managed_run_id", "source_revision", "helper_revision"}:
         sha256(binding[name])
     result: dict[str, object] = {"binding": binding, "status": state.status()}
+    for name in ("worker", "cleanup", "production"):
+        path = directory / (name + "-failure.json")
+        if path.exists():
+            result[name + "_diagnostic"] = verified_failure(
+                read_private(path),
+                binding=binding,
+                stages=frozenset({"bootstrap", "validate"}) if name == "production" else PHASES,
+            )
     # Reuse the supervisor's private, bounded context and existing fixed-label
     # failure projection. Phase is an observation, never a completion receipt.
     context = directory / "supervisor/context.json"
