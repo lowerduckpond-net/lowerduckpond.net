@@ -262,6 +262,9 @@ revisions and every existing private JSON evidence hash. It completes the
 original ceremony, then changes the active helper and requires fresh independent
 readiness before installing the controller. It never rebinds a pending request
 or starts a replacement epoch.
+If the pending stage was published before its private dispatch/submission records
+were retained, successor recovery refuses it as indistinguishable from lost
+evidence. Retain the directory and resume that boundary with the original helper.
 
 Cleanup receipts are named by GitHub run and attempt. Readback verifies the
 successful native Connect job, workflow/repository/revision metadata, artifact

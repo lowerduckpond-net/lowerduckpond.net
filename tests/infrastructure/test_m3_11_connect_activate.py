@@ -504,6 +504,15 @@ def test_interrupted_activation_resumes_exact_probes_genesis_and_dispatch(  # no
     original_genesis = [
         row["proof"] for row in case.github.receipts.values() if row["operation"] == "genesis"
     ]
+    if coordinator != HELPER and fault == "genesis-dispatch":
+        # Publication preceded any private dispatch identity. A successor cannot
+        # distinguish that from lost evidence, so the original helper must resume.
+        before = dict(case.github.values)
+        with pytest.raises(OSError):
+            case.activation(helper=coordinator).activate(case.output)
+        assert case.github.values == before and len(case.github.executions) == 1
+        assert case.shared.posts == 2 and not case.output.exists()
+        return
     case.activation(helper=coordinator).activate(case.output)
     selected = json.loads(case.github.values[control.SETTING])
     assert selected["request"]["shared_forgery_probe"] == read_private(
@@ -725,10 +734,76 @@ def test_successor_coordinator_requires_its_immutable_recovery_audit(
     if fault != "missing-file":
         write_private(path, value)
     before = dict(case.github.values)
-    with pytest.raises((LifecycleError, ValueError, KeyError)):
+    with pytest.raises((LifecycleError, ValueError, KeyError, OSError)):
         case.activation(helper="f" * 40).activate(case.output)
     assert case.github.values == before
     assert len(case.github.executions) == 1 and case.shared.posts == 1
+    assert case.provider.creates == 0 and not case.output.exists()
+
+
+@pytest.mark.parametrize(
+    ("stage", "fault"),
+    [
+        (stage, fault)
+        for stage in ("discovery", "genesis")
+        for fault in (
+            "missing-dispatch",
+            "missing-submission",
+            "both-missing",
+            "dispatch",
+            "submission",
+            "prior-dispatch",
+            "forgery",
+        )
+        if stage == "genesis" or fault != "forgery"
+    ],
+)
+def test_successor_cannot_replace_lost_or_changed_dispatch_evidence_before_its_first_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str, fault: str
+) -> None:
+    case = Case(tmp_path, monkeypatch)
+    receipt = case.github.receipt
+
+    def interrupt(run_id: int) -> dict[str, object]:
+        value = receipt(run_id)
+        if value["operation"] == stage:
+            raise LifecycleError("interrupted original receipt")
+        return value
+
+    with monkeypatch.context() as stopped:
+        stopped.setattr(case.github, "receipt", interrupt)
+        with pytest.raises(LifecycleError, match="interrupted original receipt"):
+            case.activation().activate(case.output)
+    directory = case.path / "activation"
+    if fault == "forgery":
+        (directory / "shared-forgery.json").unlink()
+    elif fault == "prior-dispatch":
+        (directory / "discovery/dispatch.json").unlink()
+    else:
+        names = (
+            ["dispatch", "submitted"]
+            if fault == "both-missing"
+            else ["dispatch" if fault.endswith("dispatch") else "submitted"]
+        )
+        for name in names:
+            path = directory / stage / (name + ".json")
+            value = read_private(path)
+            path.unlink()
+            if not fault.startswith("missing-") and fault != "both-missing":
+                value["dispatch_id" if name == "dispatch" else "dispatch_sha256"] = (
+                    str(uuid.uuid7()) if name == "dispatch" else "0" * 64
+                )
+                write_private(path, value)
+    before, executions, posts = (
+        dict(case.github.values),
+        len(case.github.executions),
+        case.shared.posts,
+    )
+    with pytest.raises((LifecycleError, ValueError, OSError)):
+        case.activation(helper="f" * 40).activate(case.output)
+    assert case.github.values == before
+    assert len(case.github.executions) == executions and case.shared.posts == posts
+    assert not (directory / ("coordinator-resume-" + "f" * 40 + ".json")).exists()
     assert case.provider.creates == 0 and not case.output.exists()
 
 

@@ -24,7 +24,14 @@ from scripts.m3_11_unattended.connect_journal import acknowledgement
 from scripts.m3_11_unattended.connect_ledger import ConnectLedger
 from scripts.m3_11_unattended.connect_setup import FORMAT, role_vaults
 from scripts.m3_11_unattended.journal import event, validate
-from scripts.m3_11_unattended.model import LifecycleError, Targets, digest, identity, strings
+from scripts.m3_11_unattended.model import (
+    LifecycleError,
+    Targets,
+    digest,
+    identity,
+    instant,
+    strings,
+)
 from scripts.m3_11_unattended.state import cleanup_lock, private_directory, replace_private
 from scripts.production_qualification_inputs import current_candidate, revision
 
@@ -524,6 +531,23 @@ class Activation:
             return self.resume_original(value)
         return self.initialize()
 
+    def require_original_dispatch(self, selected: dict[str, object]) -> None:
+        """A successor must not replace an operation whose private identity was lost."""
+        operation = str(selected["stage"])
+        directory = self.directory / operation
+        expected = {"operation": operation, "selection_sha256": digest(selected), "run_sha256": ""}
+        saved = fields(
+            read_private(directory / "dispatch.json"), {*expected, "dispatch_id", "requested_at"}
+        )
+        identity(saved["dispatch_id"])
+        instant(saved["requested_at"])
+        if any(saved[key] != item for key, item in expected.items()) or read_private(
+            directory / "submitted.json"
+        ) != {"dispatch_sha256": digest(saved)}:
+            raise LifecycleError(
+                "coordinator recovery requires the exact original submitted dispatch"
+            )
+
     def resume_original(self, value: dict[str, object]) -> dict[str, object]:
         """A reviewed coordinator can recover receipts without rebinding the ceremony."""
         stage_helper = revision(value.get("active_helper"))
@@ -559,6 +583,16 @@ class Activation:
         shared = cast(dict[str, object], probes["shared"])
         if read_private(self.directory / "journal" / (str(shared["event_id"]) + ".json")) != shared:
             raise LifecycleError("coordinator recovery has lost the original shared probe intent")
+        self.require_original_dispatch(
+            {**previous, "stage": "discovery", "request": discovery, "receipt": None}
+        )
+        if previous["stage"] == "genesis":
+            self.require_original_dispatch(previous)
+            if (
+                read_private(self.directory / "shared-forgery.json")
+                != request["shared_forgery_probe"]
+            ):
+                raise LifecycleError("coordinator recovery has lost the original forgery probe")
         if any(row["kind"] == "intent" for row in original.ledger.records()):
             raise LifecycleError("coordinator recovery cannot discard credential obligations")
         path = self.directory / ("coordinator-resume-" + self.helper + ".json")

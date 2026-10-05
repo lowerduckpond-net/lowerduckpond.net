@@ -15,7 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from scripts.m3_11_private_inputs import read_private
+from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_unattended import connect_action as action
 from scripts.m3_11_unattended import connect_control as control
 from scripts.m3_11_unattended.github_checkpoint import REPOSITORY, WORKFLOW, WORKFLOW_ID
@@ -367,7 +367,7 @@ def test_receipt_origin_survives_interruption_and_cannot_be_replaced_by_another_
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     github, dispatch, receipt = receipt_case(tmp_path)
-    write = control.write_private
+    write = write_private
 
     def stop(path: Path, value: dict[str, object]) -> None:
         if path.name == "receipt.json":
