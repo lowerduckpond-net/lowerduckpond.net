@@ -557,10 +557,10 @@ def await_witness(
     if path.exists():
         if read_private(path) != retained:
             raise LifecycleError("launcher request changed")
-    else:
-        write_private(path, retained)
-    if (directory / "launcher-failure.json").exists():
-        raise LifecycleError("failed launcher evidence cannot authorize another attempt")
+        raise LifecycleError("launcher attempt already consumed; retain its original evidence")
+    # Consumption is durable before dispatch and independent of optional diagnostics.
+    # A killed launcher cannot silently resume the old attempt with a fresh deadline.
+    write_private(path, retained)
     try:
         _await_witness(configuration, request, directory=directory)
     except Exception as error:
@@ -673,6 +673,16 @@ def _witness_ready(  # noqa: PLR0913 - preserve the original dispatch and shared
         execution = client.run(run_id)
         if execution.get("status") == "completed":
             raise LifecycleError("independent witness stopped before controller launch")
+        attempt = execution.get("run_attempt")
+        if type(attempt) is not int or attempt < 1:
+            raise LifecycleError("independent witness attempt is unavailable")
+        binding: dict[str, object] = {"github_run_id": run_id, "github_run_attempt": attempt}
+        path = directory / "witness-execution.json"
+        if path.exists():
+            if read_private(path) != binding:
+                raise LifecycleError("independent witness execution changed during observation")
+        else:
+            write_private(path, binding)
         for record in journal.records():
             value = record["payload"]
             if not isinstance(value, dict) or value.get("format") != connect_action.READY_FORMAT:

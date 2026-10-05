@@ -373,6 +373,10 @@ when valid journal updates arrive during a read. All reads and retries share
 the original readiness deadline. The launcher preserves its dispatch identity
 and rechecks that the same native witness attempt is still running before
 accepting readiness. Malformed records and adverse cleanup receipts still fail.
+Controller journal reads and acknowledgement polling use the same bounded
+snapshot stabilization, including reads before a write. Retries never repeat a
+write or provider creation. Both inventory passes validate immutable metadata,
+and an event already read cannot disappear from the next accepted snapshot.
 The unchanged immediate cleanup, watchdog and hourly GitHub reconciliation paths
 continue to require provider removal and available negative-authentication proof.
 
@@ -434,7 +438,9 @@ mise exec -- just m3-11-unattended launch-evidence RUN_UUID --config /private/co
 This reads the saved request binding and failure category/static source location;
 it does not load bootstrap credentials or contact providers. Exception text,
 raw responses and private logs are excluded. The first failure remains immutable,
-and the failed dispatch cannot be reused as a successful launch. An absent
+and the launch request is consumed durably before dispatch, independently of
+diagnostic availability. A failed or interrupted dispatch cannot be reused as
+a successful launch. An absent
 diagnostic, including from an older helper or forced process death, leaves the
 original cause unproven. Retain the private launcher log separately.
 

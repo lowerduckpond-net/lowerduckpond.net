@@ -35,6 +35,7 @@ from scripts.m3_11_unattended.config import Configuration
 from scripts.m3_11_unattended.connect_admission import run_digest
 from scripts.m3_11_unattended.connect_api import TIMEOUT_SECONDS, Response
 from scripts.m3_11_unattended.journal import event
+from scripts.m3_11_unattended.lifecycle import Lifecycle
 from scripts.m3_11_unattended.model import LifecycleError
 
 
@@ -226,7 +227,7 @@ def test_short_inventory_cannot_hide_malformed_present_metadata(
         return response
 
     monkeypatch.setattr(case.shared, "request", malformed)
-    with pytest.raises(LifecycleError, match="changed during readback"):
+    with pytest.raises(LifecycleError, match="metadata is invalid"):
         case.controller.ledger.stage(event("intent", str(case.anchor["run_id"]), {}))
     assert case.shared.posts == 1
     assert clock.sleeps == []
@@ -357,11 +358,270 @@ def test_unstable_precreation_inventory_still_prevents_post(
     case.controller.ledger.readback_seconds = 5
     case.shared.move_during_read = True
     clock = Clock(monkeypatch)
-    with pytest.raises(LifecycleError, match="checkpoint"):
+    with pytest.raises(LifecycleError, match="snapshot observation deadline"):
         case.controller.ledger.stage(event("intent", str(case.anchor["run_id"]), {}))
     assert case.shared.posts == 0
-    assert clock.sleeps == []
+    assert clock.now == case.controller.ledger.readback_seconds
+    assert clock.sleeps == [1] * case.controller.ledger.readback_seconds
     assert ANCHOR in case.shared.items
+
+
+@pytest.mark.parametrize("entry", ["records", "original", "stage", "confirmed", "clear"])
+def test_normal_controller_reads_wait_for_growth_without_replaying_mutations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entry: str
+) -> None:
+    case = Case(tmp_path)
+    record = event("heartbeat", str(case.anchor["run_id"]), {"format": "local-double"})
+    if entry == "confirmed":
+        case.controller.append(record)
+        case.witness_once()
+    selected = case.controller.ledger
+    selected.readback_seconds = 5
+    clock = Clock(monkeypatch)
+    case.shared.move_during_read = True
+    clock.tick = lambda: setattr(case.shared, "move_during_read", False)
+    if entry == "records":
+        assert case.controller.records()
+    elif entry == "original":
+        assert case.controller._original(record) == record
+    elif entry == "stage":
+        selected.stage(record)
+    elif entry == "confirmed":
+        assert case.controller.confirmed(record)
+    else:
+        Lifecycle(case.controller, {}).require_clear()
+    assert clock.sleeps == [1]
+    assert case.shared.posts == (1 if entry in {"stage", "confirmed"} else 0)
+    assert selected._read_deadline is None
+    assert selected.minimum.items() <= selected._known.items()
+
+
+@pytest.mark.parametrize("readback", [0, 5])
+def test_actual_ack_arrival_during_confirmation_waits_without_restaging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, readback: int
+) -> None:
+    case = Case(tmp_path)
+    record = event("intent", str(case.anchor["run_id"]), {"scope": "local-double"})
+    case.controller.append(record)
+    sync(case.shared, case.remote)
+    case.github.acknowledge(run_id=42, attempt=1, allow=lambda _row: True)
+    case.controller.ledger.readback_seconds = readback
+    case.controller.wait_seconds = 30
+    clock = Clock(monkeypatch)
+    native = case.shared.request
+    original_confirmed = case.controller.confirmed
+    confirming = False
+    reads = 0
+
+    def arrive(method: str, path: str, body: dict[str, object] | None = None) -> Response:
+        nonlocal reads
+        if confirming and method == "GET" and path.endswith("/items"):
+            reads += 1
+            if reads == 2:  # noqa: PLR2004 - inject between inventory reads of confirmation
+                sync(case.remote, case.shared)
+        return native(method, path, body)
+
+    def confirm(row: dict[str, object]) -> bool:
+        nonlocal confirming
+        confirming = True
+        try:
+            return original_confirmed(row)
+        finally:
+            confirming = False
+
+    monkeypatch.setattr(case.shared, "request", arrive)
+    monkeypatch.setattr(case.controller, "confirmed", confirm)
+    assert case.controller.persist(record) == record
+    assert clock.sleeps == [1 if readback else connect_journal.ACK_POLL_SECONDS]
+    assert case.shared.posts == 1
+    assert original_confirmed(record)
+    assert case.controller.ledger._read_deadline is None
+
+
+@pytest.mark.parametrize("cancel", [True, False])
+def test_unstable_ack_observation_preserves_deadline_and_cancellation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel: bool
+) -> None:
+    case = Case(tmp_path)
+    record = event("intent", str(case.anchor["run_id"]), {"scope": "local-double"})
+    case.controller.append(record)
+    clock = Clock(monkeypatch)
+    case.controller.wait_seconds = 3
+    case.controller.ledger.readback_seconds = 60
+    confirmed = case.controller.confirmed
+
+    def moving(row: dict[str, object]) -> bool:
+        case.shared.move_during_read = True
+        return confirmed(row)
+
+    def cancelled() -> None:
+        if cancel and clock.sleeps:
+            raise LifecycleError("cancelled ACK wait")
+
+    monkeypatch.setattr(case.controller, "confirmed", moving)
+    case.controller.check_cancelled = cancelled
+    with pytest.raises(LifecycleError, match="cancelled ACK" if cancel else "deadline elapsed"):
+        case.controller.persist(record)
+    assert clock.now <= case.controller.wait_seconds
+    assert case.shared.posts == 1
+    assert case.controller.ledger._read_deadline is None
+    assert case.shared._request_timeout == TIMEOUT_SECONDS
+    case.github.ledger.check_cancelled()
+
+
+@pytest.mark.parametrize("readback", [0, 60])
+def test_nested_readback_never_replaces_an_outer_observation_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, readback: int
+) -> None:
+    case = Case(tmp_path)
+    record = event("created", str(case.anchor["run_id"]), {"credential_id": "double"})
+    case.controller.append(record)
+    selected = case.controller.ledger
+    selected.readback_seconds = readback
+    clock = Clock(monkeypatch)
+    request = case.shared.request
+    budgets = []
+
+    def slow(method: str, path: str, body: dict[str, object] | None = None) -> Response:
+        budgets.append(case.shared._request_timeout)
+        clock.now += case.shared._request_timeout
+        return request(method, path, body)
+
+    monkeypatch.setattr(case.shared, "request", slow)
+    limit = 2
+    with selected.read_budget(deadline=limit, check_cancelled=lambda: None):
+        with pytest.raises(LifecycleError, match="deadline elapsed"):
+            selected._readback(record)
+        assert selected._read_deadline == limit
+    assert clock.now == limit and budgets == [limit]
+    assert getattr(selected, "_read_deadline") is None  # noqa: B009 - context manager restores the narrowed attribute
+    assert case.shared.posts == 1
+    assert read_private(selected.spool / (str(record["event_id"]) + ".returned.json"))
+
+
+@pytest.mark.parametrize("new_item", [True, False])
+@pytest.mark.parametrize(
+    "field", ["version", "lastEditedBy", "createdAt", "tags", "category", "vault", "state", "title"]
+)
+def test_stability_wait_cannot_hide_malformed_metadata_in_the_second_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, new_item: bool, field: str
+) -> None:
+    case = Case(tmp_path)
+    selected = case.controller.ledger
+    selected.readback_seconds = 5
+    clock = Clock(monkeypatch)
+    native = case.shared.request
+    reads = 0
+
+    def malformed(method: str, path: str, body: dict[str, object] | None = None) -> Response:
+        nonlocal reads
+        response = native(method, path, body)
+        if path.endswith("/items"):
+            reads += 1
+            if reads == 2:  # noqa: PLR2004 - only the verification inventory is malformed
+                assert isinstance(response.body, list)
+                if new_item:
+                    response.body.append(note(case.anchor, "b" * 26))
+                response.body[-1][field] = 0 if field == "version" else CANARY
+        return response
+
+    monkeypatch.setattr(case.shared, "request", malformed)
+    with pytest.raises(LifecycleError) as failure:
+        case.controller.records()
+    assert not isinstance(failure.value, connect_ledger.SnapshotChangedError)
+    assert clock.sleeps == [] and case.shared.posts == 0
+    assert CANARY not in str(failure.value)
+
+
+def test_stability_wait_rejects_valid_but_changed_metadata_of_an_immutable_item(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = Case(tmp_path)
+    case.controller.ledger.readback_seconds = 5
+    clock = Clock(monkeypatch)
+    native = case.shared.request
+    reads = 0
+
+    def changed(method: str, path: str, body: dict[str, object] | None = None) -> Response:
+        nonlocal reads
+        response = native(method, path, body)
+        if path.endswith("/items"):
+            reads += 1
+            if reads == 2:  # noqa: PLR2004 - valid author, changed only in second inventory
+                assert isinstance(response.body, list)
+                response.body[0]["lastEditedBy"] = "R" * 26
+        return response
+
+    monkeypatch.setattr(case.shared, "request", changed)
+    with pytest.raises(LifecycleError, match="metadata changed"):
+        case.controller.records()
+    assert clock.sleeps == [] and case.shared.posts == 0
+
+
+def test_retry_cannot_forget_an_event_decoded_before_snapshot_changed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = Case(tmp_path)
+    selected = case.controller.ledger
+    selected.readback_seconds = 5
+    record = event("heartbeat", str(case.anchor["run_id"]), {"status": "unresolved"})
+    case.shared.items["b" * 26] = note(record, "b" * 26)
+    clock = Clock(monkeypatch)
+    native = case.shared.request
+    reads = 0
+
+    def missing(method: str, path: str, body: dict[str, object] | None = None) -> Response:
+        nonlocal reads
+        if path.endswith("/items"):
+            reads += 1
+            if reads == 2:  # noqa: PLR2004 - decoded event disappears during verification
+                case.shared.items.pop("b" * 26)
+                case.shared.version += 1
+        return native(method, path, body)
+
+    monkeypatch.setattr(case.shared, "request", missing)
+    with pytest.raises(LifecycleError, match="snapshot observation deadline"):
+        case.controller.records()
+    assert str(record["event_id"]) in selected._known
+    assert clock.now == selected.readback_seconds and case.shared.posts == 0
+    case.shared.items["b" * 26] = note(record, "b" * 26)
+    assert record in case.controller.records()
+
+
+@pytest.mark.parametrize("delivered", [True, False])
+def test_new_verification_summary_must_be_decoded_before_a_snapshot_can_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, delivered: bool
+) -> None:
+    case = Case(tmp_path)
+    selected = case.controller.ledger
+    selected.readback_seconds = 5
+    record = event("heartbeat", str(case.anchor["run_id"]), {"status": "unresolved"})
+    item = note(record, "b" * 26)
+    clock = Clock(monkeypatch)
+    native = case.shared.request
+    reads = 0
+
+    def summary(method: str, path: str, body: dict[str, object] | None = None) -> Response:
+        nonlocal reads
+        response = native(method, path, body)
+        if path.endswith("/items"):
+            reads += 1
+            if reads == 2:  # noqa: PLR2004 - a new row appears only in verification inventory
+                assert isinstance(response.body, list)
+                response.body.append({key: value for key, value in item.items() if key != "fields"})
+        return response
+
+    monkeypatch.setattr(case.shared, "request", summary)
+    if delivered:
+        clock.tick = lambda: case.shared.items.update({"b" * 26: item})
+        assert record in case.controller.records()
+        assert clock.sleeps == [1]
+    else:
+        with pytest.raises(LifecycleError, match="snapshot observation deadline"):
+            case.controller.records()
+        assert clock.now == selected.readback_seconds
+    assert str(record["event_id"]) in selected._known
+    assert case.shared.posts == 0
 
 
 def test_lifecycle_delayed_writes_still_need_independent_checkpoint_and_revocation(

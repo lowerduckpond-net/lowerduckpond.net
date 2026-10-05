@@ -21,12 +21,13 @@ from scripts.m3_11_unattended.connect_api import TIMEOUT_SECONDS, Connect
 from scripts.m3_11_unattended.connect_auth import identity as account_identity
 from scripts.m3_11_unattended.connect_checkpoint import Stored
 from scripts.m3_11_unattended.journal import MAX_EVENTS, TAG, OpJournal, _note_content, validate
-from scripts.m3_11_unattended.model import LifecycleError, digest, identity
+from scripts.m3_11_unattended.model import LifecycleError, digest, identity, instant
 from scripts.m3_11_unattended.state import private_directory
 
 ACK_FORMAT = "lowerduckpond-m3-11-connect-ack-v1"
 READBACK_SECONDS = 60
 READBACK_POLL_SECONDS = 1
+TITLE = re.compile(r"m3-11-([0-9a-f-]{36})-([0-9a-f]{64})")
 ACK_FIELDS = {
     "format",
     "event_id",
@@ -46,6 +47,7 @@ ITEM_BINDING = (
     "createdAt",
     "updatedAt",
     "lastEditedBy",
+    "state",
 )
 
 
@@ -184,6 +186,23 @@ class ConnectLedger:
             item_id = _item_identity(listed.get("id"))
             if item_id in inventory:
                 raise LifecycleError("Connect journal inventory has duplicate items")
+            title = listed.get("title")
+            match = TITLE.fullmatch(title) if isinstance(title, str) else None
+            if (
+                listed.get("category") != "SECURE_NOTE"
+                or listed.get("tags") != [TAG]
+                or listed.get("state") is not None
+                or type(listed.get("version")) is not int
+                or cast(int, listed["version"]) < 1
+                or not isinstance(listed.get("vault"), dict)
+                or cast(dict[str, object], listed["vault"]).get("id") != self.vault
+                or match is None
+            ):
+                raise LifecycleError("Connect journal inventory item metadata is invalid")
+            identity(match[1])
+            account_identity(listed.get("lastEditedBy"))
+            instant(listed.get("createdAt"))
+            instant(listed.get("updatedAt"))
             inventory[item_id] = {key: listed.get(key) for key in ITEM_BINDING}
         return inventory
 
@@ -211,20 +230,35 @@ class ConnectLedger:
             metadata.setdefault(event_id, []).append(item)
             records[event_id] = record
             cached_items[item_id] = record, item
-        # Validate every present row before treating a count-ahead inventory as
-        # transient; a short list must not conceal malformed or changed metadata.
+        # Every decoded immutable event remains known even if the surrounding
+        # snapshot is unstable. A retry cannot forget a newly seen obligation.
+        self._known.update({key: digest(record) for key, record in records.items()})
+        after = self._inventory()
+        if any(after[key] != inventory[key] for key in after.keys() & inventory.keys()):
+            raise LifecycleError("immutable Connect journal metadata changed during readback")
+        for listed in after.values():
+            advertised = TITLE.fullmatch(str(listed["title"]))
+            if advertised is None:  # Already validated by _inventory; never accept an unbound row.
+                raise LifecycleError("Connect inventory event binding is invalid")
+            event_id, expected = advertised.groups()
+            if event_id in self._known and self._known[event_id] != expected:
+                raise LifecycleError("an immutable Connect journal event binding changed")
+            # A new valid summary also establishes an expectation for the next
+            # complete scan. It proves neither its contents nor durability yet.
+            self._known[event_id] = expected
+        # Validate both inventories before treating growth as transient. Changed
+        # known metadata and malformed new summaries cannot be waited past.
         if (
             len(inventory) < before[0]
             or self.anchor not in inventory
             or not self._known.keys() <= items.keys()
-            or self._inventory() != inventory
+            or after != inventory
             or self._vault_state() != before
         ):
             raise SnapshotChangedError(
                 "Connect journal is not synchronized with its retained checkpoint"
             )
         self._metadata, self._items = metadata, items
-        self._known.update({key: digest(record) for key, record in records.items()})
         # An independent worker can recover the same event from its checkpoint
         # after losing a POST reply and its ephemeral spool. Exact immutable
         # copies share one logical event; conflicting copies still fail closed.
@@ -235,12 +269,39 @@ class ConnectLedger:
         """Poll only reads after a retained POST; never resend or weaken the snapshot."""
         until = time.monotonic() + self.readback_seconds
         previous = self._read_deadline
+        if previous is not None:
+            until = min(until, previous)
         # A zero wait is the explicit single-read mode used by provider doubles.
-        self._read_deadline = until if self.readback_seconds else None
+        self._read_deadline = until if self.readback_seconds else previous
         try:
             self._await_readback(record, until=until)
         finally:
             self._read_deadline = previous
+
+    def stable_records(self) -> list[dict[str, object]]:
+        """Wait only for snapshot stability; preserve strict records() for recovery."""
+        if not self.readback_seconds:
+            return self.records()  # Explicit single-read mode for local provider doubles.
+        until = time.monotonic() + self.readback_seconds
+        if self._read_deadline is not None:
+            until = min(until, self._read_deadline)
+        with self.read_budget(deadline=until, check_cancelled=lambda: None):
+            while True:
+                self.check_cancelled()
+                if time.monotonic() >= until:
+                    raise ReadbackExpiredError("Connect snapshot observation deadline elapsed")
+                try:
+                    observed = self.records()
+                except SnapshotChangedError:
+                    remaining = until - time.monotonic()
+                    if remaining <= 0:
+                        raise
+                    time.sleep(min(READBACK_POLL_SECONDS, remaining))
+                    continue
+                self.check_cancelled()
+                if time.monotonic() >= until:
+                    raise ReadbackExpiredError("Connect snapshot observation deadline elapsed")
+                return observed
 
     def _await_readback(self, record: dict[str, object], *, until: float) -> None:
         first = True
@@ -275,7 +336,7 @@ class ConnectLedger:
                 raise LifecycleError("Connect stage intent changed")
             self._readback(record)
             return
-        existing = [value for value in self.records() if value["event_id"] == event_id]
+        existing = [value for value in self.stable_records() if value["event_id"] == event_id]
         if existing:
             if existing != [record]:
                 raise LifecycleError("Connect staged event differs from its original contents")

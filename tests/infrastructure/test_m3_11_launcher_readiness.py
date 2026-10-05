@@ -83,7 +83,7 @@ def test_valid_growth_during_each_snapshot_retries_same_native_dispatch(
     assert proof["github_run_id"] == len(case.github.executions)
     assert len(case.github.executions) == 4  # three activation operations, one witness
     assert sleeps == [1]
-    assert reads == 2 * scan + 6  # retry starts over with a complete observation
+    assert reads == 8  # three stable scans, plus the complete restarted scan
     assert case.provider.creates == 0
     assert CANARY not in (directory / "launch-request.json").read_text()
     assert not (directory / "launcher-failure.json").exists()
@@ -164,7 +164,7 @@ def test_continuously_changing_snapshot_expires_without_dispatch_replay(
     monkeypatch.setattr(case.shared, "request", arrive)
     monkeypatch.setattr(time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
-    with pytest.raises(LifecycleError, match="readiness remains unproven"):
+    with pytest.raises(LifecycleError, match="snapshot observation deadline elapsed"):
         control.await_witness(configuration, request, directory=directory)
     assert reads == 10 and clock[0] == 5
     assert len(case.github.executions) == 4 and case.provider.creates == 0
@@ -173,9 +173,9 @@ def test_continuously_changing_snapshot_expires_without_dispatch_replay(
     assert CANARY not in json.dumps(diagnostic)
     detail = fields(diagnostic["diagnostic"], {"binding", "stage", "failure"})
     failure = fields(detail["failure"], {"category", "origin"})
-    assert fields(failure["origin"], {"path", "line", "function"})["function"] == "_await_witness"
+    assert fields(failure["origin"], {"path", "line", "function"})["function"] == "stable_records"
     original = (directory / "launcher-failure.json").read_bytes()
-    with pytest.raises(LifecycleError, match="failed launcher evidence"):
+    with pytest.raises(LifecycleError, match="attempt already consumed"):
         control.await_witness(configuration, request, directory=directory)
     assert (directory / "launcher-failure.json").read_bytes() == original
     assert len(case.github.executions) == 4
@@ -330,3 +330,51 @@ def test_broken_launcher_diagnostic_does_not_replace_original_failure(
     assert not (directory / "launcher-failure.json").exists()
     assert (directory / "submitted.json").exists()
     assert case.provider.creates == 0
+    monkeypatch.setattr(control, "TIMEOUT_SECONDS", 5)
+    with pytest.raises(LifecycleError, match="attempt already consumed"):
+        control.await_witness(configuration, request, directory=directory)
+    assert not (directory / "witness-ready.json").exists()
+    assert len(case.github.executions) == 4
+
+
+def test_interrupted_launcher_cannot_reenter_its_consumed_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case, configuration, request, directory = launcher(tmp_path, monkeypatch)
+    native = case.github.find_run
+
+    def interrupted(*args: object, **kwargs: object) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(case.github, "find_run", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        control.await_witness(configuration, request, directory=directory)
+    assert not (directory / "launcher-failure.json").exists()
+    monkeypatch.setattr(case.github, "find_run", native)
+    with pytest.raises(LifecycleError, match="attempt already consumed"):
+        control.await_witness(configuration, request, directory=directory)
+    assert len(case.github.executions) == 4 and case.provider.creates == 0
+    assert not (directory / "witness-ready.json").exists()
+
+
+def test_witness_rerun_cannot_replace_first_attempt_after_snapshot_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case, configuration, request, directory = launcher(tmp_path, monkeypatch)
+    checked = []
+
+    def pending(*args: object, **kwargs: object) -> None:
+        checked.append(True)
+        raise SnapshotChangedError("valid async update")
+
+    def rerun(_seconds: float) -> None:
+        case.github.executions[-1]["run_attempt"] = 2
+
+    monkeypatch.setattr(control, "require_independent_ready", pending)
+    monkeypatch.setattr(time, "sleep", rerun)
+    with pytest.raises(LifecycleError, match="execution changed during observation"):
+        control.await_witness(configuration, request, directory=directory)
+    assert checked == [True]
+    assert read_private(directory / "witness-execution.json")["github_run_attempt"] == 1
+    assert len(case.github.executions) == 4 and case.provider.creates == 0
+    assert not (directory / "witness-ready.json").exists()
