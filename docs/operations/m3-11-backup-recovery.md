@@ -125,6 +125,70 @@ Provider contracts used by setup are documented by
 [1Password service accounts](https://developer.1password.com/docs/service-accounts/), and
 [GitHub environments](https://docs.github.com/en/rest/deployments/environments).
 
+### Staging Connect bootstrap
+
+The operator can stage Connect access using a normal 1Password login on the
+**secure workstation**. This setup step does not use service-account quota.
+Sign in to the operator's normal 1Password account before running the helper.
+The shared Connect server belongs in the existing Unraid `services` Compose
+project; workspaces receive scoped clients. The server credentials file stays
+on Unraid. Keep its API behind the private HTTPS route and retain its persistent
+encrypted cache.
+
+The setup helper reads the previously approved, non-secret setup manifest from
+an immutable 1Password item reference and verifies the supplied digest of the
+whole journal record. It grants the shared server access to the same four
+dedicated vaults and creates three native seven-day clients: provisioning and
+cleanup each read their own bootstrap vault and read/write the journal;
+production checking reads only its production-input vault. It separately creates
+a Connect server identity and client limited to cleanup and the journal for
+GitHub. That identity allows a future cleanup job to start its own Connect
+instance without depending on Unraid being available.
+
+From a checkout of the exact committed setup revision, with locked dependencies
+installed, preview the operation on the **secure workstation**:
+
+```console
+mise exec -- uv run --no-sync --frozen python -m scripts.m3_11_unattended.connect_setup \
+  --revision FULL_COMMIT_SHA \
+  --manifest-reference op://JOURNAL_VAULT_ID/SETUP_ITEM_ID/notesPlain \
+  --manifest-sha256 APPROVED_SETUP_RECORD_SHA256 \
+  --shared-url https://op-connect.example.net \
+  --shared-server 'Unraid services' \
+  --output "$HOME/.config/lowerduckpond/m3-11-connect-bootstrap"
+```
+
+Add `--apply` to create the bootstrap. To deliver it in the same operation, add
+`--unraid root@UNRAID_HOST --workspace CODER_CONTAINER_NAME
+--workspace-id APPROVED_WORKSPACE_UUID`. Delivery checks the workspace ID,
+container identity and persistent home volume through the parent `coder_dind`
+daemon before streaming only the three client tokens to
+`/home/coder/.config/lowerduckpond/m3-11/connect-bootstrap.json`. The independent
+server credentials and cleanup client go only to the existing main-only GitHub
+environment, in a new `M3_11_CONNECT_BOOTSTRAP` secret. No credential value enters
+arguments or terminal output. The operation retains mode-0600 creation intents,
+returned credentials and provider metadata on the workstation. Repeating it
+reuses completed issuance; a lost token response records inventory and stops
+without creating another token. Keep those private files for reconciliation.
+If a step fails, its message identifies the operation and a sanitized failure
+category. Replace `--apply` with `--diagnose` and omit the delivery arguments for
+read-only checks of sign-in, the approved manifest and shared server lookup.
+Diagnosis lists only the presence of fixed setup files and never retries an
+uncertain credential creation or prints their contents.
+
+**Staging is not activation.** These bundles are deliberately not accepted by
+the qualification runner's service-account configuration. The setup checks
+requested scope separation and native token expiry claims; it does not claim
+authenticated policy verification or independent cleanup readiness. The Connect
+transport, external journal persistence proof and independent GitHub cleanup
+integration must be implemented, reviewed and exercised before activating this
+path. In particular, a write followed by a read from the same Connect cache is
+not proof that an obligation reached 1Password outside the Docker host. Existing
+qualification inputs, cleanup helper pin and deployment gates remain in effect.
+
+See the official [Connect CLI reference](https://www.1password.dev/cli/reference/management-commands/connect)
+and [Connect authorization model](https://www.1password.dev/connect/security).
+
 ### Review, start and monitor
 
 Before the first live issuance, present the prepared source/helper commit,
