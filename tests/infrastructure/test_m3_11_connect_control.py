@@ -10,6 +10,7 @@ import uuid
 import zipfile
 from pathlib import Path
 from typing import cast, override
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -56,7 +57,13 @@ class GitHubDouble(control.GitHub):
                 raise LifecycleError("simulated lost reply")
             return None
         if "/runs?" in path:
-            return {"workflow_runs": self.executions}
+            query = parse_qs(urlsplit(path).query)
+            rows = [
+                row
+                for row in self.executions
+                if "status" not in query or row["status"] == query["status"][0]
+            ]
+            return {"workflow_runs": rows, "total_count": len(rows)}
         if "/artifacts?" in path:
             return {
                 "total_count": 1,
@@ -168,3 +175,42 @@ def test_missing_execution_keeps_submission_identity_without_replay(
         github.wait(dispatch, helper="a" * 40, directory=tmp_path)
     github.dispatch(tmp_path, operation="discovery", selection={})
     assert not github.executions and (tmp_path / "submitted.json").exists()
+
+
+@pytest.mark.parametrize("truncate", [False, True])
+def test_initialization_drains_complete_paginated_pending_execution_inventory(
+    monkeypatch: pytest.MonkeyPatch, truncate: bool
+) -> None:
+    github = GitHubDouble()
+    total = 101
+
+    def inventory(path: str, **_kwargs: object) -> object:
+        query = parse_qs(urlsplit(path).query)
+        if query["status"] != ["pending"]:
+            return {"total_count": 0, "workflow_runs": []}
+        page = int(query["page"][0])
+        ids = range(1, total) if page == 1 else ([] if truncate else [total])
+        return {
+            "total_count": total,
+            "workflow_runs": [
+                {
+                    "id": value,
+                    "workflow_id": WORKFLOW_ID,
+                    "head_branch": "main",
+                    "status": "pending",
+                }
+                for value in ids
+            ],
+        }
+
+    monkeypatch.setattr(github, "api", inventory)
+    if truncate:
+        with pytest.raises(LifecycleError, match="pagination"):
+            github.active_executions()
+    else:
+        assert github.active_executions() == set(range(1, total + 1))
+    pending = [{1}, set(), set()]
+    monkeypatch.setattr(github, "active_executions", lambda: pending.pop(0))
+    monkeypatch.setattr(control, "POLL_SECONDS", 0)
+    github.drain()
+    assert not pending

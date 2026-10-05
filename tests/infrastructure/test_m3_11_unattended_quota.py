@@ -617,6 +617,49 @@ def test_optional_cache_storage_cannot_prevent_live_revocation(
     assert CANARY not in json.dumps(receipt)
 
 
+def test_initialization_quiet_mode_never_publishes_admission_or_hides_new_intents(
+    tmp_path: Path,
+) -> None:
+    cli = CountedCli()
+    journal = OpJournal(cast(OnePassword, cli), "a" * 26)
+    case = Case(tmp_path / "case")
+    independent = Lifecycle(journal, {"spaces": case.provider}, clock=lambda: case.now)
+    receipt = cleanup.sweep(independent, actor="github", helper="f" * 40, quiet_empty=True)
+    assert receipt["status"] == "initializing-empty"
+    assert not journal.records()
+    case.lifecycle = Lifecycle(
+        OpJournal(cast(OnePassword, cli), "a" * 26),
+        {"spaces": case.provider},
+        clock=lambda: case.now,
+    )
+    intent, credential = case.create()
+    case.lifecycle.request_revocation(case.run_id)
+    receipt = cleanup.sweep(
+        independent,
+        actor="github",
+        helper="f" * 40,
+        quiet_empty=True,
+        secrets={intent.sha256: credential},
+    )
+    assert receipt["status"] == "ready" and case.provider.deletes == [credential.identifier]
+    assert any(record["kind"] == "heartbeat" for record in journal.records())
+
+
+def test_initialization_quiet_mode_refuses_failed_fresh_inventory(tmp_path: Path) -> None:
+    cli = CountedCli()
+    journal = OpJournal(cast(OnePassword, cli), "a" * 26)
+    assert journal.records() == []
+    cli.fail_list = True
+    case = Case(tmp_path / "case")
+    with pytest.raises(LifecycleError):
+        cleanup.sweep(
+            Lifecycle(journal, {"spaces": case.provider}),
+            actor="github",
+            helper="f" * 40,
+            quiet_empty=True,
+        )
+
+
 @pytest.mark.parametrize("failed_revocation", [False, True])
 def test_dead_controller_leaves_retry_set_only_after_verified_revocation(
     tmp_path: Path,
@@ -843,6 +886,7 @@ def test_local_cleanup_serializes_refresh_probe_and_secret_disposal(  # noqa: PL
             config=Path("/unused"),
             journal_cache=None,
             journal_cache_output=None,
+            quiet_empty=False,
         ),
     )
     monkeypatch.setattr(

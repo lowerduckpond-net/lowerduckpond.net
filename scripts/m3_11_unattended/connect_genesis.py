@@ -17,6 +17,7 @@ from scripts.m3_11_unattended.model import (
     LifecycleError,
     digest,
     identity,
+    instant,
     stamp,
     strings,
 )
@@ -118,18 +119,45 @@ def discover(
     vaults = strings(selected["vaults"])
     probe = validate(selected["independent_probe"])
     before = [record for record in ledger.records() if not acknowledgement(record)]
+    initial = strings(selected["initial"])
+    observed = {str(record["event_id"]): digest(record) for record in before if record != probe}
     if (
         revision(helper) != selected["helper_revision"]
         or account_identity(server) == selected["shared_server"]
         or ledger.vault != vaults["journal"]
         or ledger.anchor != selected["anchor"]
         or ledger.anchor_sha256 != selected["anchor_sha256"]
-        or {str(record["event_id"]): digest(record) for record in before if record != probe}
-        != strings(selected["initial"])
+        or not initial.items() <= observed.items()
         or any(record["kind"] == "intent" for record in before)
         or ledger.authors(validate(selected["shared_probe"])) != {selected["shared_author"]}
     ):
         raise LifecycleError("Connect discovery inputs or complete initial inventory differ")
+    for record in before:
+        if record != probe and str(record["event_id"]) not in initial:
+            # Old executions are drained before discovery. Learn their last
+            # empty heartbeat if this independent replica sees it before the
+            # shared cache; never drop it or accept a hidden credential intent.
+            receipt = fields(
+                record["payload"],
+                {
+                    "actor",
+                    "helper_revision",
+                    "observed_at",
+                    "status",
+                    "overdue",
+                    "results",
+                },
+            )
+            revision(receipt["helper_revision"])
+            instant(receipt["observed_at"])
+            if (
+                record["kind"] != "heartbeat"
+                or receipt["actor"] != "github"
+                or receipt["status"] not in {"ready", "unresolved"}
+                or receipt["overdue"] != 0
+                or receipt["results"] != []
+            ):
+                raise LifecycleError("Connect discovery found unapproved journal additions")
     author = discover_author(ledger, probe, shared_author=str(selected["shared_author"]))
     return {
         "format": DISCOVERY_RECEIPT,
@@ -142,6 +170,7 @@ def discover(
         "forged_author_ignored": True,
         "observed_at": stamp(now),
         "provider_children_created": False,
+        "initial": observed,
     }
 
 

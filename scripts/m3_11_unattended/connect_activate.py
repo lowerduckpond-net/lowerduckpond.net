@@ -19,7 +19,7 @@ from scripts.m3_11_unattended import connect_configuration as backend
 from scripts.m3_11_unattended import connect_genesis as genesis
 from scripts.m3_11_unattended.cleanup import require_independent_ready
 from scripts.m3_11_unattended.config import Configuration
-from scripts.m3_11_unattended.connect_control import BACKEND, HELPER, SETTING, GitHub
+from scripts.m3_11_unattended.connect_control import BACKEND, SETTING, GitHub
 from scripts.m3_11_unattended.connect_journal import acknowledgement
 from scripts.m3_11_unattended.connect_ledger import ConnectLedger
 from scripts.m3_11_unattended.connect_setup import FORMAT, role_vaults
@@ -27,6 +27,8 @@ from scripts.m3_11_unattended.journal import event, validate
 from scripts.m3_11_unattended.model import LifecycleError, Targets, digest, identity, strings
 from scripts.m3_11_unattended.state import cleanup_lock, private_directory, replace_private
 from scripts.production_qualification_inputs import current_candidate, revision
+
+INITIALIZING_FORMAT = "lowerduckpond-m3-11-connect-initializing-v1"
 
 
 def retain(path: Path, value: dict[str, object]) -> dict[str, object]:
@@ -190,12 +192,14 @@ class Activation:
         if current not in (previous, selected) or variables.get(BACKEND, "") not in {
             "",
             "service-account",
+            "connect-initializing",
             "connect",
         }:
             raise LifecycleError("protected Connect configuration changed; never reset its epoch")
         if variables.get(BACKEND) == "connect" and selected["stage"] != "active":
             raise LifecycleError("active Connect cleanup cannot return to initialization")
-        self.github.set_variable(HELPER, self.helper)
+        # The executable pin travels in the same atomic publication. The legacy
+        # service-account helper variable is deliberately left unchanged.
         self.github.set_variable(SETTING, canonical_bytes(selected).decode())
 
     def step(
@@ -254,7 +258,41 @@ class Activation:
         )
         return retain(self.directory / "discovery-request.json", value)
 
+    def quiesce(self) -> dict[str, object]:
+        marker: dict[str, object] = {
+            "format": INITIALIZING_FORMAT,
+            "stage": "initializing",
+            "active_helper": self.helper,
+            "request": {
+                "vaults": self.vaults,
+                "anchor": self.anchor,
+                "anchor_sha256": self.anchor_sha256,
+                "targets_sha256": digest(dataclasses.asdict(self.targets)),
+                "shared_server": backend.reader_access(self.configured["cleanup"])[1].server_id,
+            },
+            "receipt": None,
+        }
+        variables = self.github.variables()
+        current = json.loads(variables[SETTING]) if SETTING in variables else None
+        if variables.get(BACKEND, "") not in {"", "service-account", "connect-initializing"}:
+            raise LifecycleError("active Connect cleanup cannot return to initialization")
+        if current is not None and current != marker:
+            prior = action.selection(current, helper=self.helper)
+            if prior["stage"] not in {"discovery", "genesis"}:
+                raise LifecycleError("an existing Connect epoch cannot be reinitialized")
+            self.bind(prior)
+        if any(row["kind"] == "intent" for row in self.ledger.records()):
+            raise LifecycleError("initial Connect activation cannot discard existing obligations")
+        if current is None:
+            self.github.set_variable(SETTING, canonical_bytes(marker).decode())
+        # Independent cleanup continues. Only an empty journal suppresses idle
+        # heartbeat writes; any intent still takes the normal native sweep.
+        self.github.set_variable(BACKEND, "connect-initializing")
+        self.github.drain()
+        return marker
+
     def initialize(self) -> dict[str, object]:
+        marker = self.quiesce()
         discovery = self.discovery()
         selected: dict[str, object] = {
             "format": action.FORMAT,
@@ -263,7 +301,7 @@ class Activation:
             "request": discovery,
             "receipt": None,
         }
-        receipt = self.step("discovery", selected, previous=None)
+        receipt = self.step("discovery", selected, previous=marker)
         proof = fields(
             receipt["proof"],
             {
@@ -277,6 +315,7 @@ class Activation:
                 "forged_author_ignored",
                 "observed_at",
                 "provider_children_created",
+                "initial",
             },
         )
         if (
@@ -292,6 +331,24 @@ class Activation:
             or proof["provider_children_created"] is not False
         ):
             raise LifecycleError("independent discovery proof differs from its exact request")
+        initial = strings(proof["initial"])
+        if not strings(discovery["initial"]).items() <= initial.items():
+            raise LifecycleError("independent discovery lost previously observed journal records")
+
+        def synchronized() -> bool:
+            records = [row for row in self.ledger.records() if not acknowledgement(row)]
+            expected = {
+                **initial,
+                str(cast(dict[str, object], discovery["independent_probe"])["event_id"]): digest(
+                    discovery["independent_probe"]
+                ),
+            }
+            return {str(row["event_id"]): digest(row) for row in records} == expected
+
+        if not action.synchronize(synchronized):
+            raise LifecycleError(
+                "shared Connect has not reached the independent complete inventory"
+            )
         path = self.directory / "shared-forgery.json"
         if path.exists():
             forged = validate(read_private(path))
@@ -317,7 +374,7 @@ class Activation:
                 "format": genesis.REQUEST_FORMAT,
                 "shared_forgery_probe": forged,
                 "initial": {
-                    **strings(discovery["initial"]),
+                    **initial,
                     str(forged["event_id"]): digest(forged),
                 },
             }

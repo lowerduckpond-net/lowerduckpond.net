@@ -7,6 +7,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import json
+import time
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,7 +19,7 @@ from infrastructure import test_m3_11_connect_configuration as configuration_tes
 from infrastructure.test_m3_11_connect_checkpoint import StoreDouble
 from infrastructure.test_m3_11_connect_control import GitHubDouble
 from infrastructure.test_m3_11_connect_journal import RemoteReplica, sync
-from infrastructure.test_m3_11_connect_ledger import ANCHOR, CANARY, VAULT, Replica
+from infrastructure.test_m3_11_connect_ledger import ANCHOR, CANARY, VAULT, Replica, note
 from infrastructure.test_m3_11_unattended_lifecycle import TARGETS, ProviderDouble
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_unattended import connect_action as action
@@ -44,7 +45,7 @@ class GitHub(GitHubDouble):
     def __init__(self, case: Case) -> None:
         super().__init__()
         self.case = case
-        self.values: dict[str, str] = {}
+        self.values: dict[str, str] = {control.HELPER: "0" * 40}
         self.allowed = {HELPER, "f" * 40}
         self.selection_history: list[dict[str, object]] = []
 
@@ -63,7 +64,7 @@ class GitHub(GitHubDouble):
 
     @override
     def set_variable(self, name: str, value: str) -> None:
-        assert name in {control.SETTING, control.HELPER, control.BACKEND}
+        assert name in {control.SETTING, control.BACKEND}
         self.values[name] = value
         if name == control.SETTING:
             self.selection_history.append(json.loads(value))
@@ -80,11 +81,14 @@ class GitHub(GitHubDouble):
         self.fail_after_dispatch = fail
         assert isinstance(body, dict)
         inputs = cast(dict[str, str], body["inputs"])
-        selected = action.selection(
-            json.loads(self.values[control.SETTING]), helper=self.values[control.HELPER]
-        )
+        snapshot = json.loads(self.values[control.SETTING])
+        selected = action.selection(snapshot, helper=snapshot["active_helper"])
         approved = cast(dict[str, object], selected["request"])
         sync(self.case.shared, self.case.remote)
+        if inputs["operation"] == "discovery" and self.case.late_heartbeat is not None:
+            identifier = "9".zfill(26)
+            self.case.remote.items[identifier] = note(self.case.late_heartbeat, identifier)
+            self.case.remote.version += 1
         proof = (
             cast(dict[str, object], selected["receipt"])
             if selected["stage"] == "active"
@@ -98,7 +102,7 @@ class GitHub(GitHubDouble):
             anchor_sha256=digest(self.case.anchor),
             minimum=strings(proof["initial"]),
         )
-        helper, server = self.values[control.HELPER], "I" * 26
+        helper, server = str(selected["active_helper"]), "I" * 26
         if inputs["operation"] == "discovery":
             proof = genesis.discover(
                 ledger,
@@ -134,11 +138,12 @@ class GitHub(GitHubDouble):
                 attempt=1,
                 fallback=lambda: Lifecycle(journal, {"spaces": self.case.provider}),
             )
-        sync(self.case.remote, self.case.shared)
+        if inputs["operation"] != "discovery" or not self.case.defer_discovery_sync:
+            sync(self.case.remote, self.case.shared)
         self.receipts[len(self.executions)] = {
             "format": action.RECEIPT_FORMAT,
             "status": "ready",
-            "helper_revision": self.values[control.HELPER],
+            "helper_revision": helper,
             "operation": inputs["operation"],
             "dispatch_id": inputs["dispatch_id"],
             "selection_sha256": digest(selected),
@@ -159,6 +164,9 @@ class GitHub(GitHubDouble):
 class Case:
     def __init__(self, path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         self.path = path
+        self.late_heartbeat: dict[str, object] | None = None
+        self.defer_discovery_sync = False
+        monkeypatch.setattr(control, "POLL_SECONDS", 0)
         monkeypatch.setattr(configuration_tests, "VAULTS", VAULTS)
         configured = {
             role: configuration_tests.reader_config(role)
@@ -227,6 +235,7 @@ def test_activation_discovers_both_authors_persists_genesis_and_installs_verifie
     assert case.github.values[control.BACKEND] == "connect"
     assert case.provider.creates == 0
     assert [value["stage"] for value in case.github.selection_history] == [
+        "initializing",
         "discovery",
         "genesis",
         "active",
@@ -247,6 +256,34 @@ def test_lost_discovery_reply_does_not_duplicate_remote_operation_or_probes(
     case.activation().activate(case.output)
     assert case.shared.posts == 2
     assert json.loads(case.github.values[control.SETTING]) == prior
+    assert case.provider.creates == 0
+
+
+def test_final_legacy_heartbeat_reaches_genesis_after_delayed_shared_synchronization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = Case(tmp_path, monkeypatch)
+    case.late_heartbeat = event(
+        "heartbeat",
+        str(uuid.uuid7()),
+        {
+            "actor": "github",
+            "helper_revision": "0" * 40,
+            "observed_at": stamp(datetime.now(UTC)),
+            "status": "ready",
+            "overdue": 0,
+            "results": [],
+        },
+    )
+    case.defer_discovery_sync = True
+    monkeypatch.setattr(time, "sleep", lambda _seconds: sync(case.remote, case.shared))
+    case.activation().activate(case.output)
+    discovery = read_private(case.path / "activation/discovery-request.json")
+    selected = json.loads(case.github.values[control.SETTING])
+    event_id = str(case.late_heartbeat["event_id"])
+    assert event_id not in cast(dict[str, str], discovery["initial"])
+    assert selected["receipt"]["initial"][event_id] == digest(case.late_heartbeat)
+    assert selected["request"]["initial"][event_id] == digest(case.late_heartbeat)
     assert case.provider.creates == 0
 
 
@@ -271,6 +308,37 @@ def test_reviewed_helper_upgrade_preserves_genesis_and_private_previous_configur
         ).cleanup.connect_settings
     )
     assert case.shared.posts == 2 and case.provider.creates == 0
+
+
+@pytest.mark.parametrize("fault", ["before", "after"])
+def test_interrupted_helper_publication_keeps_independent_cleanup_executable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    case = Case(tmp_path, monkeypatch)
+    case.activation().activate(case.output)
+    previous = read_private(case.output)
+    publish = case.github.set_variable
+
+    def interrupt(name: str, value: str) -> None:
+        if name == control.SETTING and fault == "before":
+            raise LifecycleError("interrupted publication")
+        publish(name, value)
+        if name == control.SETTING:
+            raise LifecycleError("lost publication response")
+
+    monkeypatch.setattr(case.github, "set_variable", interrupt)
+    with pytest.raises(LifecycleError):
+        case.activation(helper="f" * 40).activate(case.output)
+    selected = json.loads(case.github.values[control.SETTING])
+    helper = selected["active_helper"]
+    assert helper == (HELPER if fault == "before" else "f" * 40)
+    assert case.github.values[control.HELPER] == "0" * 40
+    assert read_private(case.output) == previous
+    # A separate scheduled execution needs neither the interrupted activation
+    # process nor the old legacy pin to reach provider reconciliation.
+    directory = tmp_path / "independent-after-interruption"
+    dispatch = case.github.dispatch(directory, operation="reconcile", selection=selected)
+    assert case.github.wait(dispatch, helper=helper, directory=directory)["status"] == "ready"
 
 
 def test_unmerged_helper_and_changed_protected_targets_cannot_activate(

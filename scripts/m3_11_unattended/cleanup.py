@@ -102,16 +102,30 @@ def cleanup_providers(
     return providers
 
 
-def sweep(
+def sweep(  # noqa: PLR0913 - explicit initialization quiescence never suppresses obligations
     lifecycle: Lifecycle,
     *,
     actor: str,
     helper: str,
     secrets: dict[str, Credential] | None = None,
     authority_verified: bool = True,
+    quiet_empty: bool = False,
 ) -> dict[str, object]:
     if actor not in {"controller", "watchdog", "github"}:
         raise LifecycleError("unknown cleanup actor")
+    if quiet_empty:
+        if actor != "github" or not isinstance(lifecycle.journal, OpJournal):
+            raise LifecycleError("only native GitHub cleanup can quiesce an empty journal")
+        lifecycle.journal.refresh()
+        # This is a complete live inventory, not cached absence. A historical
+        # intent still takes the normal cleanup/proof path and blocks genesis.
+        if not any(record["kind"] == "intent" for record in lifecycle.journal.records()):
+            return {
+                "actor": "github-initialization",
+                "helper_revision": revision(helper),
+                "observed_at": stamp(datetime.now(UTC)),
+                "status": "initializing-empty",
+            }
     observed = lifecycle.sweep(secrets)
     by_digest = {value.intent_sha256: value for value in observed}
     now = datetime.now(UTC)
@@ -306,6 +320,7 @@ def argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--runs", type=Path)
     parser.add_argument("--journal-cache", type=Path)
     parser.add_argument("--journal-cache-output", type=Path)
+    parser.add_argument("--quiet-empty", action="store_true")
     return parser
 
 
@@ -387,11 +402,22 @@ def main() -> int:  # noqa: PLR0912, PLR0915 - remote cadence and explicit backe
                 available = None
                 if args.runs is not None:
                     available = reconcile_processes(lifecycle, args.runs, Docker(), directories=due)
-                receipt = sweep(lifecycle, actor=args.actor, helper=helper, secrets=available)
+                receipt = sweep(
+                    lifecycle,
+                    actor=args.actor,
+                    helper=helper,
+                    secrets=available,
+                    quiet_empty=args.quiet_empty,
+                )
                 if args.runs is not None:
                     finish_reconciled(lifecycle, due, receipt)
             print(json.dumps(receipt, sort_keys=True), flush=True)
-            status = 0 if receipt["status"] == "ready" else 1
+            status = (
+                0
+                if receipt["status"] == "ready"
+                or (args.quiet_empty and receipt["status"] == "initializing-empty")
+                else 1
+            )
         except RuntimeError, OSError, ValueError, KeyError, TypeError:
             print(
                 "Credential cleanup unresolved; retained obligations need another reconciliation.",

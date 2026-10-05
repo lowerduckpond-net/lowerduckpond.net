@@ -37,6 +37,7 @@ HELPER = "M3_11_CLEANUP_REVISION"
 TIMEOUT_SECONDS = 20 * 60
 POLL_SECONDS = 10
 MAX_BYTES = 1024 * 1024
+MAX_EXECUTIONS = 1000
 
 
 class GitHub:
@@ -99,6 +100,56 @@ class GitHub:
         ):
             raise LifecycleError("the exact lifecycle helper has not reached main")
 
+    def active_executions(self) -> set[int]:
+        """Complete bounded inventories, including executions waiting in concurrency queues."""
+        found: set[int] = set()
+        for status in ("requested", "waiting", "pending", "queued", "in_progress"):
+            page, seen, total = 1, 0, None
+            while total is None or seen < total:
+                value = self.api(
+                    f"{PREFIX}/actions/workflows/{WORKFLOW}/runs?branch=main"
+                    f"&status={status}&per_page=100&page={page}"
+                )
+                if (
+                    not isinstance(value, dict)
+                    or not isinstance(value.get("workflow_runs"), list)
+                    or type(value.get("total_count")) is not int
+                    or not 0 <= value["total_count"] <= MAX_EXECUTIONS
+                    or (total is not None and total != value["total_count"])
+                ):
+                    raise LifecycleError("cleanup execution inventory changed or is incomplete")
+                total = value["total_count"]
+                rows = value["workflow_runs"]
+                if not rows and seen < total:
+                    raise LifecycleError("cleanup execution pagination is incomplete")
+                for row in rows:
+                    if (
+                        not isinstance(row, dict)
+                        or type(row.get("id")) is not int
+                        or row["id"] < 1
+                        or row.get("workflow_id") != WORKFLOW_ID
+                        or row.get("head_branch") != "main"
+                        or row.get("status") != status
+                    ):
+                        raise LifecycleError("cleanup execution inventory has unexpected entries")
+                    found.add(row["id"])
+                seen += len(rows)
+                if seen > total:
+                    raise LifecycleError("cleanup execution inventory grew during pagination")
+                page += 1
+        return found
+
+    def drain(self) -> None:
+        until = time.monotonic() + TIMEOUT_SECONDS
+        empty = False
+        while time.monotonic() < until:
+            current = self.active_executions()
+            if not current and empty:
+                return
+            empty = not current
+            time.sleep(POLL_SECONDS)
+        raise LifecycleError("older cleanup executions remain pending; no inventory frozen")
+
     def variables(self) -> dict[str, str]:
         value = self.api(VARIABLES + "?per_page=100")
         if (
@@ -121,7 +172,7 @@ class GitHub:
         return result
 
     def set_variable(self, name: str, value: str) -> None:
-        if name not in {SETTING, BACKEND, HELPER} or len(value.encode()) > 48 * 1024:
+        if name not in {SETTING, BACKEND} or len(value.encode()) > 48 * 1024:
             raise LifecycleError("cleanup configuration exceeds its explicit boundary")
         exists = name in self.variables()
         self.api(
@@ -334,7 +385,7 @@ def await_witness(
     client.protection()
     client.merged(helper)
     variables = client.variables()
-    if variables.get(BACKEND) != "connect" or variables.get(HELPER) != helper:
+    if variables.get(BACKEND) != "connect":
         raise LifecycleError("independent Connect is not active at the approved helper")
     selected = connect_action.selection(json.loads(variables.get(SETTING, "{}")), helper=helper)
     if selected["stage"] != "active":

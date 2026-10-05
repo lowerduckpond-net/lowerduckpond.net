@@ -193,7 +193,8 @@ The Connect job uses `actions: read` to verify retained artifacts and
 `statuses: write` to append checkpoint references on one fixed commit. These are
 additional GitHub permissions requiring operator approval before workflow
 activation. No additional provider authority or production-vault access is given
-to GitHub.
+to GitHub. The GitHub token grants apply across this repository; the helper's
+code confines their use to the cleanup workflow and fixed checkpoint commit/context.
 
 The helper uses the bootstrap bundle already delivered to the workspace and the
 existing GitHub login. Keep the same private activation directory when resuming:
@@ -223,9 +224,24 @@ servers, actual authors, the full target selection, approved manifest, original
 helper and complete initial inventory. Existing credential intents prevent a new
 genesis; an existing epoch is never reset to work around incomplete history.
 
+Before freezing that inventory, activation selects `connect-initializing` and
+waits for older queued or running cleanup executions to finish. Native cleanup
+remains enabled using the reviewed helper from the same protected selection.
+It suppresses only an idle heartbeat after a fresh complete read proves there
+are no credential intents. Any intent, including a historical resolved one,
+takes the normal cleanup/proof path and blocks new genesis. Read failures remain
+unresolved. Quiet execution emits no admission heartbeat. This does not require
+successful service-account access while its quota is exhausted: independent
+Connect discovery supplies the complete inventory barrier. It may learn a final
+empty legacy heartbeat beyond the shared cache's initial snapshot; the shared
+cache must synchronize that exact complete map before genesis. No event is
+discarded and final genesis inventory checks remain exact.
+
 `M3_11_CONNECT_CONFIGURATION` holds those non-secret protected bindings and the
-active helper. `M3_11_CLEANUP_BACKEND=connect` selects Connect explicitly;
-`M3_11_CLEANUP_REVISION` pins the executable helper. A later reviewed helper keeps
+active executable helper in one atomic publication. The workflow captures that
+one value for both checkout and execution. `M3_11_CLEANUP_BACKEND=connect` selects
+Connect explicitly; the legacy `M3_11_CLEANUP_REVISION` is left unchanged for the
+service-account backend. A later reviewed helper keeps
 the original epoch, genesis, registry and historical obligations while changing
 the active helper. Fresh independent readiness at that helper is required before
 the controller configuration is installed. Older failed results stay failed.
