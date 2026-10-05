@@ -243,6 +243,13 @@ item binding and retains all known event hashes. The aggregate count remains a
 conservative lower bound; neither matching cache reads nor HTTP 200 creation
 readback establishes independent persistence. Returned item IDs are saved before
 further inspection, including when inspection fails.
+After a journal POST, the helper polls for its exact event in a complete stable
+inventory for up to 60 seconds. A restart with the retained creation intent uses
+the same readback path and never resends that POST. Missing events or a moving
+snapshot stay unresolved at the deadline; invalid metadata and conflicting
+contents fail immediately. This wait only settles cache visibility: provider
+creation still requires independent encrypted persistence and acknowledgement,
+and no provisioning or qualification deadline is extended.
 
 A reviewed helper correction can resume an unchanged `initializing` selection
 before discovery has started. It requires the original private inputs, both probe

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from collections.abc import Mapping
 from http import HTTPStatus
 from pathlib import Path
@@ -23,6 +24,8 @@ from scripts.m3_11_unattended.model import LifecycleError, digest, identity
 from scripts.m3_11_unattended.state import private_directory
 
 ACK_FORMAT = "lowerduckpond-m3-11-connect-ack-v1"
+READBACK_SECONDS = 60
+READBACK_POLL_SECONDS = 1
 ACK_FIELDS = {
     "format",
     "event_id",
@@ -51,6 +54,10 @@ def _item_identity(value: object) -> str:
     return value
 
 
+class SnapshotChangedError(LifecycleError):
+    """A complete inventory could not be held stable across a read."""
+
+
 class ConnectLedger:
     def __init__(  # noqa: PLR0913 - independent anchor and checkpoint bindings remain explicit
         self,
@@ -61,12 +68,16 @@ class ConnectLedger:
         anchor: str,
         anchor_sha256: str,
         minimum: Mapping[str, str],
+        readback_seconds: int = READBACK_SECONDS,
     ) -> None:
         self.client, self.vault = client, _item_identity(vault)
         self.spool, self.anchor, self.anchor_sha256 = spool, _item_identity(anchor), anchor_sha256
         if re.fullmatch(r"[0-9a-f]{64}", anchor_sha256) is None:
             raise LifecycleError("Connect journal anchor is unavailable")
         self.minimum = dict(minimum)
+        if not 0 <= readback_seconds <= READBACK_SECONDS:
+            raise LifecycleError("Connect readback wait exceeds its bound")
+        self.readback_seconds = readback_seconds
         for key, value in self.minimum.items():
             identity(key)
             if re.fullmatch(r"[0-9a-f]{64}", value) is None:
@@ -163,7 +174,9 @@ class ConnectLedger:
             or self._inventory(before[0]) != inventory
             or self._vault_state() != before
         ):
-            raise LifecycleError("Connect journal is not synchronized with its retained checkpoint")
+            raise SnapshotChangedError(
+                "Connect journal is not synchronized with its retained checkpoint"
+            )
         self._metadata, self._items = metadata, items
         self._known.update({key: digest(record) for key, record in records.items()})
         # An independent worker can recover the same event from its checkpoint
@@ -171,6 +184,30 @@ class ConnectLedger:
         # copies share one logical event; conflicting copies still fail closed.
         self._cached_items = cached_items
         return sorted(records.values(), key=lambda row: str(row["event_id"]))
+
+    def _readback(self, record: dict[str, object]) -> None:
+        """Poll only reads after a retained POST; never resend or weaken the snapshot."""
+        until = time.monotonic() + self.readback_seconds
+        first = True
+        while first or time.monotonic() < until:
+            first = False
+            try:
+                matches = [row for row in self.records() if row["event_id"] == record["event_id"]]
+            except SnapshotChangedError:
+                matches = []
+            if matches:
+                if matches != [record]:
+                    raise LifecycleError("Connect staged event differs from its original contents")
+                if not self.readback_seconds or time.monotonic() <= until:
+                    return
+                break
+            remaining = until - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(READBACK_POLL_SECONDS, remaining))
+        raise LifecycleError(
+            "Connect creation remains uncertain after readback; no duplicate submitted"
+        )
 
     def stage(self, record: dict[str, object], *, claimed_author: str | None = None) -> None:
         """Submit once and retain uncertainty; this never claims external persistence."""
@@ -185,7 +222,8 @@ class ConnectLedger:
         if intent.exists():
             if read_private(intent) != record:
                 raise LifecycleError("Connect stage intent changed")
-            raise LifecycleError("Connect item creation is uncertain; no duplicate submitted")
+            self._readback(record)
+            return
         write_private(intent, record)
         item: dict[str, object] = {
             "title": OpJournal._title(record),
@@ -218,9 +256,7 @@ class ConnectLedger:
             returned = _item_identity(response.body.get("id"))
             # A returned ID is retained immediately even when later inspection fails.
             write_private(self.spool / (event_id + ".returned.json"), {"item_id": returned})
-        matches = [value for value in self.records() if value["event_id"] == event_id]
-        if matches != [record]:
-            raise LifecycleError("Connect staged event has no matching readback")
+        self._readback(record)
 
     def confirmed(
         self,
