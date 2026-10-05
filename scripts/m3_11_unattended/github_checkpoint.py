@@ -207,8 +207,10 @@ class GitHubArtifacts:
         history = self.lineage()
         return history[-1] if history else None
 
-    def lineage(self) -> tuple[Stored, ...]:
+    def lineage(self, *, deadline: float | None = None) -> tuple[Stored, ...]:
         self._until = time.monotonic() + SCAN_SECONDS
+        if deadline is not None:
+            self._until = min(self._until, deadline)
         # GitHub returns individual statuses newest first. Unlike artifacts,
         # these records have no expiry, replacement or deletion API. Never
         # infer the head from the surviving artifact inventory.
@@ -251,12 +253,21 @@ class GitHubArtifacts:
         return max(0, STATUS_LIMIT - used)
 
     def _statuses(self) -> Iterator[dict[str, object]]:
-        seen = set()
+        seen: set[int] = set()
         for page in range(1, MAX_STATUS_PAGES + 1):
-            rows = self._api(
-                f"repos/{REPOSITORY}/commits/{self.registry_revision}/statuses"
-                f"?per_page={PAGE_SIZE}&page={page}"
-            )
+            try:
+                rows = self._api(
+                    f"repos/{REPOSITORY}/commits/{self.registry_revision}/statuses"
+                    f"?per_page={PAGE_SIZE}&page={page}"
+                )
+            except _UnavailableError:
+                if seen:
+                    # A later retry must not forget an entry already observed
+                    # during this incomplete scan, including a conflicting head.
+                    raise LifecycleError(
+                        "checkpoint registry became unavailable after observing entries"
+                    ) from None
+                raise
             if not isinstance(rows, list) or len(rows) > PAGE_SIZE:
                 raise LifecycleError("independent checkpoint registry is unavailable")
             for row in rows:
@@ -391,6 +402,29 @@ class GitHubArtifacts:
             raise LifecycleError("checkpoint was not produced by the protected cleanup workflow")
         self._verified_runs.add(run_id)
 
+    def _confirm_publication(
+        self, history: tuple[Stored, ...], created: Stored, *, deadline: float
+    ) -> None:
+        """Wait only for the exact append to become visible; never repeat a write."""
+        expected = (*history, created)
+        while time.monotonic() < deadline:
+            try:
+                observed = self.lineage(deadline=deadline)
+            except _UnavailableError:
+                pass
+            else:
+                if time.monotonic() >= deadline:
+                    break
+                if observed == expected:
+                    return
+                if observed != history:
+                    raise LifecycleError("checkpoint registry changed during publication")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(READ_POLL_SECONDS, remaining))
+        raise LifecycleError("checkpoint registry publication remains unconfirmed")
+
     def create(self, document: dict[str, object]) -> Stored:
         self._until = time.monotonic() + SCAN_SECONDS
         if (
@@ -471,6 +505,9 @@ class GitHubArtifacts:
             raise LifecycleError("checkpoint upload has no exact plaintext readback")
         if self.lineage() != history:
             raise LifecycleError("checkpoint registry advanced during this upload")
+        # Publication and its readback share the pre-publication scan's deadline.
+        # A complete unchanged history may precede visibility of the accepted POST.
+        deadline = self._until
         self._api(
             f"repos/{REPOSITORY}/statuses/{self.registry_revision}",
             body={
@@ -483,6 +520,5 @@ class GitHubArtifacts:
                 ),
             },
         )
-        if self.lineage() != (*history, created):
-            raise LifecycleError("checkpoint registry publication remains unconfirmed")
+        self._confirm_publication(history, created, deadline=deadline)
         return created

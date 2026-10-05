@@ -366,6 +366,11 @@ uploader, then checks native workflow metadata and decrypted checkpoint contents
 Temporary read failures share one bounded deadline; identity or integrity conflicts
 fail immediately. Readback retries never repeat uploads or acknowledge an
 unresolved checkpoint.
+After registry publication, a complete unchanged history or a temporary failure
+before any registry entries are read may be retried within the same bounded
+publication deadline. Only the exact expected append confirms publication.
+Changed history, conflicting entries, interrupted pagination after an observed
+entry and late readback remain failures; retries never repeat the status POST.
 Startup may wait briefly for an otherwise valid native readiness receipt's ACK.
 It never skips a newer adverse receipt or extends the qualification deadline.
 The launcher and controller also retry a typed unstable-snapshot observation
