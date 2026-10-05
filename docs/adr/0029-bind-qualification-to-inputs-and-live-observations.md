@@ -172,6 +172,12 @@ helper upgrade preserves that genesis and all historical obligations, and requir
 fresh independent readiness at the successor helper. It never reinitializes an
 existing journal or revives an old attempt's provisioning window.
 
+Checkpoint lineage follows the append-only registry's publication order, never
+the numeric magnitude of opaque GitHub artifact IDs. Exact genesis, predecessor,
+logical sequence and retained-history extension are required before independent
+acknowledgement. Controllers verify the native independent author and exact
+genesis binding without receiving GitHub cleanup authority.
+
 Connect cache inventory is established by two stable unfiltered item lists,
 native metadata and all retained event hashes, not equality with its aggregate
 vault count. Accepted writes can precede that stable inventory. The same ledger

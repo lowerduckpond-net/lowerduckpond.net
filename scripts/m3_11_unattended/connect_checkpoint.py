@@ -38,6 +38,10 @@ class Store(Protocol):
 
     def latest(self) -> Stored | None: ...
 
+    def lineage(self) -> tuple[Stored, ...]:
+        """Complete publication order, genesis first; identities carry no ordering."""
+        ...
+
     def read(self, stored: Stored) -> dict[str, object]: ...
 
     def create(self, document: dict[str, object]) -> Stored:
@@ -79,23 +83,28 @@ class Checkpoint:
         self.initialize = initialize
         self.head: Stored | None = None
         self.sequence = 0
+        self.history: tuple[Stored, ...] = ()
+        self.observed_history: tuple[Stored, ...] = ()
         self.records: dict[str, dict[str, object]] = {}
 
     def restore(self) -> None:
-        latest = self.store.latest()
-        if latest is None:
-            if not self.initialize or self.genesis is not None or self.head is not None:
+        history = self.store.lineage()
+        if not history:
+            if not self.initialize or self.genesis is not None or self.observed_history:
                 raise LifecycleError(
                     "independent checkpoint is missing; cleanup remains unresolved"
                 )
             return  # Only the explicit initialization ceremony may create genesis.
-        if (self.genesis is not None and latest.identity < self.genesis.identity) or (
-            self.head is not None and latest.identity < self.head.identity
+        if len({item.identity for item in history}) != len(history):
+            raise LifecycleError("independent checkpoint history repeats an immutable identity")
+        if (self.genesis is not None and history[0] != self.genesis) or (
+            history[: len(self.observed_history)] != self.observed_history
         ):
             raise LifecycleError("independent checkpoint registry moved backwards")
-        for pinned in (self.genesis, self.head):
-            if pinned is not None and latest.identity == pinned.identity and latest != pinned:
-                raise LifecycleError("an immutable independent checkpoint identity changed")
+        # Remember publication even if payload recovery fails. A later stale
+        # registry response cannot make an observed obligation disappear.
+        self.observed_history = history
+        latest = history[-1]
         document = self.store.read(latest)
         if digest(document) != latest.sha256:
             raise LifecycleError("independent checkpoint readback changed")
@@ -105,7 +114,7 @@ class Checkpoint:
             value["format"] != FORMAT
             or value["epoch"] != self.epoch
             or type(sequence) is not int
-            or sequence < max(1, self.sequence)
+            or sequence != len(history)
         ):
             raise LifecycleError("independent checkpoint identity or sequence differs")
         if sequence == 1:
@@ -117,11 +126,13 @@ class Checkpoint:
             if type(identifier) is not int or not isinstance(sha256, str):
                 raise LifecycleError("independent checkpoint predecessor is malformed")
             parent = Stored(identifier, sha256)
-            if parent.identity >= latest.identity:
-                raise LifecycleError("independent checkpoint predecessor does not precede it")
+            if parent != history[-2]:
+                raise LifecycleError("independent checkpoint predecessor differs from its history")
         records = _records(value["records"])
         self._require_extension(records)
         self.head, self.sequence, self.records = latest, sequence, records
+        self.history = history
+        self.observed_history = history
 
     def _require_extension(self, records: dict[str, dict[str, object]]) -> None:
         expected = {**self.initial, **{key: digest(value) for key, value in self.records.items()}}
@@ -152,13 +163,16 @@ class Checkpoint:
         # If the reply is lost, a later restore must find this immutable write.
         # Do not advance the in-memory head or acknowledge on a timeout.
         created = self.store.create(document)
-        if created.sha256 != digest(document) or (
-            self.head is not None and created.identity <= self.head.identity
+        if created.sha256 != digest(document) or any(
+            created.identity == item.identity for item in self.history
         ):
             raise LifecycleError("independent checkpoint creation is unverified")
-        if self.store.read(created) != document or self.store.latest() != created:
+        history = (*self.history, created)
+        if self.store.read(created) != document or self.store.lineage() != history:
             raise LifecycleError("independent checkpoint creation has no exact registry readback")
         self.head, self.sequence, self.records = created, self.sequence + 1, selected
+        self.history = history
+        self.observed_history = history
         if self.genesis is None:
             self.genesis = created
         return created

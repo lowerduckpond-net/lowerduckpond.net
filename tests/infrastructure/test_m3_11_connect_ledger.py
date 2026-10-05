@@ -198,7 +198,7 @@ def test_conflicting_copy_is_rejected(tmp_path: Path, record: dict[str, object])
         ledger(cache, tmp_path, record).records()
 
 
-def test_acknowledgement_cannot_precede_the_pinned_genesis(
+def test_acknowledgement_binding_must_include_the_pinned_genesis(
     tmp_path: Path, record: dict[str, object]
 ) -> None:
     cache = Replica(record)
@@ -209,8 +209,42 @@ def test_acknowledgement_cannot_precede_the_pinned_genesis(
         independent_server=REMOTE_SERVER,
         independent_author=REMOTE_AUTHOR,
         binding=BINDING,
-        minimum_checkpoint=Stored(2, "e" * 64),
+        genesis_checkpoint=Stored(2, "e" * 64),
     )
+
+
+@pytest.mark.parametrize("fault", ["none", "hash", "epoch", "helper", "genesis", "author"])
+def test_lower_artifact_identity_ack_requires_exact_genesis_and_native_author(
+    tmp_path: Path, record: dict[str, object], fault: str
+) -> None:
+    genesis = Stored(100, "e" * 64)
+    binding: dict[str, object] = {
+        "epoch": str(uuid.uuid7()),
+        "helper_revision": "a" * 40,
+        "genesis": {"identity": genesis.identity, "sha256": genesis.sha256},
+    }
+    proof = ack(record)
+    payload = proof["payload"]
+    assert isinstance(payload, dict)
+    payload["binding"] = copy.deepcopy(binding)
+    if fault == "hash":
+        payload["checkpoint"] = {"identity": genesis.identity, "sha256": "f" * 64}
+    elif fault in {"epoch", "helper", "genesis"}:
+        altered = payload["binding"]
+        assert isinstance(altered, dict)
+        altered[{"helper": "helper_revision"}.get(fault, fault)] = "changed"
+    cache = Replica(record)
+    cache.items["b" * 26] = note(
+        proof, "b" * 26, author=LOCAL_AUTHOR if fault == "author" else REMOTE_AUTHOR
+    )
+    selected = ledger(cache, tmp_path, record)
+    assert selected.confirmed(
+        record,
+        independent_server=REMOTE_SERVER,
+        independent_author=REMOTE_AUTHOR,
+        binding=binding,
+        genesis_checkpoint=genesis,
+    ) is (fault == "none")
 
 
 @pytest.mark.parametrize("failure", ["before", "after"])

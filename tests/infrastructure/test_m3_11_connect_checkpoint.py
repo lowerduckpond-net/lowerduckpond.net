@@ -15,19 +15,27 @@ from scripts.m3_11_unattended.model import LifecycleError, digest
 class StoreDouble:
     def __init__(self) -> None:
         self.values: dict[int, dict[str, object]] = {}
+        self.registry: list[Stored] = []
         self.failure = ""
         self.stale: int | None = None
 
     def latest(self) -> Stored | None:
+        history = self.lineage()
+        return history[-1] if history else None
+
+    def lineage(self) -> tuple[Stored, ...]:
         if self.failure == "inventory":
             raise LifecycleError("registry unavailable")
-        if not self.values:
-            return None
-        key = self.stale or max(self.values)
-        return Stored(key, digest(self.values[key]))
+        history = tuple(self.registry)
+        if self.stale is not None:
+            index = next(i for i, item in enumerate(history) if item.identity == self.stale)
+            return history[: index + 1]
+        return history
 
     def read(self, stored: Stored) -> dict[str, object]:
         if self.failure == "download":
+            raise LifecycleError("checkpoint unavailable")
+        if stored.identity not in self.values:
             raise LifecycleError("checkpoint unavailable")
         value = copy.deepcopy(self.values[stored.identity])
         if self.failure == "wrong-download":
@@ -37,8 +45,9 @@ class StoreDouble:
     def create(self, document: dict[str, object]) -> Stored:
         if self.failure == "before-upload":
             raise LifecycleError("upload unavailable")
-        key = len(self.values) + 1
+        key = 10_000 - len(self.registry)
         self.values[key] = copy.deepcopy(document)
+        self.registry.append(Stored(key, digest(document)))
         if self.failure == "after-upload":
             raise LifecycleError("upload outcome uncertain")
         return Stored(key, digest(document))
@@ -174,3 +183,81 @@ def test_checkpoint_does_not_adopt_changed_known_record() -> None:
         restarted.merge([case.run, altered])
     with pytest.raises(LifecycleError, match="changed"):
         restarted.persist([case.run, altered])
+
+
+def test_lower_id_successor_recovers_original_genesis_and_exact_records() -> None:
+    case = Case()
+    genesis = case.checkpoint.persist([case.run])
+    current = case.checkpoint.persist([case.run, case.intent])
+    assert current.identity < genesis.identity
+    restarted = case.open(genesis=genesis)
+    restarted.restore()
+    assert restarted.history == (genesis, current)
+    assert restarted.sequence == len((genesis, current))
+    assert restarted.persist([case.run, case.intent]) == current
+    assert tuple(case.store.registry) == (genesis, current)
+
+
+@pytest.mark.parametrize("fault", ["sequence", "parent", "genesis", "replay", "fork"])
+def test_lineage_must_extend_the_exact_retained_history(fault: str) -> None:
+    case = Case()
+    genesis = case.checkpoint.persist([case.run])
+    current = case.checkpoint.persist([case.run, case.intent])
+    if fault in {"sequence", "parent"}:
+        # An otherwise correctly hashed latest payload cannot invent its position.
+        value = case.store.values[current.identity]
+        value["sequence" if fault == "sequence" else "previous"] = (
+            3 if fault == "sequence" else {"identity": 99, "sha256": genesis.sha256}
+        )
+        case.store.registry[-1] = Stored(current.identity, digest(value))
+    elif fault == "genesis":
+        case.store.registry[0] = Stored(genesis.identity, "f" * 64)
+    elif fault == "replay":
+        case.store.registry.append(genesis)
+    else:
+        case.store.registry[-1] = Stored(999_999, current.sha256)
+        case.store.values[999_999] = copy.deepcopy(case.store.values[current.identity])
+    # Fresh processes require genesis/sequence/parent proof; a retained process
+    # must additionally refuse a sibling fork at the same sequence.
+    observer = case.checkpoint if fault == "fork" else case.open(genesis=genesis)
+    with pytest.raises(LifecycleError):
+        observer.restore()
+
+
+def test_failed_download_still_remembers_the_observed_new_head() -> None:
+    case = Case()
+    genesis = case.checkpoint.persist([case.run])
+    observer = case.open(genesis=genesis)
+    observer.restore()
+    case.checkpoint.persist([case.run, case.intent])
+    case.store.failure = "download"
+    with pytest.raises(LifecycleError, match="unavailable"):
+        observer.restore()
+    case.store.failure = ""
+    case.store.stale = genesis.identity
+    with pytest.raises(LifecycleError, match="backwards"):
+        observer.restore()
+
+
+@pytest.mark.parametrize("fault", ["reused-id", "missing-registration", "fork"])
+def test_creation_requires_exact_history_extension(
+    monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    case = Case()
+    genesis = case.checkpoint.persist([case.run])
+    create = case.store.create
+
+    def changed(document: dict[str, object]) -> Stored:
+        created = create(document)
+        if fault == "reused-id":
+            return Stored(genesis.identity, created.sha256)
+        if fault == "missing-registration":
+            case.store.registry.pop()
+        else:
+            case.store.registry[0] = Stored(1, genesis.sha256)
+        return created
+
+    monkeypatch.setattr(case.store, "create", changed)
+    with pytest.raises(LifecycleError, match=r"unverified|registry readback"):
+        case.checkpoint.persist([case.run, case.intent])
+    assert case.checkpoint.head == genesis

@@ -303,7 +303,7 @@ class ConnectLedger:
         independent_server: str,
         independent_author: str,
         binding: dict[str, object],
-        minimum_checkpoint: Stored | None = None,
+        genesis_checkpoint: Stored | None = None,
     ) -> bool:
         """Require the provider's read-only author identity, not a self-asserted actor tag."""
         account_identity(independent_server)
@@ -332,10 +332,21 @@ class ConnectLedger:
                 and proof["binding"] == binding
                 and proof["independent_server_id"] == independent_server
                 and self.authored(value, independent_author)
+                # The independent author proves lineage before emitting this
+                # exact genesis-bound ACK. Artifact IDs are opaque identities.
                 and (
-                    minimum_checkpoint is None
-                    or checkpoint.identity > minimum_checkpoint.identity
-                    or checkpoint == minimum_checkpoint
+                    genesis_checkpoint is None
+                    or (
+                        binding.get("genesis")
+                        == {
+                            "identity": genesis_checkpoint.identity,
+                            "sha256": genesis_checkpoint.sha256,
+                        }
+                        and (
+                            checkpoint.identity != genesis_checkpoint.identity
+                            or checkpoint == genesis_checkpoint
+                        )
+                    )
                 )
                 and all(
                     type(proof[key]) is int and cast(int, proof[key]) > 0
