@@ -15,14 +15,14 @@ from typing import cast
 import pytest
 
 from scripts.m3_11_private_inputs import read_private, write_private
-from scripts.m3_11_unattended import approval, cleanup, evidence, setup, worker
+from scripts.m3_11_unattended import approval, cleanup, evidence, setup, watchdog, worker
 from scripts.m3_11_unattended.config import Bootstrap, Configuration
 from scripts.m3_11_unattended.docker import SOCKET
 from scripts.m3_11_unattended.journal import OpJournal, event
 from scripts.m3_11_unattended.model import Credential, LifecycleError, stamp
 from scripts.m3_11_unattended.state import RunState, replace_private
 
-from .test_m3_11_unattended_lifecycle import CANARY, TARGETS, Case
+from .test_m3_11_unattended_lifecycle import CANARY, TARGETS, Case, DelayedPersistence
 
 DAEMON = dict.fromkeys(("ID", "Name", "DockerRootDir", "ServerVersion"), "approved-daemon")
 
@@ -65,8 +65,55 @@ def subject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[worker.Wor
         "Docker",
         lambda: SimpleNamespace(endpoint="unix://" + SOCKET, info=lambda: DAEMON),
     )
-    monkeypatch.setattr(cleanup, "connect_cleanup", lambda *_args: case.lifecycle)
+    monkeypatch.setattr(cleanup, "connect_cleanup", lambda *_args, **_kwargs: case.lifecycle)
     return selected, case
+
+
+@pytest.mark.parametrize("actor", ["controller", "watchdog"])
+@pytest.mark.parametrize("outcome", ["failed", "passed"])
+def test_terminal_result_waits_for_durability_across_controller_and_watchdog_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor: str, outcome: str
+) -> None:
+    selected, case = subject(tmp_path, monkeypatch)
+    directory = selected.directory.with_name(case.run_id)
+    selected.directory.rename(directory)
+    selected.directory, selected.state = directory, RunState(directory)
+    selected.state.begin(selected.binding)
+    for name in ("credential-intents", "credential-cleanup"):
+        (selected.directory / name).mkdir(mode=0o700)
+    journal = DelayedPersistence(case.journal.directory)
+    case.lifecycle.journal = journal
+    case.lifecycle.remember = selected.remember
+    case.lifecycle.remember_intent = selected.remember_intent
+    case.create()
+    selected.state.finish_journey(outcome, 0 if outcome == "passed" else 1)
+    journal.pending_kind = "result"
+    assert not selected.revoke()
+    original = [row for row in journal.records() if row["kind"] == "result"]
+    assert len(original) == 1
+
+    def retry() -> bool:
+        if actor == "controller":
+            return selected.revoke()
+        receipt = cleanup.sweep(
+            case.lifecycle,
+            actor="watchdog",
+            helper=selected.helper,
+            secrets=worker.retained_credentials(selected.directory),
+        )
+        watchdog.finish_reconciled(case.lifecycle, {selected.directory}, receipt)
+        return selected.state.status()["credential_cleanup"] == "verified"
+
+    assert not retry()
+    assert selected.state.status()["closure"] == "unresolved"
+    assert selected.state.status()["qualification"] == outcome
+    assert worker.retained_credentials(selected.directory)
+    journal.pending_kind = ""
+    assert retry()
+    assert not worker.retained_credentials(selected.directory)
+    assert selected.state.status()["qualification"] == outcome
+    assert [row for row in journal.records() if row["kind"] == "result"] == original
+    assert read_private(selected.directory / "terminal-journal-event.json") == original[0]
 
 
 @pytest.mark.parametrize("field", ["ID", "Name", "DockerRootDir", "ServerVersion", "endpoint"])

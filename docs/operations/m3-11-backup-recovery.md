@@ -142,7 +142,7 @@ dedicated vaults and creates three native seven-day clients: provisioning and
 cleanup each read their own bootstrap vault and read/write the journal;
 production checking reads only its production-input vault. It separately creates
 a Connect server identity and client limited to cleanup and the journal for
-GitHub. That identity allows a future cleanup job to start its own Connect
+GitHub. That identity allows the cleanup job to start its own Connect
 instance without depending on Unraid being available.
 
 From a checkout of the exact committed setup revision, with locked dependencies
@@ -176,18 +176,109 @@ read-only checks of sign-in, the approved manifest and shared server lookup.
 Diagnosis lists only the presence of fixed setup files and never retries an
 uncertain credential creation or prints their contents.
 
-**Staging is not activation.** These bundles are deliberately not accepted by
-the qualification runner's service-account configuration. The setup checks
-requested scope separation and native token expiry claims; it does not claim
-authenticated policy verification or independent cleanup readiness. The Connect
-transport, external journal persistence proof and independent GitHub cleanup
-integration must be implemented, reviewed and exercised before activating this
-path. In particular, a write followed by a read from the same Connect cache is
-not proof that an obligation reached 1Password outside the Docker host. Existing
-qualification inputs, cleanup helper pin and deployment gates remain in effect.
+**Staging is not activation.** The staging bundle cannot be used as controller
+configuration. Activation authenticates each client, checks its native and
+signed vault policy, and proves independent cleanup before installing a separate
+Connect controller configuration. It never falls back to service accounts.
 
 See the official [Connect CLI reference](https://www.1password.dev/cli/reference/management-commands/connect)
 and [Connect authorization model](https://www.1password.dev/connect/security).
+
+### Activating independently recoverable Connect cleanup
+
+Run activation in the **Coder workspace**, after the exact runtime revision has
+passed review and required CI and reached main. The protected cleanup environment
+must allow only main and require no human approval for each cleanup execution.
+The Connect job uses `actions: read` to verify retained artifacts and
+`statuses: write` to append checkpoint references on one fixed commit. These are
+additional GitHub permissions requiring operator approval before workflow
+activation. No additional provider authority or production-vault access is given
+to GitHub. The GitHub token grants apply across this repository; the helper's
+code confines their use to the cleanup workflow and fixed checkpoint commit/context.
+
+The helper uses the bootstrap bundle already delivered to the workspace and the
+existing GitHub login. Keep the same private activation directory when resuming:
+
+```console
+mise exec -- uv run --no-sync --frozen python -m scripts.m3_11_unattended.connect_activate \
+  --revision FULL_COMMIT_SHA \
+  --bootstrap /home/coder/.config/lowerduckpond/m3-11/connect-bootstrap.json \
+  --manifest-reference op://JOURNAL_VAULT_ID/SETUP_ITEM_ID/notesPlain \
+  --manifest-sha256 APPROVED_SETUP_RECORD_SHA256 \
+  --directory /home/coder/.config/lowerduckpond/m3-11/connect-activation \
+  --output /home/coder/.config/lowerduckpond/m3-11/controller.json
+```
+
+This operation creates provenance records and encrypted journal checkpoints;
+it creates no provider child credentials and launches no qualification. It reads
+the non-secret setup manifest and authenticates the production reader without
+reading production secrets. Existing controller configuration is retained privately
+before an approved conversion or helper update.
+
+Activation first records immutable probe identities. The shared and independent
+Connect servers each attempt to claim the other's native author. Both native
+readbacks must reject that impersonation. The independent GitHub instance then
+captures the exact complete initial journal in an encrypted genesis artifact,
+publishes its immutable reference, and reads it back. Activation binds both
+servers, actual authors, the full target selection, approved manifest, original
+helper and complete initial inventory. Existing credential intents prevent a new
+genesis; an existing epoch is never reset to work around incomplete history.
+
+Before freezing that inventory, activation selects `connect-initializing` and
+waits for older queued or running cleanup executions to finish. Native cleanup
+remains enabled using the reviewed helper from the same protected selection.
+It suppresses only an idle heartbeat after a fresh complete read proves there
+are no credential intents. Any intent, including a historical resolved one,
+takes the normal cleanup/proof path and blocks new genesis. Read failures remain
+unresolved. Quiet execution emits no admission heartbeat. This does not require
+successful service-account access while its quota is exhausted: independent
+Connect discovery supplies the complete inventory barrier. It may learn a final
+empty legacy heartbeat beyond the shared cache's initial snapshot; the shared
+cache must synchronize that exact complete map before genesis. No event is
+discarded and final genesis inventory checks remain exact.
+
+`M3_11_CONNECT_CONFIGURATION` holds those non-secret protected bindings and the
+active executable helper in one atomic publication. The workflow captures that
+one value for both checkout and execution. `M3_11_CLEANUP_BACKEND=connect` selects
+Connect explicitly; the legacy `M3_11_CLEANUP_REVISION` is left unchanged for the
+service-account backend. A later reviewed helper keeps
+the original epoch, genesis, registry and historical obligations while changing
+the active helper. Fresh independent readiness at that helper is required before
+the controller configuration is installed. Older failed results stay failed.
+
+Each independent job starts pinned API/sync containers on GitHub's Docker host
+with its cleanup-only master and client. It recovers the genesis and latest full
+encrypted checkpoint, waits for its own replica, and reconciles provider removal.
+Only its exactly owned ephemeral Connect resources are removed at job exit.
+Neither the Unraid endpoint nor this workspace is required to recover outstanding
+credential identities. A timeout, missing checkpoint, invalid history or failed
+provider read remains unresolved.
+
+The launcher dispatches one uniquely identified, twelve-minute witness job for
+the exact approved attempt. It waits for a fresh, natively authored and durably
+acknowledged readiness record from that running GitHub execution before starting
+the detached controller. Run and creation-intent acknowledgements additionally
+require fresh provider authority, no unresolved credentials, sufficient checkpoint
+capacity and the original ten-minute provisioning window. Lost dispatch replies
+are reconciled by the saved execution identity, never by blind resubmission.
+No GitHub token enters the detached controller or fixture.
+
+The independent journal uses encrypted GitHub artifacts retained for 30 days and
+an append-only commit-status registry. Full history is checked for missing,
+replayed or reordered entries. New attempts require at least 384 remaining
+registry entries, reserving room for witnessing and cleanup below GitHub's
+1,000-status limit per commit/context. The launcher must refuse if capacity is
+insufficient; it never automatically replaces an epoch. Artifact expiry or lost
+registry history cannot be interpreted as an empty obligation list. Monitor
+cleanup receipts and unresolved/overdue counts even after qualification finishes.
+The unchanged immediate cleanup, watchdog and hourly GitHub reconciliation paths
+continue to require provider removal and available negative-authentication proof.
+
+Connect avoids service-account request quota for this path. Same-cache readback
+alone never authorizes credential creation: an independent encrypted checkpoint
+and native acknowledgement are required first. Actual independent Connect startup,
+the live credential rehearsal, complete M3.11 and verified revocation still need
+operational evidence; local doubles do not establish those outcomes.
 
 ### Review, start and monitor
 
@@ -295,7 +386,8 @@ approval requirements for destructive retirement remain in force. Diagnostic
 recovery after revocation needs newly authorized temporary credentials and cannot
 change the original failed qualification result.
 
-1Password's account-wide daily request quota is shared by all service accounts.
+With the service-account backend, 1Password's account-wide daily request quota
+is shared by all service accounts.
 Before issuing credentials, the controller checks both provisioning and cleanup
 quota metadata, requiring headroom for the journey, retained journal history and
 cleanup. This observes capacity; it cannot reserve it against unrelated account

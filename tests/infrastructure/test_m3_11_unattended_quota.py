@@ -30,7 +30,7 @@ from scripts.m3_11_unattended.lifecycle import Lifecycle
 from scripts.m3_11_unattended.model import ROLES, Credential, LifecycleError, stamp
 from scripts.m3_11_unattended.state import RunState, cleanup_lock, replace_private
 
-from .test_m3_11_unattended_controller import subject
+from .test_m3_11_unattended_controller import bound, subject
 from .test_m3_11_unattended_lifecycle import CANARY, TARGETS, Case
 from .test_m3_11_unattended_providers import JournalCli
 
@@ -234,7 +234,7 @@ def test_full_day_of_cleanup_stays_within_quota_and_preserves_unresolved_credent
         def now(_zone: object) -> datetime:
             return datetime(2026, 10, 5, tzinfo=UTC) + timedelta(seconds=clock[0])
 
-    def connect(*_args: object) -> Lifecycle:
+    def connect(*_args: object, **_kwargs: object) -> Lifecycle:
         connections.append(clock[0])
         cli.requests += 4  # the four immutable bootstrap references
         return Lifecycle(OpJournal(cast(OnePassword, cli), "a" * 26), {"spaces": case.provider})
@@ -338,7 +338,7 @@ def test_local_death_detection_does_not_wait_for_hourly_remote_poll(
     (tmp_path / "runs").mkdir(mode=0o700)
     cli = CountedCli()
 
-    def connect(*_args: object) -> Lifecycle:
+    def connect(*_args: object, **_kwargs: object) -> Lifecycle:
         calls.append(clock[0])
         return Lifecycle(OpJournal(cast(OnePassword, cli), "a" * 26), {"spaces": case.provider})
 
@@ -601,6 +601,7 @@ def test_optional_cache_storage_cannot_prevent_live_revocation(
     if fault == "unsafe-directory":
         public = tmp_path / "unsafe-cache"
         public.mkdir(mode=0o755)
+        public.chmod(0o755)  # Exercise public storage even under the CLI's private umask.
         output = public / "journal.json"
     independent = Lifecycle(
         cached(cli, tmp_path / "restored.json", output=output),
@@ -614,6 +615,49 @@ def test_optional_cache_storage_cannot_prevent_live_revocation(
     assert case.provider.deletes == [credential.identifier]
     assert not output.exists()
     assert CANARY not in json.dumps(receipt)
+
+
+def test_initialization_quiet_mode_never_publishes_admission_or_hides_new_intents(
+    tmp_path: Path,
+) -> None:
+    cli = CountedCli()
+    journal = OpJournal(cast(OnePassword, cli), "a" * 26)
+    case = Case(tmp_path / "case")
+    independent = Lifecycle(journal, {"spaces": case.provider}, clock=lambda: case.now)
+    receipt = cleanup.sweep(independent, actor="github", helper="f" * 40, quiet_empty=True)
+    assert receipt["status"] == "initializing-empty"
+    assert not journal.records()
+    case.lifecycle = Lifecycle(
+        OpJournal(cast(OnePassword, cli), "a" * 26),
+        {"spaces": case.provider},
+        clock=lambda: case.now,
+    )
+    intent, credential = case.create()
+    case.lifecycle.request_revocation(case.run_id)
+    receipt = cleanup.sweep(
+        independent,
+        actor="github",
+        helper="f" * 40,
+        quiet_empty=True,
+        secrets={intent.sha256: credential},
+    )
+    assert receipt["status"] == "ready" and case.provider.deletes == [credential.identifier]
+    assert any(record["kind"] == "heartbeat" for record in journal.records())
+
+
+def test_initialization_quiet_mode_refuses_failed_fresh_inventory(tmp_path: Path) -> None:
+    cli = CountedCli()
+    journal = OpJournal(cast(OnePassword, cli), "a" * 26)
+    assert journal.records() == []
+    cli.fail_list = True
+    case = Case(tmp_path / "case")
+    with pytest.raises(LifecycleError):
+        cleanup.sweep(
+            Lifecycle(journal, {"spaces": case.provider}),
+            actor="github",
+            helper="f" * 40,
+            quiet_empty=True,
+        )
 
 
 @pytest.mark.parametrize("failed_revocation", [False, True])
@@ -638,7 +682,11 @@ def test_dead_controller_leaves_retry_set_only_after_verified_revocation(
     for name in ("credential-intents", "credential-cleanup"):
         (directory / name).mkdir(mode=0o700)
     state = RunState(directory)
-    state.begin({"managed_run_id": case.run_id})
+    state.begin(bound(case))
+    write_private(
+        directory / "request.json",
+        {"binding": bound(case), "approval_sha256": "c" * 64},
+    )
     intent, credential = case.create()
     case.provider.fail_delete = failed_revocation
     write_private(directory / "credential-intents" / (intent.sha256 + ".json"), intent.document())
@@ -662,7 +710,7 @@ def test_dead_controller_leaves_retry_set_only_after_verified_revocation(
             assert name == docker.controller_name(case.run_id)
             return {"State": {"Running": clock[0] < death_at}}
 
-    def connect(*_args: object) -> Lifecycle:
+    def connect(*_args: object, **_kwargs: object) -> Lifecycle:
         calls.append(clock[0])
         return Lifecycle(
             OpJournal(cast(OnePassword, cli), "a" * 26),
@@ -800,7 +848,7 @@ def test_local_cleanup_serializes_refresh_probe_and_secret_disposal(  # noqa: PL
             assert release.wait(10)
         return inventory()
 
-    def connect(*_args: object) -> Lifecycle:
+    def connect(*_args: object, **_kwargs: object) -> Lifecycle:
         if current_thread().name == "follower":
             follower_connected.set()
         return Lifecycle(
@@ -838,6 +886,7 @@ def test_local_cleanup_serializes_refresh_probe_and_secret_disposal(  # noqa: PL
             config=Path("/unused"),
             journal_cache=None,
             journal_cache_output=None,
+            quiet_empty=False,
         ),
     )
     monkeypatch.setattr(

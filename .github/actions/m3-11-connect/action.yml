@@ -1,0 +1,6 @@
+---
+name: Independent M3.11 Connect cleanup
+description: Keep artifact runtime access inside a bounded cleanup-only JavaScript action.
+runs:
+  using: node24
+  main: index.js

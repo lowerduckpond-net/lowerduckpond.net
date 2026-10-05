@@ -21,8 +21,9 @@ from scripts.m3_11_qualification_evidence import canonical_bytes, fields
 from scripts.m3_11_unattended import cleanup, inputs, quota
 from scripts.m3_11_unattended.cloudflare import Cloudflare
 from scripts.m3_11_unattended.config import Configuration, connect
+from scripts.m3_11_unattended.connect_journal import ConnectJournal
 from scripts.m3_11_unattended.docker import SOCKET, Docker
-from scripts.m3_11_unattended.journal import OpJournal, event
+from scripts.m3_11_unattended.journal import Journal, OpJournal, event
 from scripts.m3_11_unattended.lifecycle import Lifecycle, intents
 from scripts.m3_11_unattended.model import (
     ROLES,
@@ -74,6 +75,50 @@ def retained_credentials(directory: Path) -> dict[str, Credential]:
             raise LifecycleError("retained credential identity changed")
         values[record["intent_sha256"]] = Credential(record["identifier"], record["secret"], {})
     return values
+
+
+def persist_terminal_result(lifecycle: Lifecycle, directory: Path) -> None:
+    """Do not publish closure until the exact terminal event is independently durable."""
+    state = RunState(directory)
+    request = read_private(directory / "request.json")
+    binding = fields(request["binding"], inputs.BINDING)
+    if read_private(directory / "attempt.json")["binding"] != binding:
+        raise LifecycleError("terminal result differs from the original attempt binding")
+    run_id = identity(binding["managed_run_id"])
+    status = state.status()
+    expected = {
+        **status,
+        "binding": binding,
+        "approval_sha256": request["approval_sha256"],
+        "phase": "finished",
+        "credential_cleanup": "verified",
+        "closure": "complete" if status["qualification"] == "passed" else "unresolved",
+    }
+    records = [
+        record
+        for record in lifecycle.journal.records()
+        if record["kind"] == "result" and record["run_id"] == run_id
+    ]
+    path = directory / "terminal-journal-event.json"
+    original = (
+        read_private(path)
+        if path.exists()
+        else (records[0] if len(records) == 1 else event("result", run_id, expected))
+    )
+    payload = original.get("payload")
+    if (
+        len(records) > 1
+        or (records and records != [original])
+        or original.get("kind") != "result"
+        or original.get("run_id") != run_id
+        or not isinstance(payload, dict)
+        or {key: value for key, value in payload.items() if key != "observed_at"}
+        != {key: value for key, value in expected.items() if key != "observed_at"}
+    ):
+        raise LifecycleError("terminal journal event changed or is ambiguous")
+    if not path.exists():
+        write_private(path, original)
+    lifecycle.journal.persist(original)
 
 
 class Worker:
@@ -185,7 +230,7 @@ class Worker:
             )
         self.check_cancelled()
 
-    def _provision(self) -> tuple[dict[str, Credential], dict[str, object]]:  # noqa: PLR0912 - independent admission and credential roles
+    def _provision(self) -> tuple[dict[str, Credential], dict[str, object]]:  # noqa: PLR0912, PLR0915 - independent admission and credential roles
         for sibling in self.directory.parent.iterdir():
             if sibling != self.directory and (sibling / "status.json").exists():
                 progress = RunState(sibling).status()
@@ -199,6 +244,7 @@ class Worker:
             targets=self.config.targets,
             vault=self.config.journal_vault,
             now=now,
+            journal_directory=self.directory.parent.parent / "connect-journal" / "cleanup",
         )
         if isinstance(separate.journal, OpJournal):
             separate.journal.use_cache(self.cleanup_cache)
@@ -212,9 +258,12 @@ class Worker:
             vault=self.config.journal_vault,
             now=now,
             provisioning=True,
+            journal_directory=self.directory.parent.parent / "connect-journal" / "provision",
         )
         if self.request["mode"] == "qualification":
-            self._require_rehearsal(creator.journal.records())
+            self._require_rehearsal(creator.journal)
+        if isinstance(creator.journal, ConnectJournal):
+            creator.journal.check_cancelled = self.check_cancelled
         for kind in separate.providers:
             # Establish the same provider inventory/owner through independent
             # authorities before allocating any child credential.
@@ -222,7 +271,13 @@ class Worker:
             if not before or before != {item["id"] for item in creator.providers[kind].inventory()}:
                 raise LifecycleError("provisioning and cleanup provider identities differ")
         records = creator.journal.records()
-        quota.require_capacity(creator.journal.op, separate.journal.op, records=len(records))
+        if isinstance(creator.journal, OpJournal) and isinstance(separate.journal, OpJournal):
+            quota.require_capacity(creator.journal.op, separate.journal.op, records=len(records))
+        elif (
+            self.config.provision.connect_settings is None
+            or self.config.cleanup.connect_settings is None
+        ):
+            raise LifecycleError("controller credential backends are ambiguous")
         for record in records:
             payload = record["payload"]
             if (
@@ -232,7 +287,7 @@ class Worker:
                 and payload.get("mode") == self.request["mode"]
             ):
                 raise LifecycleError("this approved attempt has already been consumed")
-        creator.journal.append(
+        creator.journal.persist(
             event(
                 "run",
                 self.run_id,
@@ -304,7 +359,8 @@ class Worker:
         }
         return credentials, receipt
 
-    def _require_rehearsal(self, records: list[dict[str, object]]) -> None:
+    def _require_rehearsal(self, journal: Journal) -> None:
+        records = journal.records()
         completed = [
             record
             for record in records
@@ -319,6 +375,10 @@ class Worker:
                 "qualification requires its completed credential lifecycle rehearsal"
             )
         rehearsal = completed[0]
+        if isinstance(journal, ConnectJournal) and not journal.confirmed(rehearsal):
+            raise LifecycleError(
+                "credential lifecycle rehearsal result is not independently durable"
+            )
         owned = {
             Intent.parse(record["payload"]).sha256
             for record in records
@@ -333,6 +393,13 @@ class Worker:
                 and payload.get("helper_revision") == self.helper
                 and instant(record["recorded_at"]) >= instant(rehearsal["recorded_at"])
                 and isinstance(payload.get("results"), list)
+                and (
+                    not isinstance(journal, ConnectJournal)
+                    or (
+                        journal.confirmed(record)
+                        and journal.ledger.authored(record, journal.witness.author)
+                    )
+                )
             ):
                 verified = {
                     value.get("intent_sha256")
@@ -358,10 +425,10 @@ class Worker:
                 },
             },
         }
-        # The bootstrap checker consumes a service account, not its expiry field.
-        if instant(request.pop("service_account_expires_at")) <= datetime.now(UTC):
-            raise LifecycleError("production reader authority has expired")
-        request["service_account"] = request.pop("service_account_token")
+        if "connect" not in request:
+            if instant(request.pop("service_account_expires_at")) <= datetime.now(UTC):
+                raise LifecycleError("production reader authority has expired")
+            request["service_account"] = request.pop("service_account_token")
         self._command(
             [sys.executable, "-m", "scripts.m3_11_unattended.production", "bootstrap"],
             log="production-check.log",
@@ -458,7 +525,10 @@ class Worker:
         self.state.update("revoking", cleanup="pending")
         try:
             lifecycle = cleanup.connect_cleanup(
-                self.config.cleanup, self.config.targets, self.config.journal_vault
+                self.config.cleanup,
+                self.config.targets,
+                self.config.journal_vault,
+                journal_directory=self.directory.parent.parent / "connect-journal" / "cleanup",
             )
             if self.cleanup_journal is None:
                 if isinstance(lifecycle.journal, OpJournal):
@@ -486,31 +556,14 @@ class Worker:
                 and (value.get("intent_sha256") not in own or value.get("status") == "verified")
                 for value in results
             )
+            if verified and (self.directory / "journey-result.json").exists():
+                persist_terminal_result(lifecycle, self.directory)
             if verified:
                 for path in (self.directory / "credential-cleanup").glob("*.json"):
                     path.unlink()
                 if not (self.directory / "revocation.json").exists():
                     write_private(self.directory / "revocation.json", receipt)
             self.state.update("finished", cleanup="verified" if verified else "unresolved")
-            if (
-                verified
-                and (self.directory / "journey-result.json").exists()
-                and not any(
-                    record["kind"] == "result" and record["run_id"] == self.run_id
-                    for record in lifecycle.journal.records()
-                )
-            ):
-                lifecycle.journal.append(
-                    event(
-                        "result",
-                        self.run_id,
-                        {
-                            "binding": self.binding,
-                            "approval_sha256": self.request["approval_sha256"],
-                            **self.state.status(),
-                        },
-                    )
-                )
             return verified
         except RuntimeError, OSError, ValueError, KeyError, TypeError:
             self.state.update("finished", cleanup="unresolved")

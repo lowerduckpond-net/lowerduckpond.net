@@ -13,6 +13,7 @@ from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
 from scripts.m3_11_unattended import approval, cleanup, setup
 from scripts.m3_11_unattended.config import Configuration
+from scripts.m3_11_unattended.connect_control import await_witness
 from scripts.m3_11_unattended.docker import (
     EVIDENCE_VOLUME,
     OWNER,
@@ -26,7 +27,6 @@ from scripts.m3_11_unattended.docker import (
     prepare,
     source_volume,
 )
-from scripts.m3_11_unattended.journal import OpJournal
 from scripts.m3_11_unattended.model import LifecycleError, Targets, digest, identity
 from scripts.production_qualification_inputs import current_candidate, fingerprint, git, revision
 
@@ -90,6 +90,12 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
             "controller_image": prepared["controller_image"],
             "daemon": prepared["daemon"],
         }
+        if configuration.cleanup.connect_settings is not None:
+            await_witness(
+                configuration,
+                request,
+                directory=config.parent / "connect-dispatch" / run_id,
+            )
         initialize_run(
             docker, image=image, request=canonical_bytes(request), run_id=run_id, config=config
         )
@@ -196,11 +202,14 @@ def main() -> int:
             )
         elif args.action == "cleanup-status":
             configured = Configuration.load(args.config)
-            journal = configured.cleanup.op()
+            journal = configured.cleanup.journal(
+                configured.journal_vault,
+                directory=args.config.parent / "connect-journal" / "cleanup",
+            )
             print(
                 json.dumps(
                     cleanup.status_document(
-                        OpJournal(journal, configured.journal_vault),
+                        journal,
                         helper=revision(git(ROOT, "rev-parse", "HEAD").decode().strip()),
                         now=datetime.now(UTC),
                     ),

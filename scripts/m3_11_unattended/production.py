@@ -16,6 +16,7 @@ from scripts.check_m3_7_production_edge import CloudflareClient, verify_active_a
 from scripts.check_m3_10_provider import check_caddy_token
 from scripts.m3_11_private_inputs import write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
+from scripts.m3_11_unattended.connect_api import Connect
 from scripts.m3_11_unattended.inputs import BINDING, PRODUCTION_FORMAT, PRODUCTION_RESULT
 from scripts.m3_11_unattended.journal import OnePassword
 from scripts.m3_11_unattended.model import LifecycleError, Targets, stamp, strings
@@ -46,18 +47,31 @@ def _request() -> dict[str, object]:
 
 def bootstrap(request: dict[str, object], repository: Path) -> int:
     """Provisioning credentials are not accepted here; only the production reader."""
-    value = fields(
-        request, {"service_account", "references", "targets", "binding", "fixture", "output"}
-    )
-    token = value["service_account"]
+    authority = "connect" if "connect" in request else "service_account"
+    value = fields(request, {authority, "references", "targets", "binding", "fixture", "output"})
     references = strings(value["references"])
-    if not isinstance(token, str) or set(references) != REFERENCES:
+    if set(references) != REFERENCES:
         raise LifecycleError("production-check references are incomplete")
     targets = Targets.parse(value["targets"])
     fixture = strings(
         fields(value["fixture"], {"audit", "observer", "archive_id", "backup_id", "caddy_id"})
     )
-    op = OnePassword(token)
+    op: OnePassword | Connect
+    if authority == "connect":
+        from scripts.m3_11_unattended.connect_configuration import (  # noqa: PLC0415
+            reader,
+            reader_access,
+        )
+
+        configured, _access = reader_access(value["connect"])
+        if configured["role"] != "production":
+            raise LifecycleError("production checking requires its isolated Connect reader")
+        op = reader(value["connect"])
+    else:
+        token = value["service_account"]
+        if not isinstance(token, str):
+            raise LifecycleError("production-check reader is unavailable")
+        op = OnePassword(token)
     environment = {
         key: os.environ[key]
         for key in ("PATH", "HOME", "TMPDIR", "SSL_CERT_FILE")

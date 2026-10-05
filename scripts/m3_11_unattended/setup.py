@@ -14,7 +14,7 @@ from pathlib import Path
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
 from scripts.m3_11_unattended.config import BOOTSTRAP_FIELDS, DO_READ_SCOPES, Configuration, connect
-from scripts.m3_11_unattended.journal import OnePassword, event
+from scripts.m3_11_unattended.journal import OnePassword, OpJournal, event
 from scripts.m3_11_unattended.model import LifecycleError, Targets, instant, stamp, strings
 from scripts.m3_11_unattended.production import REFERENCES
 from scripts.production_qualification_inputs import revision
@@ -125,6 +125,8 @@ def validate(configuration: Configuration) -> None:
     creator.authority.require(now + timedelta(hours=14))
     if cleaner.authority.identity_sha256 == creator.authority.identity_sha256:
         raise LifecycleError("provisioning and cleanup authorities must be distinct")
+    if not isinstance(creator.journal, OpJournal) or not isinstance(cleaner.journal, OpJournal):
+        raise LifecycleError("service-account setup cannot initialize a Connect journal")
     # Uses no production-state secret and creates no provider credential.
     import uuid  # noqa: PLC0415 - setup-only journal capability probe
 
