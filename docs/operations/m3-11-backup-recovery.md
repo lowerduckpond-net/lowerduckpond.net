@@ -368,6 +368,15 @@ fail immediately. Readback retries never repeat uploads or acknowledge an
 unresolved checkpoint.
 Startup may wait briefly for an otherwise valid native readiness receipt's ACK.
 It never skips a newer adverse receipt or extends the qualification deadline.
+The launcher and controller also retry a typed unstable-snapshot observation
+when valid journal updates arrive during a read. All reads and retries share
+the original readiness deadline. The launcher preserves its dispatch identity
+and rechecks that the same native witness attempt is still running before
+accepting readiness. Malformed records and adverse cleanup receipts still fail.
+Controller journal reads and acknowledgement polling use the same bounded
+snapshot stabilization, including reads before a write. Retries never repeat a
+write or provider creation. Both inventory passes validate immutable metadata,
+and an event already read cannot disappear from the next accepted snapshot.
 The unchanged immediate cleanup, watchdog and hourly GitHub reconciliation paths
 continue to require provider removal and available negative-authentication proof.
 
@@ -417,6 +426,23 @@ mise exec -- just m3-11-unattended evidence RUN_UUID
 mise exec -- just m3-11-unattended cancel RUN_UUID
 mise exec -- just m3-11-unattended cleanup-status --config /private/controller.json
 ```
+
+If Connect witness startup fails before a controller exists, retain
+`connect-dispatch/RUN_UUID` beside the private controller configuration. From the
+same pinned helper checkout, retrieve the closed diagnostic with:
+
+```console
+mise exec -- just m3-11-unattended launch-evidence RUN_UUID --config /private/controller.json
+```
+
+This reads the saved request binding and failure category/static source location;
+it does not load bootstrap credentials or contact providers. Exception text,
+raw responses and private logs are excluded. The first failure remains immutable,
+and the launch request is consumed durably before dispatch, independently of
+diagnostic availability. A failed or interrupted dispatch cannot be reused as
+a successful launch. An absent
+diagnostic, including from an older helper or forced process death, leaves the
+original cause unproven. Retain the private launcher log separately.
 
 Start reserves the daemon-wide container name `ldp-m311-admission` before checking
 existing controllers or writing run inputs, and releases it after launch. A

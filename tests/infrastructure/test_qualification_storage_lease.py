@@ -89,6 +89,7 @@ def test_unsafe_lease_path_fails_closed(isolated: Path, damage: str) -> None:
         path.mkdir()
     else:
         path.touch(mode=0o644)
+        path.chmod(0o644)  # Keep the unsafe fixture independent of the process umask.
     with pytest.raises((ValueError, OSError)), storage_lease(TARGET):
         pytest.fail("unsafe lease was adopted")
     assert original.read_bytes() == b"do not alter"

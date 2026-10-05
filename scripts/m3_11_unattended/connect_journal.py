@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_unattended.connect_auth import identity as account_identity
 from scripts.m3_11_unattended.connect_checkpoint import Checkpoint, Stored
-from scripts.m3_11_unattended.connect_ledger import ACK_FORMAT, ConnectLedger
+from scripts.m3_11_unattended.connect_ledger import ACK_FORMAT, ConnectLedger, SnapshotChangedError
 from scripts.m3_11_unattended.journal import event, validate
 from scripts.m3_11_unattended.model import LifecycleError, digest, identity
 from scripts.m3_11_unattended.state import cleanup_lock
@@ -118,6 +118,9 @@ class ConnectJournal(_Canonical):
     def check_cancelled(self, value: Callable[[], None]) -> None:
         self.ledger.check_cancelled = value
 
+    def records(self) -> list[dict[str, object]]:
+        return self.ledger.stable_records()
+
     def append(self, record: dict[str, object]) -> None:
         self.ledger.stage(self._original(record))
 
@@ -133,7 +136,7 @@ class ConnectJournal(_Canonical):
             independent_author=self.witness.author,
             binding=self.witness.binding(),
             genesis_checkpoint=self.witness.genesis,
-            observed=observed,
+            observed=self.records() if observed is None else observed,
         )
 
     def persist(self, record: dict[str, object]) -> dict[str, object]:
@@ -142,8 +145,16 @@ class ConnectJournal(_Canonical):
         until = time.monotonic() + self.wait_seconds
         while True:
             self.check_cancelled()
-            if self.confirmed(original):
-                self.check_cancelled()
+            # The zero-wait double still performs one read. Ordinary polling
+            # shares the original ACK deadline across all snapshot requests.
+            deadline = until if self.wait_seconds else time.monotonic() + ACK_WAIT_SECONDS
+            with self.ledger.read_budget(deadline=deadline, check_cancelled=lambda: None):
+                try:
+                    confirmed = self.confirmed(original)
+                except SnapshotChangedError:
+                    confirmed = False
+            self.check_cancelled()
+            if confirmed and (not self.wait_seconds or time.monotonic() < until):
                 return original
             remaining = until - time.monotonic()
             if remaining <= 0:

@@ -12,18 +12,23 @@ import subprocess
 import time
 import uuid
 import zipfile
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
+from scripts.m3_11_qualification_evidence import digest as sha256
 from scripts.m3_11_unattended import connect_action
 from scripts.m3_11_unattended.cleanup import ReadinessPendingError, require_independent_ready
 from scripts.m3_11_unattended.config import Configuration
 from scripts.m3_11_unattended.connect_admission import run_digest
+from scripts.m3_11_unattended.connect_diagnostics import retain_failure, verified_failure
 from scripts.m3_11_unattended.connect_journal import ConnectJournal
+from scripts.m3_11_unattended.connect_ledger import SnapshotChangedError
 from scripts.m3_11_unattended.github_checkpoint import REPOSITORY, WORKFLOW, WORKFLOW_ID
+from scripts.m3_11_unattended.inputs import BINDING
 from scripts.m3_11_unattended.model import LifecycleError, digest, identity, instant, stamp
 from scripts.m3_11_unattended.state import private_directory
 from scripts.production_qualification_inputs import revision
@@ -48,11 +53,24 @@ class GitHub:
         self.executable = executable
         self._receipt_source: dict[str, object] | None = None
 
+    @contextmanager
+    def read_budget(self, deadline: float) -> Iterator[None]:
+        previous = getattr(self, "_read_deadline", None)
+        self._read_deadline = min(previous, deadline) if previous is not None else deadline
+        try:
+            yield
+        finally:
+            self._read_deadline = previous
+
     def api(
         self, path: str, *, method: str = "GET", body: object = None, binary: bool = False
     ) -> object:
         if not path.startswith(PREFIX + "/") or method not in {"GET", "POST", "PATCH"}:
             raise LifecycleError("GitHub control escaped the dedicated repository")
+        deadline = getattr(self, "_read_deadline", None)
+        timeout = 30 if deadline is None else min(30, deadline - time.monotonic())
+        if timeout <= 0 or (deadline is not None and method != "GET"):
+            raise LifecycleError("GitHub observation exceeded its read-only time budget")
         arguments = [self.executable, "api", "--hostname", "github.com", "--method", method, path]
         if body is not None:
             arguments.extend(["--input", "-"])
@@ -62,9 +80,13 @@ class GitHub:
                 input=canonical_bytes(body) if body is not None else None,
                 capture_output=True,
                 check=False,
-                timeout=30,
+                timeout=timeout,
             )
-            if result.returncode or len(result.stdout) > MAX_BYTES:
+            if (
+                result.returncode
+                or len(result.stdout) > MAX_BYTES
+                or (deadline is not None and time.monotonic() >= deadline)
+            ):
                 raise LifecycleError("GitHub control operation remains unresolved")
             return result.stdout if binary else json.loads(result.stdout) if result.stdout else None
         except OSError, subprocess.SubprocessError, ValueError:
@@ -488,7 +510,70 @@ class GitHub:
         raise LifecycleError("cleanup dispatch remains pending; retain its identity and evidence")
 
 
-def await_witness(  # noqa: PLR0912 - exact dispatch, execution and readiness are separate gates
+def launch_request(request: dict[str, object]) -> dict[str, object]:
+    """Only closed, non-secret request bindings may enter launcher diagnostics."""
+    binding = fields(request["binding"], BINDING)
+    identity(binding["managed_run_id"])
+    if revision(binding["source_revision"]) != revision(binding["helper_revision"]):
+        raise LifecycleError("launcher source and helper differ")
+    for name in BINDING - {"managed_run_id", "source_revision", "helper_revision"}:
+        sha256(binding[name])
+    sha256(request["approval_sha256"])
+    if request["mode"] not in {"rehearsal", "qualification"}:
+        raise LifecycleError("launcher mode is invalid")
+    return {
+        "binding": binding,
+        "mode": request["mode"],
+        "approval_sha256": request["approval_sha256"],
+    }
+
+
+def launch_evidence(directory: Path, *, run_id: str, helper: str) -> dict[str, object]:
+    private_directory(directory)
+    raw = read_private(directory / "launch-request.json")
+    request = launch_request(fields(raw, {"binding", "mode", "approval_sha256"}))
+    binding = fields(request["binding"], BINDING)
+    if binding["managed_run_id"] != identity(run_id) or binding["helper_revision"] != revision(
+        helper
+    ):
+        raise LifecycleError("launcher evidence requires its exact attempt and pinned helper")
+    return {
+        "request": request,
+        "diagnostic": verified_failure(
+            read_private(directory / "launcher-failure.json"),
+            binding=binding,
+            stages=frozenset({"await-witness"}),
+        ),
+    }
+
+
+def await_witness(
+    configuration: Configuration, request: dict[str, object], *, directory: Path
+) -> None:
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    private_directory(directory)
+    retained = launch_request(request)
+    path = directory / "launch-request.json"
+    if path.exists():
+        if read_private(path) != retained:
+            raise LifecycleError("launcher request changed")
+        raise LifecycleError("launcher attempt already consumed; retain its original evidence")
+    # Consumption is durable before dispatch and independent of optional diagnostics.
+    # A killed launcher cannot silently resume the old attempt with a fresh deadline.
+    write_private(path, retained)
+    try:
+        _await_witness(configuration, request, directory=directory)
+    except Exception as error:
+        retain_failure(
+            directory / "launcher-failure.json",
+            binding=fields(retained["binding"], BINDING),
+            stage="await-witness",
+            error=error,
+        )
+        raise
+
+
+def _await_witness(
     configuration: Configuration, request: dict[str, object], *, directory: Path
 ) -> None:
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -546,50 +631,98 @@ def await_witness(  # noqa: PLR0912 - exact dispatch, execution and readiness ar
     )
     until = time.monotonic() + TIMEOUT_SECONDS
     while time.monotonic() < until:
-        run_id = client.find_run(dispatch)
-        if run_id is not None:
-            execution = client.run(run_id)
-            if execution.get("status") == "completed":
-                raise LifecycleError("independent witness stopped before controller launch")
-            for record in journal.records():
-                value = record["payload"]
-                if (
-                    not isinstance(value, dict)
-                    or value.get("format") != connect_action.READY_FORMAT
+        try:
+            with (
+                client.read_budget(until),
+                journal.ledger.read_budget(deadline=until, check_cancelled=lambda: None),
+            ):
+                if _witness_ready(
+                    client,
+                    journal,
+                    dispatch,
+                    expected=expected,
+                    helper=helper,
+                    directory=directory,
+                    deadline=until,
                 ):
-                    continue
-                if (
-                    record["kind"] == "heartbeat"
-                    and value.get("request_sha256") == expected
-                    and value.get("dispatch_id") == dispatch["dispatch_id"]
-                    and value.get("active_helper") == helper
-                    and value.get("witness") == journal.witness.binding()
-                    and value.get("github_run_id") == run_id
-                    and value.get("github_run_attempt") == execution.get("run_attempt")
-                    and execution.get("status") == "in_progress"
-                    and datetime.now(UTC) - timedelta(minutes=2)
-                    <= instant(value.get("observed_at"))
-                    <= datetime.now(UTC) + timedelta(minutes=1)
-                    and journal.ledger.authored(record, journal.witness.author)
-                    and journal.confirmed(record)
-                ):
-                    try:
-                        require_independent_ready(journal, helper=helper, now=datetime.now(UTC))
-                    except ReadinessPendingError:
-                        # Poll the native execution again too; an exited witness
-                        # cannot become eligible through a late receipt alone.
-                        break
-                    write_private(
-                        directory / "witness-ready.json",
-                        {
-                            "dispatch_id": dispatch["dispatch_id"],
-                            "github_run_id": run_id,
-                            "event_sha256": digest(record),
-                            "run_sha256": expected,
-                        },
-                    )
                     return
-        time.sleep(POLL_SECONDS)
+        except SnapshotChangedError, ReadinessPendingError:
+            # A valid asynchronous update may invalidate any complete scan.
+            # Start the next observation at the native execution; never redispatch.
+            pass
+        remaining = until - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(POLL_SECONDS, remaining))
     raise LifecycleError(
         "independent witness readiness remains unproven; controller was not launched"
     )
+
+
+def _witness_ready(  # noqa: PLR0913 - preserve the original dispatch and shared observation budget
+    client: GitHub,
+    journal: ConnectJournal,
+    dispatch: dict[str, object],
+    *,
+    expected: str,
+    helper: str,
+    directory: Path,
+    deadline: float,
+) -> bool:
+    run_id = client.find_run(dispatch)
+    if run_id is not None:
+        execution = client.run(run_id)
+        if execution.get("status") == "completed":
+            raise LifecycleError("independent witness stopped before controller launch")
+        attempt = execution.get("run_attempt")
+        if type(attempt) is not int or attempt < 1:
+            raise LifecycleError("independent witness attempt is unavailable")
+        binding: dict[str, object] = {"github_run_id": run_id, "github_run_attempt": attempt}
+        path = directory / "witness-execution.json"
+        if path.exists():
+            if read_private(path) != binding:
+                raise LifecycleError("independent witness execution changed during observation")
+        else:
+            write_private(path, binding)
+        for record in journal.records():
+            value = record["payload"]
+            if not isinstance(value, dict) or value.get("format") != connect_action.READY_FORMAT:
+                continue
+            if (
+                record["kind"] == "heartbeat"
+                and value.get("request_sha256") == expected
+                and value.get("dispatch_id") == dispatch["dispatch_id"]
+                and value.get("active_helper") == helper
+                and value.get("witness") == journal.witness.binding()
+                and value.get("github_run_id") == run_id
+                and value.get("github_run_attempt") == execution.get("run_attempt")
+                and execution.get("status") == "in_progress"
+                and datetime.now(UTC) - timedelta(minutes=2)
+                <= instant(value.get("observed_at"))
+                <= datetime.now(UTC) + timedelta(minutes=1)
+                and journal.ledger.authored(record, journal.witness.author)
+                and journal.confirmed(record)
+            ):
+                require_independent_ready(journal, helper=helper, now=datetime.now(UTC))
+                # Snapshot I/O can outlive the witness. Recheck the same native
+                # attempt immediately before accepting readiness, even without a retry.
+                current = client.run(run_id)
+                if (
+                    current.get("status") != "in_progress"
+                    or current.get("run_attempt") != execution.get("run_attempt")
+                    or time.monotonic() >= deadline
+                    or not datetime.now(UTC) - timedelta(minutes=2)
+                    <= instant(value.get("observed_at"))
+                    <= datetime.now(UTC) + timedelta(minutes=1)
+                ):
+                    raise LifecycleError("independent witness changed or readiness arrived late")
+                write_private(
+                    directory / "witness-ready.json",
+                    {
+                        "dispatch_id": dispatch["dispatch_id"],
+                        "github_run_id": run_id,
+                        "event_sha256": digest(record),
+                        "run_sha256": expected,
+                    },
+                )
+                return True
+    return False
