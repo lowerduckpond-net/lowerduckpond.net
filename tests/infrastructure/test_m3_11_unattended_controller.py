@@ -306,6 +306,38 @@ def test_private_delivery_failure_still_records_returned_identity(
     assert api.deletes == [api.selected]
 
 
+@pytest.mark.parametrize("actor", ["controller", "watchdog"])
+def test_torn_local_creation_record_cannot_delay_independent_terminal_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor: str
+) -> None:
+    selected, case = subject(tmp_path, monkeypatch)
+    directory = selected.directory.with_name(case.run_id)
+    selected.directory.rename(directory)
+    selected.directory, selected.state = directory, RunState(directory)
+    selected.state.begin(selected.binding)
+    case.lifecycle.remember_created = selected.remember_created
+    api = CreationApi("spaces", response_fault="missing", wrong_scope=True)
+    with pytest.raises(LifecycleError, match="omitted its secret"):
+        provision(case, api)
+    intent = intents(case.journal)[0]
+    path = directory / "credential-created" / (intent.sha256 + ".json")
+    path.write_text('{"torn":')
+    if actor == "controller":
+        assert not selected.revoke()
+        assert selected.state.status()["credential_cleanup"] == "unresolved"
+    else:
+        with pytest.raises(ValueError):
+            watchdog.reconcile_processes(
+                case.lifecycle, directory.parent, cast(Docker, None), directories={directory}
+            )
+    assert api.deletes == []
+    assert any(row["kind"] == "revoke" for row in case.journal.records())
+    independent = Lifecycle(case.journal, {"spaces": api.provider()}, clock=lambda: case.now)
+    assert independent.reconcile(intent).status == "verified"
+    assert api.deletes == [api.selected]
+    assert path.read_text() == '{"torn":'
+
+
 @pytest.mark.parametrize("age", [timedelta(minutes=91), timedelta(days=1)])
 def test_stale_independent_cleanup_blocks_admission(tmp_path: Path, age: timedelta) -> None:
     case = Case(tmp_path)

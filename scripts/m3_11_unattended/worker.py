@@ -569,8 +569,8 @@ class Worker:
             else:
                 self.cleanup_journal.refresh()
                 lifecycle.journal = self.cleanup_journal
-            restore_created(lifecycle, self.directory, run_id=self.run_id)
             lifecycle.request_revocation(self.run_id)
+            restore_created(lifecycle, self.directory, run_id=self.run_id)
             available = retained_credentials(self.directory)
             receipt = cleanup.sweep(
                 lifecycle, actor="controller", helper=self.helper, secrets=available

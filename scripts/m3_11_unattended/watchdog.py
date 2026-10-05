@@ -64,8 +64,8 @@ def reconcile_processes(
     available: dict[str, Credential] = {}
     selected = due_processes(root, docker) if directories is None else directories
     for directory in selected:
-        restore_created(lifecycle, directory, run_id=identity(directory.name))
         lifecycle.request_revocation(identity(directory.name))
+        restore_created(lifecycle, directory, run_id=identity(directory.name))
         available.update(retained_credentials(directory))
     return available
 
