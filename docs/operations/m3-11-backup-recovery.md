@@ -237,6 +237,22 @@ empty legacy heartbeat beyond the shared cache's initial snapshot; the shared
 cache must synchronize that exact complete map before genesis. No event is
 discarded and final genesis inventory checks remain exact.
 
+Connect's vault item count may lag its item list after a successful write. The
+ledger compares two complete unfiltered item inventories, validates every native
+item binding and retains all known event hashes. The aggregate count remains a
+conservative lower bound; neither matching cache reads nor HTTP 200 creation
+readback establishes independent persistence. Returned item IDs are saved before
+further inspection, including when inspection fails.
+
+A reviewed helper correction can resume an unchanged `initializing` selection
+before discovery has started. It requires the original private inputs, both probe
+records and shared-probe spool, and rejects any credential intent or independent
+probe for that epoch. It retains the old/new marker, inventory and evidence hashes
+before publishing the helper change. Retrying that same upgrade preserves its
+epoch and reconciles either publication outcome. Missing evidence, a prior
+different upgrade or any started discovery/genesis prevents this migration;
+retain the activation directory and diagnose without resetting it.
+
 `M3_11_CONNECT_CONFIGURATION` holds those non-secret protected bindings and the
 active executable helper in one atomic publication. The workflow captures that
 one value for both checkout and execution. `M3_11_CLEANUP_BACKEND=connect` selects

@@ -172,6 +172,13 @@ helper upgrade preserves that genesis and all historical obligations, and requir
 fresh independent readiness at the successor helper. It never reinitializes an
 existing journal or revives an old attempt's provisioning window.
 
+Connect cache inventory is established by two stable unfiltered item lists,
+native metadata and all retained event hashes, not equality with its aggregate
+vault count. This does not replace independent persistence. A reviewed
+pre-discovery helper correction preserves the original initializing marker's
+bindings, probe identities, spool and inventory in an immutable private upgrade
+record; any started discovery or credential intent prevents that migration.
+
 The launcher binds a running GitHub witness to the exact approved attempt before
 detaching the controller. Creation acknowledgements require current deletion
 authority and a bounded capacity reservation; cleanup remains available after

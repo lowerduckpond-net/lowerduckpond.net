@@ -113,28 +113,35 @@ class ConnectLedger:
             raise LifecycleError("Connect journal item content changed")
         return record, item
 
-    def records(self) -> list[dict[str, object]]:
-        """A complete, stable cache snapshot; still not an independent-write receipt."""
-        before = self._vault_state()
+    def _inventory(self, minimum_count: int) -> dict[str, dict[str, object]]:
+        # Connect documents an unpaginated complete list. The vault aggregate
+        # can lag an accepted write, so it is only a conservative lower bound.
         response = self.client.request("GET", "/v1/vaults/" + self.vault + "/items")
         if (
             response.status != HTTPStatus.OK
             or not isinstance(response.body, list)
-            or len(response.body) != before[0]
+            or not minimum_count <= len(response.body) <= MAX_EVENTS
         ):
             raise LifecycleError("Connect journal inventory is partial or unavailable")
-        records: dict[str, dict[str, object]] = {}
-        metadata: dict[str, list[dict[str, object]]] = {}
-        items: dict[str, str] = {}
-        cached_items = {}
-        item_ids: set[str] = set()
+        inventory: dict[str, dict[str, object]] = {}
         for listed in response.body:
             if not isinstance(listed, dict):
                 raise LifecycleError("Connect journal inventory is invalid")
             item_id = _item_identity(listed.get("id"))
-            if item_id in item_ids:
+            if item_id in inventory:
                 raise LifecycleError("Connect journal inventory has duplicate items")
-            item_ids.add(item_id)
+            inventory[item_id] = {key: listed.get(key) for key in ITEM_BINDING}
+        return inventory
+
+    def records(self) -> list[dict[str, object]]:
+        """A complete, stable cache snapshot; still not an independent-write receipt."""
+        before = self._vault_state()
+        inventory = self._inventory(before[0])
+        records: dict[str, dict[str, object]] = {}
+        metadata: dict[str, list[dict[str, object]]] = {}
+        items: dict[str, str] = {}
+        cached_items = {}
+        for item_id, listed in inventory.items():
             cached = self._cached_items.get(item_id)
             record, item = cached if cached is not None else self._read(item_id)
             if any(listed.get(key) != item.get(key) for key in ITEM_BINDING):
@@ -151,8 +158,9 @@ class ConnectLedger:
             records[event_id] = record
             cached_items[item_id] = record, item
         if (
-            self.anchor not in item_ids
+            self.anchor not in inventory
             or not self._known.keys() <= items.keys()
+            or self._inventory(before[0]) != inventory
             or self._vault_state() != before
         ):
             raise LifecycleError("Connect journal is not synchronized with its retained checkpoint")
@@ -204,7 +212,7 @@ class ConnectLedger:
             response = None
         if (
             response is not None
-            and response.status == HTTPStatus.CREATED
+            and response.status in {HTTPStatus.OK, HTTPStatus.CREATED}
             and isinstance(response.body, dict)
         ):
             returned = _item_identity(response.body.get("id"))
