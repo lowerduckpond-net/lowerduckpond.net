@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -20,6 +21,7 @@ from infrastructure.test_m3_11_connect_ledger import (
     REMOTE_SERVER,
     VAULT,
     ledger,
+    note,
 )
 from scripts.m3_11_unattended.connect_checkpoint import Checkpoint
 from scripts.m3_11_unattended.connect_genesis import PROBE_FORMAT, REQUEST_FORMAT, initialize
@@ -107,6 +109,60 @@ def test_initial_inventory_matches_all_recoverable_genesis_records_and_native_au
     count = case.journal.remote.posts
     assert case.initialize() == result
     assert case.journal.remote.posts == count and len(case.store.values) == 1
+
+
+@pytest.mark.parametrize(
+    "fault", [None, "unbound", "hash", "extra-field", "wrong-reason", "missing-reason"]
+)
+def test_genesis_retains_only_exact_bound_empty_run_revocation(
+    tmp_path: Path, fault: str | None
+) -> None:
+    case = Case(tmp_path)
+    record = event("revoke", str(uuid.uuid7()), {"reason": "terminal-path"})
+    payload = cast(dict[str, object], record["payload"])
+    if fault == "extra-field":
+        payload["unexpected"] = True
+    elif fault == "wrong-reason":
+        payload["reason"] = "other"
+    elif fault == "missing-reason":
+        record["payload"] = {}
+    identifier = str(100).zfill(26)
+    case.journal.remote.items[identifier] = note(record, identifier)
+    case.journal.remote.version += 1
+    if fault != "unbound":
+        cast(dict[str, object], case.approved["initial"])[str(record["event_id"])] = (
+            "0" * 64 if fault == "hash" else digest(record)
+        )
+    if fault is not None:
+        with pytest.raises(LifecycleError):
+            case.initialize()
+        assert not case.store.values
+    else:
+        proof = case.initialize()
+        assert cast(dict[str, object], proof["initial"])[str(record["event_id"])] == digest(record)
+        latest = case.store.latest()
+        assert latest is not None
+        assert record in cast(list[dict[str, object]], case.store.read(latest)["records"])
+
+
+@pytest.mark.parametrize("kind", ["intent", "created", "cleanup", "resolved"])
+@pytest.mark.parametrize("same_run", [False, True])
+def test_empty_revoke_never_allows_any_bound_credential_history(
+    tmp_path: Path, kind: str, same_run: bool
+) -> None:
+    case = Case(tmp_path)
+    run_id = str(uuid.uuid7())
+    rows = [
+        event("revoke", run_id, {"reason": "terminal-path"}),
+        event(kind, run_id if same_run else str(uuid.uuid7()), {}),
+    ]
+    for identifier, record in zip((str(100).zfill(26), str(101).zfill(26)), rows, strict=True):
+        case.journal.remote.items[identifier] = note(record, identifier)
+        case.journal.remote.version += 1
+        cast(dict[str, object], case.approved["initial"])[str(record["event_id"])] = digest(record)
+    with pytest.raises(LifecycleError):
+        case.initialize()
+    assert not case.store.values
 
 
 @pytest.mark.parametrize(

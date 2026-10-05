@@ -7,6 +7,7 @@ from __future__ import annotations
 import copy
 import json
 import sys
+import uuid
 from pathlib import Path
 from typing import cast
 
@@ -28,8 +29,18 @@ SUCCESSOR = "f" * 40
 
 
 class Failed:
-    def __init__(self, path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def __init__(
+        self,
+        path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        history: list[dict[str, object]] | None = None,
+    ) -> None:
         self.case = Case(path, monkeypatch)
+        for index, record in enumerate(history or [], start=100):
+            identifier = str(index).zfill(26)
+            self.case.shared.items[identifier] = note(record, identifier)
+            self.case.shared.version += 1
         self.original = self.case.activation()
 
         def fail(_document: dict[str, object]) -> Stored:
@@ -93,10 +104,12 @@ class Failed:
         assert self.files() == self.old_files
 
 
+@pytest.mark.parametrize("empty_revoke", [False, True])
 def test_replacement_retains_failed_attempt_orphan_and_history_then_repeats_full_proof(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, empty_revoke: bool
 ) -> None:
-    failed = Failed(tmp_path, monkeypatch)
+    historical = event("revoke", str(uuid.uuid7()), {"reason": "terminal-path"})
+    failed = Failed(tmp_path, monkeypatch, history=[historical] if empty_revoke else [])
     before = {str(row["event_id"]): digest(row) for row in failed.original.ledger.records()}
     failed.complete()
     selected = json.loads(failed.case.github.values[control.SETTING])
@@ -114,6 +127,13 @@ def test_replacement_retains_failed_attempt_orphan_and_history_then_repeats_full
         {"id": 123, "name": "encrypted-orphan-checkpoint", "digest": "sha256:" + "1" * 64}
     ]
     assert before.items() <= selected["receipt"]["initial"].items()
+    if empty_revoke:
+        assert selected["receipt"]["initial"][historical["event_id"]] == digest(historical)
+        stored = failed.case.store.latest()
+        assert stored is not None
+        assert historical in cast(
+            list[dict[str, object]], failed.case.store.read(stored)["records"]
+        )
     transition = cast(dict[str, object], audit["transition"])
     assert selected["receipt"]["initial"][transition["event_id"]] == digest(transition)
     assert selected["receipt"]["forged_author_ignored"] is True
@@ -220,13 +240,19 @@ def test_unavailable_ambiguous_or_incomplete_registry_never_means_empty(
     assert failed.case.github.values == before and failed.case.provider.creates == 0
 
 
-@pytest.mark.parametrize("kind", ["intent", "created", "revoke", "cleanup", "resolved"])
+@pytest.mark.parametrize(
+    "kind", ["intent", "created", "revoke", "cleanup", "resolved", "empty-revoke"]
+)
 @pytest.mark.parametrize("hidden", [False, True])
 def test_any_credential_history_in_either_replica_blocks_new_genesis(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, hidden: bool
 ) -> None:
     failed = Failed(tmp_path, monkeypatch)
-    record = event(kind, str(failed.selected["request"]["epoch"]), {})
+    record = event(
+        "revoke" if kind == "empty-revoke" else kind,
+        str(uuid.uuid7()),
+        {"reason": "terminal-path"} if kind == "empty-revoke" else {},
+    )
     replica = failed.case.remote if hidden else failed.case.shared
     replica.items["h" * 26] = note(record, "h" * 26)
     replica.version += 1
@@ -314,6 +340,49 @@ def test_draining_rechecks_failed_attempt_and_complete_history(
     assert not failed.case.output.exists() and failed.case.provider.creates == 0
 
 
+@pytest.mark.parametrize("boundary", ["transition", "shared-probe", "after-snapshot"])
+def test_late_empty_revocation_cannot_enter_replacement_discovery_or_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    failed = Failed(tmp_path, monkeypatch)
+    late = event("revoke", str(uuid.uuid7()), {"reason": "terminal-path"})
+
+    def introduce() -> None:
+        identifier = str(200).zfill(26)
+        failed.case.shared.items[identifier] = note(late, identifier)
+        failed.case.shared.version += 1
+
+    successor = failed.successor()
+    stage = successor.ledger.stage
+
+    def changed(record: dict[str, object], *, claimed_author: str | None = None) -> None:
+        stage(record, claimed_author=claimed_author)
+        payload = cast(dict[str, object], record["payload"])
+        if (boundary == "transition" and payload.get("format") == recovery.FORMAT) or (
+            boundary == "shared-probe" and payload.get("actor") == "shared"
+        ):
+            introduce()
+
+    monkeypatch.setattr(successor.ledger, "stage", changed)
+    if boundary == "after-snapshot":
+        recovery.replace_failed(successor, failed.original.directory)
+        frozen = read_private(successor.directory / "discovery-request.json")
+        introduce()
+        # The workflow double retains no successful receipt when its independent
+        # discovery rejects history; receipt lookup can therefore raise KeyError.
+        with pytest.raises((LifecycleError, KeyError)):
+            successor.activate(failed.case.output)
+        assert read_private(successor.directory / "discovery-request.json") == frozen
+    else:
+        with pytest.raises(LifecycleError):
+            recovery.replace_failed(successor, failed.original.directory)
+    # Retained transition state must not bless the late record on retry.
+    with pytest.raises(LifecycleError):
+        recovery.replace_failed(failed.successor(), failed.original.directory)
+    assert not failed.case.output.exists() and not failed.case.store.values
+    assert failed.case.provider.creates == 0 and failed.files() == failed.old_files
+
+
 def test_active_replacement_is_idempotent_and_does_not_repeat_the_ceremony(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -351,15 +420,19 @@ def test_interrupted_replacement_cannot_change_its_binding_or_lose_history(
     assert not failed.case.output.exists() and failed.case.provider.creates == 0
 
 
-@pytest.mark.parametrize("fault", ["intent", "removed-probe", "backend", "selection"])
+@pytest.mark.parametrize("fault", ["intent", "revoke", "removed-probe", "backend", "selection"])
 def test_no_advance_when_history_or_protected_configuration_changes_while_draining(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
 ) -> None:
     failed = Failed(tmp_path, monkeypatch)
 
     def changed() -> None:
-        if fault == "intent":
-            record = event("intent", failed.selected["request"]["epoch"], {})
+        if fault in {"intent", "revoke"}:
+            record = event(
+                fault,
+                failed.selected["request"]["epoch"],
+                {"reason": "terminal-path"} if fault == "revoke" else {},
+            )
             failed.case.shared.items["h" * 26] = note(record, "h" * 26)
             failed.case.shared.version += 1
         elif fault == "removed-probe":
