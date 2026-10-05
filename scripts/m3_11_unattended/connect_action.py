@@ -15,6 +15,7 @@ import sys
 import time
 import uuid
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -28,6 +29,7 @@ from scripts.m3_11_unattended.connect_auth import READ, READ_WRITE, Access, auth
 from scripts.m3_11_unattended.connect_checkpoint import FORMAT as CHECKPOINT_FORMAT
 from scripts.m3_11_unattended.connect_checkpoint import Checkpoint, Stored
 from scripts.m3_11_unattended.connect_configuration import PROVIDER_REFERENCES, _references
+from scripts.m3_11_unattended.connect_diagnostics import failure
 from scripts.m3_11_unattended.connect_host import independent_server
 from scripts.m3_11_unattended.connect_journal import IndependentJournal, Witness
 from scripts.m3_11_unattended.connect_ledger import ConnectLedger
@@ -492,8 +494,11 @@ def main() -> int:
         if len(raw) > MAX_INPUT:
             raise LifecycleError("independent Connect input exceeds its bound")
         receipt = execute(json.loads(raw), directory=directory, helper=helper, progress=progress)
-    except Exception:  # Never export input values, provider payloads or private subprocess output.
+    except Exception as error:
         receipt = {"format": RECEIPT_FORMAT, "status": "unresolved", "phase": phase}
+        # No exception text, arguments, locals, arbitrary names or provider output.
+        with suppress(Exception):
+            receipt["failure"] = failure(error)
     replace_private(output, receipt)
     return 0 if receipt["status"] == "ready" else 1
 

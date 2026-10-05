@@ -46,6 +46,7 @@ class GitHub:
         if executable is None:
             raise LifecycleError("GitHub control CLI is unavailable")
         self.executable = executable
+        self._receipt_source: dict[str, object] | None = None
 
     def api(
         self, path: str, *, method: str = "GET", body: object = None, binary: bool = False
@@ -183,8 +184,9 @@ class GitHub:
         if self.variables().get(name) != value:
             raise LifecycleError("cleanup configuration update lacks exact readback")
 
-    def run(self, run_id: int) -> dict[str, object]:
-        value = self.api(f"{PREFIX}/actions/runs/{run_id}")
+    def run(self, run_id: int, *, attempt: int | None = None) -> dict[str, object]:
+        path = f"{PREFIX}/actions/runs/{run_id}"
+        value = self.api(path if attempt is None else path + f"/attempts/{attempt}")
         if (
             not isinstance(value, dict)
             or value.get("id") != run_id
@@ -192,6 +194,7 @@ class GitHub:
             or value.get("path") != ".github/workflows/" + WORKFLOW
             or value.get("head_branch") != "main"
             or value.get("event") != "workflow_dispatch"
+            or (attempt is not None and value.get("run_attempt") != attempt)
             or any(
                 not isinstance(value.get(key), dict) or value[key].get("full_name") != REPOSITORY
                 for key in ("repository", "head_repository")
@@ -199,6 +202,108 @@ class GitHub:
         ):
             raise LifecycleError("cleanup execution differs from the protected main workflow")
         return value
+
+    def _receipt_job(self, execution: dict[str, object]) -> dict[str, object]:
+        """Bind the successful Connect job to one immutable native run attempt."""
+        run_id, attempt = execution["id"], execution.get("run_attempt")
+        if type(run_id) is not int or run_id < 1 or type(attempt) is not int or attempt < 1:
+            raise LifecycleError("cleanup attempt identity is unavailable")
+        revision(execution.get("head_sha"))
+        selected = self.run(run_id, attempt=attempt)
+        if any(
+            selected.get(key) != execution.get(key)
+            for key in ("run_attempt", "head_sha", "status", "conclusion", "run_started_at")
+        ):
+            raise LifecycleError("cleanup attempt differs from the completed execution")
+        started, completed = (
+            instant(selected.get("run_started_at")),
+            instant(selected.get("updated_at")),
+        )
+        if started > completed:
+            raise LifecycleError("cleanup attempt has an invalid execution interval")
+        value = self.api(f"{PREFIX}/actions/runs/{run_id}/attempts/{attempt}/jobs?per_page=100")
+        if (
+            not isinstance(value, dict)
+            or not isinstance(value.get("jobs"), list)
+            or type(value.get("total_count")) is not int
+            or len(value["jobs"]) != value["total_count"]
+        ):
+            raise LifecycleError("cleanup attempt job inventory is incomplete")
+        matches = [
+            row for row in value["jobs"] if isinstance(row, dict) and row.get("name") == "connect"
+        ]
+        if len(matches) != 1:
+            raise LifecycleError("cleanup attempt has no unique Connect job")
+        job = matches[0]
+        if (
+            type(job.get("id")) is not int
+            or job["id"] < 1
+            or job.get("run_id") != run_id
+            or job.get("run_attempt") != attempt
+            or job.get("head_sha") != execution["head_sha"]
+            or job.get("status") != "completed"
+            or job.get("conclusion") != "success"
+            or not started
+            <= instant(job.get("started_at"))
+            <= instant(job.get("completed_at"))
+            <= completed
+        ):
+            raise LifecycleError("cleanup receipt job differs from its successful attempt")
+        return job
+
+    def _receipt_artifact(
+        self, execution: dict[str, object], job: dict[str, object]
+    ) -> dict[str, object]:
+        run_id, attempt = execution["id"], execution["run_attempt"]
+        value = self.api(f"{PREFIX}/actions/runs/{run_id}/artifacts?per_page=100")
+        if (
+            not isinstance(value, dict)
+            or not isinstance(value.get("artifacts"), list)
+            or type(value.get("total_count")) is not int
+            or len(value["artifacts"]) != value["total_count"]
+        ):
+            raise LifecycleError("cleanup receipt inventory is incomplete")
+        legacy = f"m3-11-credential-cleanup-{run_id}"
+        canonical = legacy + f"-attempt-{attempt}"
+        rows = value["artifacts"]
+        matches = [row for row in rows if isinstance(row, dict) and row.get("name") == canonical]
+        started, completed = instant(job["started_at"]), instant(job["completed_at"])
+        if not matches:
+            # Old helpers named every attempt's artifact alike. Native upload
+            # times must unambiguously place one in this successful job. Strict
+            # lower bounds reject same-second artifacts from a prior attempt.
+            matches = [
+                row
+                for row in rows
+                if isinstance(row, dict)
+                and row.get("name") == legacy
+                and started < instant(row.get("created_at")) <= completed
+            ]
+        if len(matches) != 1:
+            raise LifecycleError("cleanup has no unique receipt for its successful attempt")
+        artifact = matches[0]
+        native = artifact.get("workflow_run")
+        repository, head_repository = execution["repository"], execution["head_repository"]
+        if (
+            not isinstance(repository, dict)
+            or not isinstance(head_repository, dict)
+            or type(repository.get("id")) is not int
+            or type(head_repository.get("id")) is not int
+            or repository["id"] < 1
+            or head_repository["id"] < 1
+            or not isinstance(native, dict)
+            or native.get("id") != run_id
+            or native.get("repository_id") != repository["id"]
+            or native.get("head_repository_id") != head_repository["id"]
+            or native.get("head_branch") != "main"
+            or native.get("head_sha") != execution["head_sha"]
+            or artifact.get("expired") is not False
+            or type(artifact.get("id")) is not int
+            or artifact["id"] < 1
+            or not started <= instant(artifact.get("created_at")) <= completed
+        ):
+            raise LifecycleError("cleanup receipt artifact is expired or misbound")
+        return artifact
 
     def find_run(self, dispatch: dict[str, object]) -> int | None:
         value = self.api(
@@ -275,28 +380,12 @@ class GitHub:
         return saved
 
     def receipt(self, run_id: int) -> dict[str, object]:
+        self._receipt_source = None
         execution = self.run(run_id)
         if execution.get("status") != "completed" or execution.get("conclusion") != "success":
             raise LifecycleError("independent cleanup has not completed successfully")
-        value = self.api(f"{PREFIX}/actions/runs/{run_id}/artifacts?per_page=100")
-        if (
-            not isinstance(value, dict)
-            or not isinstance(value.get("artifacts"), list)
-            or len(value["artifacts"]) != value.get("total_count")
-        ):
-            raise LifecycleError("cleanup receipt inventory is incomplete")
-        matches = [
-            row
-            for row in value["artifacts"]
-            if isinstance(row, dict) and row.get("name") == f"m3-11-credential-cleanup-{run_id}"
-        ]
-        if (
-            len(matches) != 1
-            or matches[0].get("expired") is not False
-            or type(matches[0].get("id")) is not int
-        ):
-            raise LifecycleError("cleanup has no unique retained receipt")
-        artifact = matches[0]
+        job = self._receipt_job(execution)
+        artifact = self._receipt_artifact(execution, job)
         raw = self.api(f"{PREFIX}/actions/artifacts/{artifact['id']}/zip", binary=True)
         if (
             not isinstance(raw, bytes)
@@ -312,7 +401,7 @@ class GitHub:
                     or entries[0].file_size > MAX_BYTES
                 ):
                     raise LifecycleError("cleanup receipt has unexpected archive contents")
-                return fields(
+                receipt = fields(
                     json.loads(archive.read(entries[0])),
                     {
                         "format",
@@ -327,6 +416,36 @@ class GitHub:
                 )
         except ValueError, zipfile.BadZipFile:
             raise LifecycleError("cleanup receipt cannot be verified") from None
+        if (
+            not instant(job["started_at"])
+            <= instant(receipt["observed_at"])
+            < instant(job["completed_at"]) + timedelta(seconds=1)
+        ):
+            raise LifecycleError("cleanup receipt was not observed during its selected job")
+        current = self.run(run_id)
+        if any(
+            current.get(key) != execution.get(key)
+            for key in (
+                "run_attempt",
+                "head_sha",
+                "status",
+                "conclusion",
+                "run_started_at",
+                "updated_at",
+            )
+        ):
+            raise LifecycleError("cleanup execution changed while its receipt was read")
+        self._receipt_source = {
+            "format": "lowerduckpond-m3-11-cleanup-receipt-source-v1",
+            "run_id": run_id,
+            "run_attempt": execution["run_attempt"],
+            "head_sha": execution["head_sha"],
+            "job_id": job["id"],
+            "artifact_id": artifact["id"],
+            "artifact_digest": artifact["digest"],
+            "receipt_sha256": digest(receipt),
+        }
+        return receipt
 
     def wait(
         self, dispatch: dict[str, object], *, helper: str, directory: Path
@@ -350,6 +469,14 @@ class GitHub:
                     raise LifecycleError(
                         "cleanup receipt differs from its exact requested operation"
                     )
+                source = getattr(self, "_receipt_source", None)
+                if source is not None:
+                    source_path = directory / "receipt-source.json"
+                    if source_path.exists():
+                        if read_private(source_path) != source:
+                            raise LifecycleError("retained cleanup receipt origin changed")
+                    else:
+                        write_private(source_path, source)
                 path = directory / "receipt.json"
                 if path.exists():
                     if read_private(path) != value:
