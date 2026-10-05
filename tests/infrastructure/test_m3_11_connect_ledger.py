@@ -127,6 +127,7 @@ def ledger(client: Replica, tmp_path: Path, anchor: dict[str, object]) -> Connec
         anchor=ANCHOR,
         anchor_sha256=digest(anchor),
         minimum={str(anchor["event_id"]): digest(anchor)},
+        readback_seconds=0,
     )
 
 

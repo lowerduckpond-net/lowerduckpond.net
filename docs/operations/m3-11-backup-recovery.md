@@ -243,6 +243,16 @@ item binding and retains all known event hashes. The aggregate count remains a
 conservative lower bound; neither matching cache reads nor HTTP 200 creation
 readback establishes independent persistence. Returned item IDs are saved before
 further inspection, including when inspection fails.
+After a journal POST, the helper polls for its exact event in a complete stable
+inventory within a 60-second monotonic readback window. It stops scheduling polls
+at that deadline, caps each exchange to the remaining budget and refuses late
+success. Controller cancellation is checked between reads; independent cleanup
+keeps its own uncancelled reader. A restart with the retained creation intent uses
+the same readback path and never resends that POST. Missing events or a moving
+snapshot stay unresolved at the deadline; invalid metadata and conflicting
+contents fail immediately. This wait only settles cache visibility: provider
+creation still requires independent encrypted persistence and acknowledgement,
+and no provisioning or qualification deadline is extended.
 
 A reviewed helper correction can resume an unchanged `initializing` selection
 before discovery has started. It requires the original private inputs, both probe
@@ -330,7 +340,11 @@ the exact approved attempt. It waits for a fresh, natively authored and durably
 acknowledged readiness record from that running GitHub execution before starting
 the detached controller. Run and creation-intent acknowledgements additionally
 require fresh provider authority, no unresolved credentials, sufficient checkpoint
-capacity and the original ten-minute provisioning window. Lost dispatch replies
+capacity and the original ten-minute provisioning window. Admission time is
+rechecked after acknowledgement I/O. The controller independently enforces that
+original cutoff immediately before each provider CREATE, so a delayed or retained
+acknowledgement cannot reopen it. The separate five-minute provider-response
+settlement range remains available for ownership and cleanup. Lost dispatch replies
 are reconciled by the saved execution identity, never by blind resubmission.
 No GitHub token enters the detached controller or fixture.
 

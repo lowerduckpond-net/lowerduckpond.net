@@ -110,6 +110,14 @@ class ConnectJournal(_Canonical):
             check_cancelled,
         )
 
+    @property
+    def check_cancelled(self) -> Callable[[], None]:
+        return self.ledger.check_cancelled
+
+    @check_cancelled.setter
+    def check_cancelled(self, value: Callable[[], None]) -> None:
+        self.ledger.check_cancelled = value
+
     def append(self, record: dict[str, object]) -> None:
         self.ledger.stage(self._original(record))
 
@@ -132,6 +140,7 @@ class ConnectJournal(_Canonical):
         while True:
             self.check_cancelled()
             if self.confirmed(original):
+                self.check_cancelled()
                 return original
             remaining = until - time.monotonic()
             if remaining <= 0:
@@ -239,6 +248,10 @@ class IndependentJournal(_Canonical):
                 binding=self.witness.binding(),
                 minimum_checkpoint=self.witness.genesis,
             ):
+                continue
+            # Readback/checkpoint I/O or an earlier ACK may consume the original
+            # admission window. Recheck immediately before another ACK mutation.
+            if not allow(record):
                 continue
             proof = event(
                 "heartbeat",

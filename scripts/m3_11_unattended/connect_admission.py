@@ -159,8 +159,11 @@ class Admission:
         self.records = self.journal.records()
         return True
 
-    def allow(self, record: dict[str, object]) -> bool:  # noqa: PLR0911 - explicit admission gates
+    def allow(  # noqa: PLR0911 - explicit admission gates
+        self, record: dict[str, object], *, now: datetime | None = None
+    ) -> bool:
         """Cleanup/proof ACKs continue after admission closes; creation ACKs cannot."""
+        observed_at = self.now if now is None else now
         if record["kind"] not in {"run", "intent"}:
             return True
         candidates = [
@@ -197,7 +200,7 @@ class Admission:
             },
         )
         accepted, before = instant(receipt["accepted_at"]), instant(receipt["create_before"])
-        if before - accepted != WINDOW or not accepted <= self.now <= before:
+        if before - accepted != WINDOW or not accepted <= observed_at < before:
             return False
         if record["kind"] == "run":
             return True
@@ -210,5 +213,5 @@ class Admission:
             and intent.targets == self.targets
             and intent.cleanup_authority_sha256 == authorities.get(intent.provider)
             and accepted <= instant(intent.requested_at) < before
-            and self.now < instant(intent.create_before)
+            and observed_at < instant(intent.create_before)
         )

@@ -109,7 +109,9 @@ class Case:
         self.lifecycle = Lifecycle(self.journal, {"spaces": self.provider}, clock=lambda: self.now)
         self.authority = Authority("d" * 64, NOW + timedelta(days=7))
 
-    def create(self, *, role: str = "archive") -> tuple[Intent, Credential]:
+    def create(
+        self, *, role: str = "archive", provisioning_deadline: datetime | None = None
+    ) -> tuple[Intent, Credential]:
         return self.lifecycle.provision(
             run_id=self.run_id,
             role=role,
@@ -119,7 +121,32 @@ class Case:
             provider="spaces",
             scope=SCOPE,
             authority=self.authority,
+            provisioning_deadline=provisioning_deadline,
         )
+
+
+def test_late_ack_cannot_cross_original_provisioning_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = Case(tmp_path)
+    deadline = case.now + timedelta(seconds=1)
+    persist = case.journal.persist
+
+    def delayed(record: dict[str, object]) -> dict[str, object]:
+        original = persist(record)
+        if record["kind"] == "intent":
+            case.now = deadline
+        return original
+
+    monkeypatch.setattr(case.journal, "persist", delayed)
+    with pytest.raises(LifecycleError, match="creation window elapsed"):
+        case.create(provisioning_deadline=deadline)
+    assert case.provider.creates == 0
+    retained = intents(case.journal)
+    assert len(retained) == 1
+    # The provider's lost-response settlement range remains five minutes,
+    # independently of the stricter deadline on starting the actual POST.
+    assert retained[0].create_before == stamp(NOW + timedelta(minutes=5))
 
 
 class DelayedPersistence(FileJournal):

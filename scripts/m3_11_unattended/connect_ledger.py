@@ -8,14 +8,16 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping
+import time
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from http import HTTPStatus
 from pathlib import Path
 from typing import cast
 
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
-from scripts.m3_11_unattended.connect_api import Connect
+from scripts.m3_11_unattended.connect_api import TIMEOUT_SECONDS, Connect
 from scripts.m3_11_unattended.connect_auth import identity as account_identity
 from scripts.m3_11_unattended.connect_checkpoint import Stored
 from scripts.m3_11_unattended.journal import MAX_EVENTS, TAG, OpJournal, _note_content, validate
@@ -23,6 +25,8 @@ from scripts.m3_11_unattended.model import LifecycleError, digest, identity
 from scripts.m3_11_unattended.state import private_directory
 
 ACK_FORMAT = "lowerduckpond-m3-11-connect-ack-v1"
+READBACK_SECONDS = 60
+READBACK_POLL_SECONDS = 1
 ACK_FIELDS = {
     "format",
     "event_id",
@@ -51,6 +55,14 @@ def _item_identity(value: object) -> str:
     return value
 
 
+class SnapshotChangedError(LifecycleError):
+    """A complete inventory could not be held stable across a read."""
+
+
+class ReadbackExpiredError(LifecycleError):
+    """The retained write is unresolved; no further read may start in this attempt."""
+
+
 class ConnectLedger:
     def __init__(  # noqa: PLR0913 - independent anchor and checkpoint bindings remain explicit
         self,
@@ -61,12 +73,18 @@ class ConnectLedger:
         anchor: str,
         anchor_sha256: str,
         minimum: Mapping[str, str],
+        readback_seconds: int = READBACK_SECONDS,
     ) -> None:
         self.client, self.vault = client, _item_identity(vault)
         self.spool, self.anchor, self.anchor_sha256 = spool, _item_identity(anchor), anchor_sha256
         if re.fullmatch(r"[0-9a-f]{64}", anchor_sha256) is None:
             raise LifecycleError("Connect journal anchor is unavailable")
         self.minimum = dict(minimum)
+        if not 0 <= readback_seconds <= READBACK_SECONDS:
+            raise LifecycleError("Connect readback wait exceeds its bound")
+        self.readback_seconds = readback_seconds
+        self._read_deadline: float | None = None
+        self.check_cancelled: Callable[[], None] = lambda: None
         for key, value in self.minimum.items():
             identity(key)
             if re.fullmatch(r"[0-9a-f]{64}", value) is None:
@@ -78,8 +96,24 @@ class ConnectLedger:
         self._items: dict[str, str] = {}
         self._cached_items: dict[str, tuple[dict[str, object], dict[str, object]]] = {}
 
+    @contextmanager
+    def _reading(self) -> Iterator[None]:
+        if self._read_deadline is None:
+            yield
+            return
+        self.check_cancelled()
+        remaining = self._read_deadline - time.monotonic()
+        if remaining <= 0:
+            raise ReadbackExpiredError("Connect journal readback deadline elapsed")
+        with self.client.timeout_budget(min(TIMEOUT_SECONDS, remaining)):
+            yield
+        self.check_cancelled()
+        if time.monotonic() > self._read_deadline:
+            raise ReadbackExpiredError("Connect journal readback deadline elapsed")
+
     def _vault_state(self) -> tuple[int, int]:
-        response = self.client.request("GET", "/v1/vaults/" + self.vault)
+        with self._reading():
+            response = self.client.request("GET", "/v1/vaults/" + self.vault)
         value = response.body
         if (
             response.status != HTTPStatus.OK
@@ -94,7 +128,8 @@ class ConnectLedger:
         return value["items"], value["contentVersion"]
 
     def _read(self, item_id: str) -> tuple[dict[str, object], dict[str, object]]:
-        item = self.client.item(self.vault, item_id)
+        with self._reading():
+            item = self.client.item(self.vault, item_id)
         if (
             item.get("category") != "SECURE_NOTE"
             or item.get("tags") != [TAG]
@@ -113,14 +148,15 @@ class ConnectLedger:
             raise LifecycleError("Connect journal item content changed")
         return record, item
 
-    def _inventory(self, minimum_count: int) -> dict[str, dict[str, object]]:
+    def _inventory(self) -> dict[str, dict[str, object]]:
         # Connect documents an unpaginated complete list. The vault aggregate
         # can lag an accepted write, so it is only a conservative lower bound.
-        response = self.client.request("GET", "/v1/vaults/" + self.vault + "/items")
+        with self._reading():
+            response = self.client.request("GET", "/v1/vaults/" + self.vault + "/items")
         if (
             response.status != HTTPStatus.OK
             or not isinstance(response.body, list)
-            or not minimum_count <= len(response.body) <= MAX_EVENTS
+            or len(response.body) > MAX_EVENTS
         ):
             raise LifecycleError("Connect journal inventory is partial or unavailable")
         inventory: dict[str, dict[str, object]] = {}
@@ -136,7 +172,7 @@ class ConnectLedger:
     def records(self) -> list[dict[str, object]]:
         """A complete, stable cache snapshot; still not an independent-write receipt."""
         before = self._vault_state()
-        inventory = self._inventory(before[0])
+        inventory = self._inventory()
         records: dict[str, dict[str, object]] = {}
         metadata: dict[str, list[dict[str, object]]] = {}
         items: dict[str, str] = {}
@@ -157,13 +193,18 @@ class ConnectLedger:
             metadata.setdefault(event_id, []).append(item)
             records[event_id] = record
             cached_items[item_id] = record, item
+        # Validate every present row before treating a count-ahead inventory as
+        # transient; a short list must not conceal malformed or changed metadata.
         if (
-            self.anchor not in inventory
+            len(inventory) < before[0]
+            or self.anchor not in inventory
             or not self._known.keys() <= items.keys()
-            or self._inventory(before[0]) != inventory
+            or self._inventory() != inventory
             or self._vault_state() != before
         ):
-            raise LifecycleError("Connect journal is not synchronized with its retained checkpoint")
+            raise SnapshotChangedError(
+                "Connect journal is not synchronized with its retained checkpoint"
+            )
         self._metadata, self._items = metadata, items
         self._known.update({key: digest(record) for key, record in records.items()})
         # An independent worker can recover the same event from its checkpoint
@@ -172,20 +213,55 @@ class ConnectLedger:
         self._cached_items = cached_items
         return sorted(records.values(), key=lambda row: str(row["event_id"]))
 
+    def _readback(self, record: dict[str, object]) -> None:
+        """Poll only reads after a retained POST; never resend or weaken the snapshot."""
+        until = time.monotonic() + self.readback_seconds
+        previous = self._read_deadline
+        # A zero wait is the explicit single-read mode used by provider doubles.
+        self._read_deadline = until if self.readback_seconds else None
+        try:
+            self._await_readback(record, until=until)
+        finally:
+            self._read_deadline = previous
+
+    def _await_readback(self, record: dict[str, object], *, until: float) -> None:
+        first = True
+        while first or time.monotonic() < until:
+            first = False
+            self.check_cancelled()
+            try:
+                matches = [row for row in self.records() if row["event_id"] == record["event_id"]]
+            except SnapshotChangedError:
+                matches = []
+            if matches:
+                if matches != [record]:
+                    raise LifecycleError("Connect staged event differs from its original contents")
+                if not self.readback_seconds or time.monotonic() <= until:
+                    return
+                break
+            remaining = until - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(READBACK_POLL_SECONDS, remaining))
+        raise LifecycleError(
+            "Connect creation remains uncertain after readback; no duplicate submitted"
+        )
+
     def stage(self, record: dict[str, object], *, claimed_author: str | None = None) -> None:
         """Submit once and retain uncertainty; this never claims external persistence."""
         validate(record)
         event_id = identity(record["event_id"])
+        intent = self.spool / (event_id + ".json")
+        if intent.exists():
+            if read_private(intent) != record:
+                raise LifecycleError("Connect stage intent changed")
+            self._readback(record)
+            return
         existing = [value for value in self.records() if value["event_id"] == event_id]
         if existing:
             if existing != [record]:
                 raise LifecycleError("Connect staged event differs from its original contents")
             return
-        intent = self.spool / (event_id + ".json")
-        if intent.exists():
-            if read_private(intent) != record:
-                raise LifecycleError("Connect stage intent changed")
-            raise LifecycleError("Connect item creation is uncertain; no duplicate submitted")
         write_private(intent, record)
         item: dict[str, object] = {
             "title": OpJournal._title(record),
@@ -218,9 +294,7 @@ class ConnectLedger:
             returned = _item_identity(response.body.get("id"))
             # A returned ID is retained immediately even when later inspection fails.
             write_private(self.spool / (event_id + ".returned.json"), {"item_id": returned})
-        matches = [value for value in self.records() if value["event_id"] == event_id]
-        if matches != [record]:
-            raise LifecycleError("Connect staged event has no matching readback")
+        self._readback(record)
 
     def confirmed(
         self,

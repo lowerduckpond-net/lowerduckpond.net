@@ -9,6 +9,8 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from http import HTTPStatus
 from http.client import HTTPException
@@ -72,9 +74,22 @@ class Connect:
         if len(token) > 65536 or re.fullmatch(r"[A-Za-z0-9_.-]+", token) is None:  # noqa: PLR2004
             raise LifecycleError("Connect client credential is unavailable")
         self._token = token
+        self._request_timeout: float = TIMEOUT_SECONDS
         self.credential_sha256 = hashlib.sha256(token.encode()).hexdigest()
         # The configured origin is the delivery boundary. Ambient proxies must
         # not receive this credential, and redirects cannot change its origin.
+
+    @contextmanager
+    def timeout_budget(self, seconds: float) -> Iterator[None]:
+        """Restrict one exchange's process deadline without changing future requests."""
+        if not 0 < seconds <= TIMEOUT_SECONDS:
+            raise LifecycleError("Connect request has no remaining time budget")
+        previous = self._request_timeout
+        self._request_timeout = min(previous, seconds)
+        try:
+            yield
+        finally:
+            self._request_timeout = previous
 
     def request(self, method: str, path: str, body: dict[str, object] | None = None) -> Response:
         if (
@@ -107,7 +122,7 @@ class Connect:
                 stderr=subprocess.DEVNULL,
                 env={"PYTHONDONTWRITEBYTECODE": "1"},
                 cwd=Path(__file__).resolve().parents[2],
-                timeout=TIMEOUT_SECONDS,
+                timeout=self._request_timeout,
                 check=False,
             )
         except OSError, subprocess.SubprocessError:
