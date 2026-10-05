@@ -74,6 +74,7 @@ class GitHubArtifacts:
         self._published_runs: dict[int, int] = {}
         self._parents: dict[int, Stored | None] = {}
         self._verified_runs: set[int] = set()
+        self._history: tuple[Stored, ...] = ()
 
     def _api(
         self, path: str, *, binary: bool = False, body: dict[str, object] | None = None
@@ -101,6 +102,7 @@ class GitHubArtifacts:
     def _runs(self) -> list[dict[str, object]]:
         observed: dict[int, dict[str, object]] = {}
         seen: set[int] = set()
+        ordinals: set[int] = set()
         total = None
         created = datetime.fromtimestamp(uuid.UUID(self.epoch).time // 1000, UTC).isoformat()
         for page in range(1, MAX_RUN_PAGES + 1):
@@ -127,18 +129,27 @@ class GitHubArtifacts:
             total = value["total_count"]
             rows = value["workflow_runs"]
             for row in rows:
-                if not isinstance(row, dict) or row.get("head_branch") != "main":
+                if (
+                    not isinstance(row, dict)
+                    or row.get("head_branch") != "main"
+                    or row.get("workflow_id") != WORKFLOW_ID
+                ):
                     raise LifecycleError("GitHub workflow inventory is invalid")
                 selected = _number(row.get("id"))
-                if selected in seen:
+                ordinal = _number(row.get("run_number"))
+                if selected in seen or ordinal in ordinals:
                     raise LifecycleError("GitHub workflow inventory changed during pagination")
                 seen.add(selected)
+                ordinals.add(ordinal)
                 if row.get("status") in {"in_progress", "completed"}:
                     observed[selected] = row
             # The epoch bounds this inventory independently of older repository
             # history. Complete pagination avoids assuming an API sort order.
             if len(seen) == total:
-                return sorted(observed.values(), key=lambda row: _number(row["id"]), reverse=True)
+                # Only run_number is documented to increment within a workflow.
+                return sorted(
+                    observed.values(), key=lambda row: _number(row["run_number"]), reverse=True
+                )
         raise LifecycleError("GitHub workflow history exceeds its checkpoint scan bound")
 
     def _artifacts(self, run_id: int) -> list[dict[str, object]]:
@@ -184,25 +195,45 @@ class GitHubArtifacts:
         return Stored(_number(value.get("id")), match[1])
 
     def latest(self) -> Stored | None:
+        history = self.lineage()
+        return history[-1] if history else None
+
+    def lineage(self) -> tuple[Stored, ...]:
         self._until = time.monotonic() + SCAN_SECONDS
         # GitHub returns individual statuses newest first. Unlike artifacts,
         # these records have no expiry, replacement or deletion API. Never
         # infer the head from the surviving artifact inventory.
-        current = previous = None
+        history: list[Stored] = []
+        seen: set[int] = set()
+        parents: dict[int, Stored | None] = {}
+        published_runs: dict[int, int] = {}
         for row in self._statuses():
             if cast(str, row["context"]).lower() != self.context:
                 continue
-            selected = self._status_reference(row)
-            if current is None:
-                current = selected
-            if previous is not None and selected != previous:
-                if previous.identity <= selected.identity:
-                    raise LifecycleError("checkpoint registry points backwards")
-                self._parents[previous.identity] = selected
-            previous = selected
-        if previous is not None:
-            self._parents[previous.identity] = None
-        return current
+            selected, run_id = self._status_reference(row)
+            if (
+                published_runs.get(selected.identity, run_id) != run_id
+                or self._published_runs.get(selected.identity, run_id) != run_id
+            ):
+                raise LifecycleError("checkpoint registry changed an immutable artifact's workflow")
+            published_runs[selected.identity] = run_id
+            if history and selected == history[-1]:
+                continue  # An adjacent exact publication retry is idempotent.
+            if selected.identity in seen:
+                raise LifecycleError("checkpoint registry repeats or changes an immutable identity")
+            if history:
+                parents[history[-1].identity] = selected
+            seen.add(selected.identity)
+            history.append(selected)
+        if history:
+            parents[history[-1].identity] = None
+        ordered = tuple(reversed(history))
+        if ordered[: len(self._history)] != self._history:
+            raise LifecycleError("checkpoint registry moved backwards or changed retained history")
+        self._parents = parents
+        self._published_runs = published_runs
+        self._history = ordered
+        return ordered
 
     def remaining_capacity(self) -> int:
         """Readiness must reserve cleanup writes before it admits any new children."""
@@ -231,7 +262,7 @@ class GitHubArtifacts:
                 return
         raise LifecycleError("independent checkpoint registry exceeds its scan bound")
 
-    def _status_reference(self, row: dict[str, object]) -> Stored:
+    def _status_reference(self, row: dict[str, object]) -> tuple[Stored, int]:
         author, description = row.get("creator"), row.get("description")
         match = re.fullmatch(
             re.escape(f"https://github.com/{REPOSITORY}/actions/runs/")
@@ -250,8 +281,7 @@ class GitHubArtifacts:
             raise LifecycleError("latest checkpoint registry entry is untrusted or malformed")
         _number(row.get("id"))
         stored = Stored(int(match[2]), description.removeprefix("sha256:"))
-        self._published_runs[stored.identity] = int(match[1])
-        return stored
+        return stored, int(match[1])
 
     def read(self, stored: Stored) -> dict[str, object]:
         self._until = time.monotonic() + SCAN_SECONDS
@@ -339,8 +369,13 @@ class GitHubArtifacts:
         runs = self._runs()
         if not runs or runs[0].get("id") != run_id:
             raise LifecycleError("an older cleanup run cannot publish over a newer checkpoint")
-        previous = self.latest()
-        if document.get("format") == FORMAT and document.get("previous") != self._parent(previous):
+        history = self.lineage()
+        previous = history[-1] if history else None
+        if document.get("format") == FORMAT and (
+            document.get("previous") != self._parent(previous)
+            or type(document.get("sequence")) is not int
+            or document.get("sequence") != len(history) + 1
+        ):
             raise LifecycleError("checkpoint upload is not an extension of the registered head")
         action = (
             Path(os.environ["RUNNER_WORKSPACE"]).parent
@@ -398,7 +433,7 @@ class GitHubArtifacts:
         created = self._reference(matches[0], run_id=run_id)
         if self.read(created) != document:
             raise LifecycleError("checkpoint upload has no exact plaintext readback")
-        if self.latest() != previous:
+        if self.lineage() != history:
             raise LifecycleError("checkpoint registry advanced during this upload")
         self._api(
             f"repos/{REPOSITORY}/statuses/{self.registry_revision}",
@@ -412,6 +447,6 @@ class GitHubArtifacts:
                 ),
             },
         )
-        if self.latest() != created:
+        if self.lineage() != (*history, created):
             raise LifecycleError("checkpoint registry publication remains unconfirmed")
         return created

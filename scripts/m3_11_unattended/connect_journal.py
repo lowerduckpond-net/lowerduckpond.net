@@ -130,7 +130,7 @@ class ConnectJournal(_Canonical):
             independent_server=self.witness.server,
             independent_author=self.witness.author,
             binding=self.witness.binding(),
-            minimum_checkpoint=self.witness.genesis,
+            genesis_checkpoint=self.witness.genesis,
         )
 
     def persist(self, record: dict[str, object]) -> dict[str, object]:
@@ -246,7 +246,7 @@ class IndependentJournal(_Canonical):
                 independent_server=self.witness.server,
                 independent_author=self.witness.author,
                 binding=self.witness.binding(),
-                minimum_checkpoint=self.witness.genesis,
+                genesis_checkpoint=self.witness.genesis,
             ):
                 continue
             # Readback/checkpoint I/O or an earlier ACK may consume the original

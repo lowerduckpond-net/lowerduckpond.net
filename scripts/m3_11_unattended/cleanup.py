@@ -227,7 +227,6 @@ def require_independent_ready(journal: Journal, *, helper: str, now: datetime) -
             or proof["cache_complete"] is not True
             or type(proof["remaining_capacity"]) is not int
             or proof["remaining_capacity"] < MINIMUM_START_CAPACITY
-            or checkpoint.identity < journal.witness.genesis.identity
             or (
                 checkpoint.identity == journal.witness.genesis.identity
                 and checkpoint != journal.witness.genesis

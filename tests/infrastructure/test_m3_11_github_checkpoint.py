@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from scripts.m3_11_unattended import github_checkpoint as github
-from scripts.m3_11_unattended.connect_checkpoint import Checkpoint, Stored
+from scripts.m3_11_unattended.connect_checkpoint import FORMAT, Checkpoint, Stored
 from scripts.m3_11_unattended.journal import event
 from scripts.m3_11_unattended.model import LifecycleError, digest
 
@@ -30,10 +30,17 @@ class Registry(github.GitHubArtifacts):
             epoch=str(uuid.uuid7()), registry_revision="a" * 40, token=CANARY, directory=directory
         )
         self.runs: list[dict[str, object]] = [
-            {"id": 3, "status": "in_progress", "head_branch": "main"}
+            {
+                "id": 3,
+                "run_number": 20,
+                "workflow_id": github.WORKFLOW_ID,
+                "status": "in_progress",
+                "head_branch": "main",
+            }
         ]
         self.artifacts: dict[int, list[dict[str, object]]] = {3: []}
         self.archives: dict[int, bytes] = {}
+        self.next_artifact_ids: list[int] = []
         self.fail_download = False
         self.statuses: list[dict[str, object]] = []
         self.lose_status_reply = False
@@ -94,7 +101,9 @@ class Registry(github.GitHubArtifacts):
     def add(
         self, *, name: str, raw: bytes, run_id: int = 3, expired: bool = False
     ) -> dict[str, object]:
-        selected = len(self.archives) + 10
+        selected = (
+            self.next_artifact_ids.pop(0) if self.next_artifact_ids else 10_000 - len(self.archives)
+        )
         self.archives[selected] = raw
         value: dict[str, object] = {
             "id": selected,
@@ -340,7 +349,7 @@ def test_append_only_head_rejects_replayed_old_pointer(
     registry.create({"records": ["old", "new"]})
     replay = {**registry.statuses[-1], "id": 3}
     registry.statuses.insert(0, replay)
-    with pytest.raises(LifecycleError, match="backwards"):
+    with pytest.raises(LifecycleError, match="repeats"):
         registry.latest()
 
 
@@ -355,7 +364,7 @@ def test_replayed_valid_prefix_cannot_hide_a_later_acknowledged_head(
     # The newest pair B -> A is valid in isolation, but omits acknowledged C.
     registry.statuses.insert(0, {**registry.statuses[-1], "id": 4})
     registry.statuses.insert(0, {**registry.statuses[-2], "id": 5})
-    with pytest.raises(LifecycleError, match="backwards"):
+    with pytest.raises(LifecycleError, match="repeats"):
         registry.latest()
 
 
@@ -433,10 +442,121 @@ def test_older_workflow_rerun_cannot_write_over_newer_checkpoint(
 ) -> None:
     action_environment(tmp_path, monkeypatch)
     registry = Registry(tmp_path / "private")
-    registry.runs.append({"id": 4, "status": "completed", "head_branch": "main"})
+    registry.runs.append(
+        {
+            "id": 2,
+            "run_number": 21,
+            "workflow_id": github.WORKFLOW_ID,
+            "status": "completed",
+            "head_branch": "main",
+        }
+    )
     monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: pytest.fail("must not upload"))
     with pytest.raises(LifecycleError, match="older"):
         registry.create({"records": []})
+
+
+def test_native_nonmonotonic_artifact_history_recovers_without_epoch_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    # Observed publication order in the real cleanup registry on 2026-10-05.
+    identifiers = (11338641431, 11345110943, 11345310576, 11344888099)
+    registry.next_artifact_ids = list(identifiers)
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    anchor = event("run", str(uuid.uuid7()), {"initial": True})
+    initial = {str(anchor["event_id"]): digest(anchor)}
+    checkpoint = Checkpoint(
+        registry, epoch=registry.epoch, genesis=None, initial=initial, initialize=True
+    )
+    records = [anchor]
+    references = [checkpoint.persist(records)]
+    for count in range(3):
+        records.append(event("intent", str(anchor["run_id"]), {"owned": count}))
+        references.append(checkpoint.persist(records))
+    # Status identities are opaque too: use decreasing IDs in creation order.
+    for count, row in enumerate(registry.statuses):
+        row["id"] = count + 1
+    restarted = Registry(tmp_path / "restarted")
+    restarted.epoch, restarted.context, restarted.prefix = (
+        registry.epoch,
+        registry.context,
+        registry.prefix,
+    )
+    restarted.statuses = copy.deepcopy(registry.statuses)
+    restarted.artifacts, restarted.archives = registry.artifacts, registry.archives
+    recovered = Checkpoint(restarted, epoch=registry.epoch, genesis=references[0], initial=initial)
+    recovered.restore()
+    assert tuple(item.identity for item in recovered.history) == identifiers
+    assert recovered.sequence == len(identifiers)
+    assert recovered.persist(records) == references[-1]
+    assert len(registry.archives) == len(identifiers)  # Neither reupload nor replacement genesis.
+
+
+@pytest.mark.parametrize("fault", ["hash", "run"])
+def test_adjacent_publications_cannot_change_an_immutable_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    stored = registry.create({"records": ["owned"]})
+    row = {**registry.statuses[0], "id": 2}
+    if fault == "hash":
+        row["description"] = "sha256:" + "f" * 64
+    else:
+        row["target_url"] = str(row["target_url"]).replace("/runs/3/", "/runs/2/")
+    registry.statuses.insert(0, row)
+    with pytest.raises(LifecycleError, match="immutable"):
+        registry.lineage()
+    assert registry._parents == {stored.identity: None}
+    assert registry._published_runs == {stored.identity: 3}
+
+
+def test_duplicate_workflow_ordinals_never_select_a_writer(tmp_path: Path) -> None:
+    registry = Registry(tmp_path / "private")
+    registry.runs.append({**registry.runs[0], "id": 2})
+    with pytest.raises(LifecycleError, match="changed"):
+        registry._runs()
+
+
+def test_registry_observation_cannot_forget_a_head_after_payload_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    registry.create({"records": ["old"]})
+    current = registry.create({"records": ["old", "owned-intent"]})
+    registry.fail_download = True
+    with pytest.raises(LifecycleError, match="unavailable"):
+        registry.read(current)
+    registry.statuses.pop(0)
+    with pytest.raises(LifecycleError, match="backwards"):
+        registry.latest()
+
+
+def test_wrong_logical_sequence_never_uploads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: pytest.fail("must not upload"))
+    with pytest.raises(LifecycleError, match="extension"):
+        registry.create({"format": FORMAT, "sequence": 2, "previous": None})
+
+
+def test_higher_id_older_run_does_not_preempt_the_newest_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    registry.runs.append(
+        {**registry.runs[0], "id": 100, "run_number": 19, "run_attempt": 99, "status": "completed"}
+    )
+    monkeypatch.setattr(subprocess, "run", uploader(registry))
+    assert registry.create({"records": ["owned"]}) == registry.latest()
 
 
 def test_queued_newer_run_does_not_preempt_the_serialized_current_writer(
@@ -444,7 +564,15 @@ def test_queued_newer_run_does_not_preempt_the_serialized_current_writer(
 ) -> None:
     action_environment(tmp_path, monkeypatch)
     registry = Registry(tmp_path / "private")
-    registry.runs.append({"id": 4, "status": "queued", "head_branch": "main"})
+    registry.runs.append(
+        {
+            "id": 2,
+            "run_number": 21,
+            "workflow_id": github.WORKFLOW_ID,
+            "status": "queued",
+            "head_branch": "main",
+        }
+    )
     monkeypatch.setattr(subprocess, "run", uploader(registry))
     stored = registry.create({"records": ["owned"]})
     assert registry.latest() == stored
@@ -458,7 +586,14 @@ def test_complete_pagination_and_newest_run_without_checkpoint(
     monkeypatch.setattr(subprocess, "run", uploader(registry))
     stored = registry.create({"records": ["owned"]})
     registry.runs.extend(
-        {"id": value, "status": "completed", "head_branch": "main"} for value in range(4, 107)
+        {
+            "id": value,
+            "run_number": value + 20,
+            "workflow_id": github.WORKFLOW_ID,
+            "status": "completed",
+            "head_branch": "main",
+        }
+        for value in range(4, 107)
     )
     for value in range(101):
         registry.add(name=f"unrelated-{value}", raw=b"not-a-checkpoint")
@@ -484,7 +619,13 @@ def test_incomplete_inventory_never_selects_an_older_checkpoint(
             return original(path, binary=binary, body=body)
         page = int(parse_qs(urlsplit(path).query)["page"][0])
         field = "workflow_runs" if inventory == "runs" else "artifacts"
-        row = {"id": 3, "status": "completed", "head_branch": "main"}
+        row = {
+            "id": 3,
+            "run_number": 20,
+            "workflow_id": github.WORKFLOW_ID,
+            "status": "completed",
+            "head_branch": "main",
+        }
         if fault == "partial":
             return {field: [], "total_count": 1}
         total = 2 if fault == "duplicate" or page == 1 else 3
@@ -495,7 +636,16 @@ def test_incomplete_inventory_never_selects_an_older_checkpoint(
         registry._runs() if inventory == "runs" else registry._artifacts(3)
 
 
-@pytest.mark.parametrize("field,value", [("head_branch", "untrusted"), ("id", True)])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("head_branch", "untrusted"),
+        ("id", True),
+        ("run_number", True),
+        ("run_number", 0),
+        ("workflow_id", 1),
+    ],
+)
 def test_workflow_identity_mismatch_stops_registry_discovery(
     tmp_path: Path, field: str, value: object
 ) -> None:

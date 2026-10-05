@@ -356,6 +356,11 @@ registry entries, reserving room for witnessing and cleanup below GitHub's
 insufficient; it never automatically replaces an epoch. Artifact expiry or lost
 registry history cannot be interpreted as an empty obligation list. Monitor
 cleanup receipts and unresolved/overdue counts even after qualification finishes.
+Checkpoint order follows GitHub's chronological status history, with exact genesis,
+predecessor and sequence checks. Artifact IDs and status IDs are opaque identities;
+a newer artifact may have a smaller ID. Workflow writer order uses the workflow's
+incrementing `run_number`. A helper upgrade reads the existing registry, including
+such lower-ID successors, without replacing genesis or replaying an attempt.
 The unchanged immediate cleanup, watchdog and hourly GitHub reconciliation paths
 continue to require provider removal and available negative-authentication proof.
 

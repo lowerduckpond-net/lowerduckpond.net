@@ -391,7 +391,7 @@ def test_lifecycle_delayed_writes_still_need_independent_checkpoint_and_revocati
     clock.tick = tick
 
     def before_create() -> None:
-        persisted = case.store.values[max(case.store.values)]["records"]
+        persisted = case.store.read(case.store.registry[-1])["records"]
         assert isinstance(persisted, list)
         assert any(row["kind"] == "intent" for row in persisted)
 

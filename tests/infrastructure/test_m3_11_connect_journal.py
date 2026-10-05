@@ -128,7 +128,7 @@ def test_live_lifecycle_logic_uses_durable_intents_ids_and_denial_proofs(
     runtime.lifecycle.journal = case.controller
 
     def before_create() -> None:
-        persisted = case.store.values[max(case.store.values)]["records"]
+        persisted = case.store.read(case.store.registry[-1])["records"]
         assert isinstance(persisted, list)
         assert any(row["kind"] == "intent" for row in persisted)
 
@@ -138,7 +138,7 @@ def test_live_lifecycle_logic_uses_durable_intents_ids_and_denial_proofs(
     runtime.lifecycle.request_revocation(runtime.run_id)
     assert runtime.lifecycle.reconcile(intent, credential).status == "verified"
     assert not runtime.provider.items
-    persisted = case.store.values[max(case.store.values)]["records"]
+    persisted = case.store.read(case.store.registry[-1])["records"]
     assert isinstance(persisted, list)
     assert {"intent", "created", "cleanup", "resolved"} <= {row["kind"] for row in persisted}
     assert credential.secret not in repr(case.store.values)
@@ -235,7 +235,7 @@ def test_cancelled_wait_does_not_accept_an_unconfirmed_record(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize(
-    "fault", ["none", "local-author", "capacity", "stale", "helper", "cache", "epoch"]
+    "fault", ["none", "local-author", "capacity", "stale", "helper", "cache", "epoch", "hash"]
 )
 def test_readiness_needs_independent_authorship_freshness_and_reserved_capacity(
     tmp_path: Path,
@@ -243,8 +243,13 @@ def test_readiness_needs_independent_authorship_freshness_and_reserved_capacity(
 ) -> None:
     case = Case(tmp_path)
     now = datetime.now(UTC)
+    case.controller.append(event("run", str(uuid.uuid7()), {"lower-id-readiness": True}))
+    case.witness_once()
     case.github.capacity = lambda: MINIMUM_START_CAPACITY + 1
     connect = case.github.readiness()
+    pointer = connect["checkpoint"]
+    assert isinstance(pointer, dict)
+    assert int(str(pointer["identity"])) < case.witness.genesis.identity
     value: dict[str, object] = {
         "actor": "github",
         "helper_revision": case.witness.helper,
@@ -264,6 +269,8 @@ def test_readiness_needs_independent_authorship_freshness_and_reserved_capacity(
         connect["cache_complete"] = False
     elif fault == "epoch":
         connect["epoch"] = str(uuid.uuid7())
+    elif fault == "hash":
+        connect["checkpoint"] = {"identity": case.witness.genesis.identity, "sha256": "f" * 64}
     heartbeat = event("heartbeat", str(uuid.uuid7()), value)
     if fault == "local-author":
         case.controller.append(heartbeat)
