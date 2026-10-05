@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import subprocess
 import time
 import uuid
@@ -306,7 +307,11 @@ def test_launcher_cli_exports_only_closed_failure_and_requires_exact_helper(
         "sys.argv", ["unattended", "launch-evidence", directory.name, "--config", str(case.output)]
     )
     monkeypatch.setattr(cli, "git", lambda *_args: HELPER.encode())
-    assert cli.main() == 0
+    previous_umask = os.umask(0o077)
+    try:
+        assert cli.main() == 0
+    finally:
+        os.umask(previous_umask)
     result = capsys.readouterr().out
     assert CANARY not in result
     assert json.loads(result)["request"]["binding"] == request["binding"]
