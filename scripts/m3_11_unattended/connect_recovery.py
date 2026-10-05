@@ -194,7 +194,7 @@ def replace_failed(  # noqa: PLR0912, PLR0915 - each retained transition boundar
         **{str(validate(probe)["event_id"]): digest(probe) for probe in probes.values()},
     }
     if (
-        any(row["kind"] in genesis.CREDENTIAL_EVENTS for row in records)
+        genesis.credential_history(records, strings(approved["initial"]))
         or not minimum.items() <= observed.items()
     ):
         raise LifecycleError("failed activation replacement cannot discard credential history")
@@ -292,7 +292,7 @@ def replace_failed(  # noqa: PLR0912, PLR0915 - each retained transition boundar
         raise LifecycleError("previous activation executed again during replacement")
     records = successor.ledger.records()
     if (
-        any(row["kind"] in genesis.CREDENTIAL_EVENTS for row in records)
+        genesis.credential_history(records, strings(approved["initial"]))
         or not strings(saved["initial"]).items()
         <= {str(row["event_id"]): digest(row) for row in records}.items()
     ):

@@ -186,8 +186,12 @@ genesis completes; fresh independent readiness is still required.
 
 A separate explicit replacement is permitted for failed genesis whose
 original executable cannot complete, only while its authoritative registry has
-no entries and both complete journal views contain no credential lifecycle
-activity. It requires unchanged bootstrap bindings, both helpers merged, retained
+no entries and both complete journal views contain no credential creation or
+cleanup activity. An empty attempt's exact terminal-path revocation request may
+remain when its full hash is already bound in the original initial history;
+any intent, created, cleanup or resolved event still blocks replacement globally.
+The retained request is not revocation evidence. It requires unchanged bootstrap
+bindings, both helpers merged, retained
 original evidence and a separate private attempt directory. An immutable transition
 links old and new epochs, executable revisions, failed execution and orphan
 artifacts before mutation. A non-admitting protected marker fences old genesis

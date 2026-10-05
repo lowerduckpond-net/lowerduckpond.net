@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 
 from scripts.m3_11_qualification_evidence import fields
@@ -45,6 +46,24 @@ REQUEST_FIELDS = {
     "independent_probe",
     "targets_sha256",
 }
+
+
+def credential_history(records: Sequence[dict[str, object]], initial: Mapping[str, str]) -> bool:
+    """Reject provisioning history, retaining a bound empty-run terminal request.
+
+    Terminal cleanup requests revocation even if provisioning never started.
+    Such a request is not proof of removal: every actual credential lifecycle
+    event still blocks genesis, including one belonging to a different run.
+    """
+    return any(
+        record["kind"] in CREDENTIAL_EVENTS
+        and not (
+            record["kind"] == "revoke"
+            and record["payload"] == {"reason": "terminal-path"}
+            and initial.get(str(record["event_id"])) == digest(record)
+        )
+        for record in records
+    )
 
 
 def discovery_request(value: object) -> dict[str, object]:
@@ -129,7 +148,7 @@ def discover(
         or ledger.anchor != selected["anchor"]
         or ledger.anchor_sha256 != selected["anchor_sha256"]
         or not initial.items() <= observed.items()
-        or any(record["kind"] in CREDENTIAL_EVENTS for record in before)
+        or credential_history(before, initial)
         or ledger.authors(validate(selected["shared_probe"])) != {selected["shared_author"]}
     ):
         raise LifecycleError("Connect discovery inputs or complete initial inventory differ")
@@ -223,7 +242,7 @@ def initialize(  # noqa: PLR0913 - independent authority, provider identities an
     prior = {str(record["event_id"]): digest(record) for record in before if record != probe}
     if (
         prior != initial
-        or any(record["kind"] in CREDENTIAL_EVENTS for record in before)
+        or credential_history(before, initial)
         or ledger.authors(shared) != {selected["shared_author"]}
         or ledger.authors(shared_forgery) != {selected["shared_author"]}
     ):
