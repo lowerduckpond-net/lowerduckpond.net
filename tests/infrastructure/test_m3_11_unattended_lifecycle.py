@@ -13,7 +13,12 @@ import pytest
 
 from scripts.m3_11_unattended import cleanup
 from scripts.m3_11_unattended.journal import FileJournal, event
-from scripts.m3_11_unattended.lifecycle import Lifecycle, intents, pending_authentication
+from scripts.m3_11_unattended.lifecycle import (
+    CreationRecorder,
+    Lifecycle,
+    intents,
+    pending_authentication,
+)
 from scripts.m3_11_unattended.model import (
     LIFETIME,
     Authority,
@@ -56,21 +61,22 @@ class ProviderDouble:
             raise LifecycleError(CANARY)
         return list(self.items.values())
 
-    def create(self, intent: Intent) -> Credential:
+    def create(self, intent: Intent, *, record: CreationRecorder) -> Credential:
         self.on_create()
         self.creates += 1
         key = f"credential{self.creates:08d}"
-        record: dict[str, object] = {
+        metadata: dict[str, object] = {
             "id": key,
             "name": intent.name,
             "created_at": intent.requested_at,
             "scope": {} if self.wrong_scope else intent.scope,
             "status": "inactive" if self.inactive else "active",
         }
-        self.items[key] = record
+        self.items[key] = metadata
         if self.lose_response:
             raise LifecycleError(CANARY)
-        return Credential(key, CANARY, record)
+        record(key, CANARY)
+        return Credential(key, CANARY, metadata)
 
     def inspect(self, identifier: str) -> dict[str, object] | None:
         if self.fail_read:
@@ -381,7 +387,7 @@ def test_unknown_creation_absence_cannot_manufacture_resolution_after_timeout(
 ) -> None:
     case = Case(tmp_path)
 
-    def interrupt(intent: Intent) -> Credential:
+    def interrupt(intent: Intent, *, record: CreationRecorder) -> Credential:
         raise LifecycleError("interrupted before request")
 
     monkeypatch.setattr(case.provider, "create", interrupt)

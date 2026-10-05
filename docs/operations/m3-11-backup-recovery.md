@@ -388,7 +388,11 @@ Each intent also pins its cleanup authority's secret hash: a different account's
 empty inventory or a replaced bootstrap token cannot manufacture removal proof.
 Changing that authority with outstanding obligations needs a separate reviewed
 authorization decision, not an automatic token roll.
-Returned IDs are immediately recorded locally and externally. Lost
+Returned IDs are immediately recorded locally and externally, before rejecting
+a missing secret or invalid metadata. Usable secrets remain private; an ID-only
+record does not claim that negative authentication was tested. Controller and
+watchdog recovery restore retained creation records before evaluating ownership,
+including when the original external acknowledgement failed. Lost
 responses reconcile exact intent metadata and provider inventory; no creation
 request is retried. Missing or ambiguous ownership remains unresolved.
 

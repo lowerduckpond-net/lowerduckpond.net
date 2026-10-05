@@ -12,7 +12,11 @@ from scripts.m3_11_unattended.docker import Docker, controller_name
 from scripts.m3_11_unattended.lifecycle import Lifecycle, intents
 from scripts.m3_11_unattended.model import Credential, identity, instant
 from scripts.m3_11_unattended.state import RunState
-from scripts.m3_11_unattended.worker import persist_terminal_result, retained_credentials
+from scripts.m3_11_unattended.worker import (
+    persist_terminal_result,
+    restore_created,
+    retained_credentials,
+)
 
 
 def due_processes(root: Path, docker: Docker) -> list[Path]:
@@ -60,6 +64,7 @@ def reconcile_processes(
     available: dict[str, Credential] = {}
     selected = due_processes(root, docker) if directories is None else directories
     for directory in selected:
+        restore_created(lifecycle, directory, run_id=identity(directory.name))
         lifecycle.request_revocation(identity(directory.name))
         available.update(retained_credentials(directory))
     return available

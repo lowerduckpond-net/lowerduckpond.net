@@ -358,7 +358,7 @@ def test_successor_attempt_cannot_start_until_historical_credentials_are_reconci
     case.acknowledge(case.admission())
     intent = Intent.parse(intent_record["payload"])
     provider = ProviderDouble()
-    credential = provider.create(intent)
+    credential = provider.create(intent, record=lambda _identifier, _secret: None)
     created = event(
         "created",
         case.run_id,

@@ -9,7 +9,7 @@ from botocore.exceptions import BotoCoreError, ClientError  # type: ignore[impor
 from lowerduckpond_m3_archive.storage import create_client
 
 from scripts.m3_11_unattended.http import Api, collection
-from scripts.m3_11_unattended.lifecycle import identifier
+from scripts.m3_11_unattended.lifecycle import CreationRecorder, identifier
 from scripts.m3_11_unattended.model import Credential, Intent, LifecycleError, ProviderKind
 
 PAGE_SIZE = 200
@@ -67,7 +67,7 @@ class Spaces:
         identifier(selected)
         return next((item for item in self.inventory() if item["id"] == selected), None)
 
-    def create(self, intent: Intent) -> Credential:
+    def create(self, intent: Intent, *, record: CreationRecorder) -> Credential:
         response = self.api.request(
             "POST", "/v2/spaces/keys", {"name": intent.name, **intent.scope}
         )
@@ -75,6 +75,7 @@ class Spaces:
         if response.status != HTTPStatus.CREATED or not isinstance(item, dict):
             raise LifecycleError("Spaces credential creation response was not acknowledged")
         selected, secret = identifier(item.get("access_key")), item.get("secret_key")
+        record(selected, secret if isinstance(secret, str) and secret else None)
         if not isinstance(secret, str) or not secret:
             raise LifecycleError("Spaces creation omitted its secret; reconcile its intent")
         return Credential(selected, secret, self._metadata(item))
