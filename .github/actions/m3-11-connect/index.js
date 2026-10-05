@@ -12,6 +12,7 @@ function main() {
       selection: JSON.parse(process.env.M3_11_CONNECT_CONFIGURATION),
       operation: process.env.M3_11_CONNECT_OPERATION,
       run_sha256: process.env.M3_11_CONNECT_RUN_SHA256 || "",
+      dispatch_id: process.env.M3_11_CONNECT_DISPATCH_ID || "",
     });
     if (Buffer.byteLength(input) > 128 * 1024) throw new Error();
   } catch {

@@ -13,6 +13,7 @@ from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
 from scripts.m3_11_unattended import approval, cleanup, setup
 from scripts.m3_11_unattended.config import Configuration
+from scripts.m3_11_unattended.connect_control import await_witness
 from scripts.m3_11_unattended.docker import (
     EVIDENCE_VOLUME,
     OWNER,
@@ -89,6 +90,12 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
             "controller_image": prepared["controller_image"],
             "daemon": prepared["daemon"],
         }
+        if configuration.cleanup.connect_settings is not None:
+            await_witness(
+                configuration,
+                request,
+                directory=config.parent / "connect-dispatch" / run_id,
+            )
         initialize_run(
             docker, image=image, request=canonical_bytes(request), run_id=run_id, config=config
         )

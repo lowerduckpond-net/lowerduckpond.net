@@ -148,7 +148,7 @@ only. It introduces no production rotation, data retirement or deployment
 authority. Native Cloudflare expiry and Spaces deletion deadlines are distinct;
 scheduler/provider availability precludes an exact-time Spaces expiry guarantee.
 
-Cleanup also depends on 1Password's shared account request quota. Admission
+Service-account cleanup also depends on 1Password's shared account request quota. Admission
 requires observed request headroom; it cannot reserve that quota. Local death
 checks remain independent of hourly remote polling. Terminal cleanup is immediate;
 persistent failures back off from a five-minute first retry to hourly retries.
@@ -159,6 +159,28 @@ Neither a cached receipt nor exhausted quota resolves an outstanding obligation.
 Invalid cache inputs require a cold live read; cache write failures or size bounds
 do not prevent credential reconciliation. Only newly validated encrypted cache
 output may be saved for reuse, including after a provider revocation failure.
+
+The explicit Connect backend keeps the same vault separation, credential policy,
+production checks and report bindings. A shared cache is not independent durable
+storage. Before provider creation, a separate cleanup-only Connect identity on
+GitHub must acknowledge the exact run and intent after retaining the complete
+journal in encrypted artifacts with an append-only commit-status registry. Both
+servers' immutable native authors are demonstrated during activation, including
+attempted author impersonation. The approved genesis binds the full inventory,
+manifest, full provider targets, server identities and trusted helper. A reviewed
+helper upgrade preserves that genesis and all historical obligations, and requires
+fresh independent readiness at the successor helper. It never reinitializes an
+existing journal or revives an old attempt's provisioning window.
+
+The launcher binds a running GitHub witness to the exact approved attempt before
+detaching the controller. Creation acknowledgements require current deletion
+authority and a bounded capacity reservation; cleanup remains available after
+that window closes. GitHub artifact reads and checkpoint status writes require
+explicit additional access approval. Missing/expired artifacts, incomplete
+registry history, insufficient capacity or stale readiness block new starts and
+remain visible independently of the qualification result. Connect avoids native
+service-account quota on this path but introduces these recovery dependencies;
+the live independent path must be demonstrated before issuing child credentials.
 
 Restart is reconciliation of one immutable attempt, not a retry of qualification.
 Changed executable inputs require a new correctly bound attempt. Complete live

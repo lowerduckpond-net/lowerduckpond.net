@@ -40,6 +40,7 @@ from scripts.m3_11_unattended.model import (
     LifecycleError,
     Targets,
     digest,
+    identity,
     instant,
     stamp,
     strings,
@@ -231,6 +232,7 @@ def reconcile(  # noqa: PLR0913 - request, execution identity and cleanup fallba
     run_id: int,
     attempt: int,
     fallback: Callable[[], Lifecycle],
+    dispatch_id: str = "",
 ) -> dict[str, object]:
     """One bounded witness execution; hourly independent sweeps continue afterward."""
     until = time.monotonic() + (WITNESS_SECONDS if request_sha256 else 0)
@@ -273,6 +275,8 @@ def reconcile(  # noqa: PLR0913 - request, execution identity and cleanup fallba
                         {
                             "format": READY_FORMAT,
                             "request_sha256": request_sha256,
+                            "dispatch_id": dispatch_id,
+                            "active_helper": journal.witness.current_helper,
                             "witness": journal.witness.binding(),
                             "observed_at": stamp(datetime.now(UTC)),
                             "github_run_id": run_id,
@@ -316,7 +320,7 @@ def synchronize(ready: Callable[[], bool]) -> bool:
         time.sleep(min(POLL_SECONDS, remaining))
 
 
-def execute(
+def execute(  # noqa: PLR0915 - staged cleanup keeps private authority in this bounded process
     payload: object,
     *,
     directory: Path,
@@ -324,12 +328,14 @@ def execute(
     progress: Callable[[str], None] = lambda _phase: None,
 ) -> dict[str, object]:
     progress("validate-installed-selection")
-    value = fields(payload, {"bootstrap", "selection", "operation", "run_sha256"})
+    value = fields(payload, {"bootstrap", "selection", "operation", "run_sha256", "dispatch_id"})
     selected = selection(value["selection"], helper=helper)
     operation = value["operation"]
+    dispatch_id = identity(value["dispatch_id"]) if value["dispatch_id"] != "" else ""
     expected = str(value["run_sha256"])
     if (
         operation not in {"discovery", "genesis", "reconcile", "witness"}
+        or (operation != "reconcile" and not dispatch_id)
         or selected["stage"] != ("active" if operation in {"reconcile", "witness"} else operation)
         or (
             re.fullmatch(r"[0-9a-f]{64}", expected) is None
@@ -432,6 +438,7 @@ def execute(
                 connections,
                 targets=targets,
                 request_sha256=expected,
+                dispatch_id=dispatch_id,
                 run_id=int(os.environ["GITHUB_RUN_ID"]),
                 attempt=int(os.environ["GITHUB_RUN_ATTEMPT"]),
                 fallback=lambda: Lifecycle(
@@ -442,6 +449,7 @@ def execute(
         return {
             "format": RECEIPT_FORMAT,
             "operation": operation,
+            "dispatch_id": dispatch_id,
             "helper_revision": helper,
             "selection_sha256": digest(selected),
             "observed_at": stamp(datetime.now(UTC)),

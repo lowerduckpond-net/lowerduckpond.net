@@ -601,6 +601,7 @@ def test_optional_cache_storage_cannot_prevent_live_revocation(
     if fault == "unsafe-directory":
         public = tmp_path / "unsafe-cache"
         public.mkdir(mode=0o755)
+        public.chmod(0o755)  # Exercise public storage even under the CLI's private umask.
         output = public / "journal.json"
     independent = Lifecycle(
         cached(cli, tmp_path / "restored.json", output=output),
