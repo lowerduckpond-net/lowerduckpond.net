@@ -29,6 +29,7 @@ from scripts.m3_11_unattended import connect_genesis as genesis
 from scripts.m3_11_unattended.config import Configuration, Connections
 from scripts.m3_11_unattended.connect_auth import Access
 from scripts.m3_11_unattended.connect_ledger import ConnectLedger
+from scripts.m3_11_unattended.connect_setup import FORMAT
 from scripts.m3_11_unattended.github_checkpoint import GitHubArtifacts
 from scripts.m3_11_unattended.journal import event
 from scripts.m3_11_unattended.lifecycle import Lifecycle
@@ -97,17 +98,13 @@ class GitHub(GitHubDouble):
             anchor_sha256=digest(self.case.anchor),
             minimum=strings(proof["initial"]),
         )
-        kwargs = {
-            "helper": self.values[control.HELPER],
-            "server": "I" * 26,
-            "now": datetime.now(UTC),
-        }
+        helper, server = self.values[control.HELPER], "I" * 26
         if inputs["operation"] == "discovery":
             proof = genesis.discover(
                 ledger,
                 approved,
-                helper=kwargs["helper"],
-                server=kwargs["server"],
+                helper=helper,
+                server=server,
                 now=datetime.now(UTC),
             )
         elif inputs["operation"] == "genesis":
@@ -115,8 +112,8 @@ class GitHub(GitHubDouble):
                 ledger,
                 self.case.store,
                 approved,
-                helper=kwargs["helper"],
-                server=kwargs["server"],
+                helper=helper,
+                server=server,
                 authority=self.case.authority,
                 now=datetime.now(UTC),
             )
@@ -190,7 +187,7 @@ class Case:
             },
         }
         self.bundle: dict[str, object] = {
-            "format": activate.FORMAT,
+            "format": FORMAT,
             "manifest": manifest,
             "url": "https://connect.example.test",
             "tokens": {role: value["entry"] for role, value in configured.items()},

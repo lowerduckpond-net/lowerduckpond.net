@@ -16,6 +16,7 @@ import pytest
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_unattended import connect_action as action
 from scripts.m3_11_unattended import connect_control as control
+from scripts.m3_11_unattended.github_checkpoint import REPOSITORY, WORKFLOW, WORKFLOW_ID
 from scripts.m3_11_unattended.model import LifecycleError, digest
 
 
@@ -40,12 +41,12 @@ class GitHubDouble(control.GitHub):
                 {
                     "id": len(self.executions) + 1,
                     "display_title": f"M3.11 cleanup {inputs['operation']} {inputs['dispatch_id']}",
-                    "workflow_id": control.WORKFLOW_ID,
-                    "path": ".github/workflows/" + control.WORKFLOW,
+                    "workflow_id": WORKFLOW_ID,
+                    "path": ".github/workflows/" + WORKFLOW,
                     "head_branch": "main",
                     "event": "workflow_dispatch",
-                    "repository": {"full_name": control.REPOSITORY},
-                    "head_repository": {"full_name": control.REPOSITORY},
+                    "repository": {"full_name": REPOSITORY},
+                    "head_repository": {"full_name": REPOSITORY},
                     "status": "completed",
                     "conclusion": "success",
                     "run_attempt": 1,
