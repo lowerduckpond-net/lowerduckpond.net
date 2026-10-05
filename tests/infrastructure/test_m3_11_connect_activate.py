@@ -688,11 +688,13 @@ def test_successor_coordinator_refuses_missing_or_changed_original_authority_and
             "request": "discovery-request.json",
             "probes": "probes.json",
         }
-        path = (
-            directory / paths[fault]
-            if fault in paths
-            else next((directory / "journal").glob("*.json"))
-        )
+        if fault == "spool":
+            shared = cast(dict[str, object], read_private(directory / "probes.json")["shared"])
+            # The immutable creation intent must survive. Its returned-ID
+            # receipt can be reconstructed from native inventory after reply loss.
+            path = directory / "journal" / (str(shared["event_id"]) + ".json")
+        else:
+            path = directory / paths[fault]
         path.unlink()
     before = dict(case.github.values)
     with pytest.raises((LifecycleError, ValueError, OSError)):
@@ -700,6 +702,31 @@ def test_successor_coordinator_refuses_missing_or_changed_original_authority_and
     assert case.github.values == before
     assert len(case.github.executions) == 1 and case.shared.posts == 1
     assert case.provider.creates == 0 and not case.output.exists()
+
+
+def test_successor_coordinator_reconciles_missing_return_receipt_without_replaying_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = Case(tmp_path, monkeypatch)
+    pause_at_discovery_receipt(case, monkeypatch)
+    directory = case.path / "activation"
+    probes = read_private(directory / "probes.json")
+    shared = cast(dict[str, object], probes["shared"])
+    path = directory / "journal" / (str(shared["event_id"]) + ".returned.json")
+    returned = read_private(path)
+    native_id = str(returned["item_id"])
+    original_item = copy.deepcopy(case.shared.items[native_id])
+    path.unlink()
+
+    successor = case.activation(helper="f" * 40)
+    successor.activate(case.output)
+
+    assert case.shared.items[native_id] == original_item
+    assert successor.ledger.records().count(shared) == 1
+    assert read_private(directory / "probes.json") == probes
+    assert case.shared.posts == 2  # Original shared probe plus its distinct forgery check.
+    assert len(case.github.executions) == 3 and case.provider.creates == 0
+    assert Configuration.load(case.output).targets == TARGETS
 
 
 @pytest.mark.parametrize("fault", ["file", "missing-file", "audit", "audit-selection"])
