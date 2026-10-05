@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -42,6 +42,18 @@ from scripts.m3_11_unattended.github_checkpoint import (
 from scripts.m3_11_unattended.journal import event
 from scripts.m3_11_unattended.lifecycle import Lifecycle
 from scripts.m3_11_unattended.model import Authority, Intent, LifecycleError, digest
+
+
+@pytest.fixture(autouse=True)
+def restore_process_umask() -> Iterator[None]:
+    # CLI entry points restrict their own process. Direct calls in these tests
+    # must not change how unrelated tests create deliberately unsafe files.
+    previous = os.umask(0o077)
+    os.umask(previous)
+    try:
+        yield
+    finally:
+        os.umask(previous)
 
 
 def selected(case: GenesisCase) -> dict[str, object]:
