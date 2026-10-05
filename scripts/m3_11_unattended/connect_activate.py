@@ -8,6 +8,7 @@ import dataclasses
 import json
 import re
 import uuid
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -240,7 +241,9 @@ class Activation:
         dispatch = self.github.dispatch(directory, operation=operation, selection=selected)
         return self.github.wait(dispatch, helper=self.helper, directory=directory)
 
-    def discovery(self) -> dict[str, object]:
+    def discovery(self, *, initial: Mapping[str, str] | None = None) -> dict[str, object]:
+        if initial is not None and genesis.credential_history(self.ledger.records(), initial):
+            raise LifecycleError("replacement discovery has new or changed credential history")
         path = self.directory / "discovery-request.json"
         if path.exists():
             value = genesis.discovery_request(read_private(path))
@@ -264,6 +267,8 @@ class Activation:
         # a lost reply; it does not issue another untracked item.
         self.ledger.stage(shared)
         records = [row for row in self.ledger.records() if not acknowledgement(row)]
+        if initial is not None and genesis.credential_history(records, initial):
+            raise LifecycleError("replacement discovery has new or changed credential history")
         authors = self.ledger.authors(shared)
         if len(authors) != 1 or any(row["kind"] == "intent" for row in records):
             raise LifecycleError("initial Connect activation cannot discard existing obligations")

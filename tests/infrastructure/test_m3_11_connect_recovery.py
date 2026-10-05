@@ -340,6 +340,49 @@ def test_draining_rechecks_failed_attempt_and_complete_history(
     assert not failed.case.output.exists() and failed.case.provider.creates == 0
 
 
+@pytest.mark.parametrize("boundary", ["transition", "shared-probe", "after-snapshot"])
+def test_late_empty_revocation_cannot_enter_replacement_discovery_or_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    failed = Failed(tmp_path, monkeypatch)
+    late = event("revoke", str(uuid.uuid7()), {"reason": "terminal-path"})
+
+    def introduce() -> None:
+        identifier = str(200).zfill(26)
+        failed.case.shared.items[identifier] = note(late, identifier)
+        failed.case.shared.version += 1
+
+    successor = failed.successor()
+    stage = successor.ledger.stage
+
+    def changed(record: dict[str, object], *, claimed_author: str | None = None) -> None:
+        stage(record, claimed_author=claimed_author)
+        payload = cast(dict[str, object], record["payload"])
+        if (boundary == "transition" and payload.get("format") == recovery.FORMAT) or (
+            boundary == "shared-probe" and payload.get("actor") == "shared"
+        ):
+            introduce()
+
+    monkeypatch.setattr(successor.ledger, "stage", changed)
+    if boundary == "after-snapshot":
+        recovery.replace_failed(successor, failed.original.directory)
+        frozen = read_private(successor.directory / "discovery-request.json")
+        introduce()
+        # The workflow double retains no successful receipt when its independent
+        # discovery rejects history; receipt lookup can therefore raise KeyError.
+        with pytest.raises((LifecycleError, KeyError)):
+            successor.activate(failed.case.output)
+        assert read_private(successor.directory / "discovery-request.json") == frozen
+    else:
+        with pytest.raises(LifecycleError):
+            recovery.replace_failed(successor, failed.original.directory)
+    # Retained transition state must not bless the late record on retry.
+    with pytest.raises(LifecycleError):
+        recovery.replace_failed(failed.successor(), failed.original.directory)
+    assert not failed.case.output.exists() and not failed.case.store.values
+    assert failed.case.provider.creates == 0 and failed.files() == failed.old_files
+
+
 def test_active_replacement_is_idempotent_and_does_not_repeat_the_ceremony(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

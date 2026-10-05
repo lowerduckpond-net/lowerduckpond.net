@@ -285,6 +285,8 @@ that never provisioned is retained only when its exact event hash was already in
 the original approved history and both complete replicas contain no intent,
 created, cleanup or resolved events. This exception does not prove revocation;
 new or changed revocation requests still block replacement.
+Replacement freezes the discovery request against that original history before
+publishing initialization; an arrival after the snapshot cannot be adopted on retry.
 Old files, uploaded artifacts and the failed result remain
 intact. The new attempt preserves every prior logical journal record and repeats
 independent discovery, both native author-forgery checks, genesis persistence and
