@@ -720,20 +720,37 @@ def main() -> int:
     parser.add_argument("--manifest-sha256", required=True)
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--replace-failed-activation", type=Path)
     arguments = parser.parse_args()
     try:
         current_candidate(Path(__file__).resolve().parents[2], arguments.revision)
         arguments.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         private_directory(arguments.directory)
+        if arguments.replace_failed_activation is not None:
+            private_directory(arguments.replace_failed_activation)
+            if (
+                arguments.replace_failed_activation == arguments.directory
+                or arguments.replace_failed_activation.parent != arguments.directory.parent
+            ):
+                raise LifecycleError("replacement activation requires a private sibling directory")
         with cleanup_lock(arguments.directory):
-            Activation(
+            activation = Activation(
                 read_private(arguments.bootstrap),
                 helper=arguments.revision,
                 reference=arguments.manifest_reference,
                 anchor_sha256=arguments.manifest_sha256,
                 directory=arguments.directory,
                 github=GitHub(),
-            ).activate(arguments.output)
+            )
+            if arguments.replace_failed_activation is not None:
+                from scripts.m3_11_unattended.connect_recovery import (  # noqa: PLC0415 - explicit recovery only
+                    replace_failed,
+                )
+
+                # Sibling attempts share this same parent lock, including any
+                # coordinator still resuming the original activation.
+                replace_failed(activation, arguments.replace_failed_activation)
+            activation.activate(arguments.output)
         print(
             "Connect controller installed after independent cleanup verification. "
             "No provider credentials created."
