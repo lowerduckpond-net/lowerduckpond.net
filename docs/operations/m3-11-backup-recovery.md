@@ -253,6 +253,28 @@ epoch and reconciles either publication outcome. Missing evidence, a prior
 different upgrade or any started discovery/genesis prevents this migration;
 retain the activation directory and diagnose without resetting it.
 
+Once discovery or genesis has started, a reviewed and merged successor can act
+as the workspace coordinator while the independent ceremony keeps its original
+helper. Recovery requires the unchanged private inputs, requests, probes,
+dispatches and protected selection, both helpers merged, and no credential
+intents. Before continuing, it retains an immutable recovery record of both
+revisions and every existing private JSON evidence hash. It completes the
+original ceremony, then changes the active helper and requires fresh independent
+readiness before installing the controller. It never rebinds a pending request
+or starts a replacement epoch.
+If the pending stage was published before its private dispatch/submission records
+were retained, successor recovery refuses it as indistinguishable from lost
+evidence. Retain the directory and resume that boundary with the original helper.
+
+Cleanup receipts are named by GitHub run and attempt. Readback verifies the
+successful native Connect job, workflow/repository/revision metadata, artifact
+digest and receipt observation time, and retains `receipt-source.json` with the
+run, attempt, job and artifact identities. For older workflows whose reruns used
+the same artifact name, exactly one upload must fall strictly after the current
+job started and no later than it completed. Stale, ambiguous or invalid results
+remain unresolved. Failed attempts and their artifacts are preserved; a rerun
+does not turn the original failed result into a pass.
+
 `M3_11_CONNECT_CONFIGURATION` holds those non-secret protected bindings and the
 active executable helper in one atomic publication. The workflow captures that
 one value for both checkout and execution. `M3_11_CLEANUP_BACKEND=connect` selects

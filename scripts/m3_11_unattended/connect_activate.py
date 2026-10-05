@@ -24,7 +24,14 @@ from scripts.m3_11_unattended.connect_journal import acknowledgement
 from scripts.m3_11_unattended.connect_ledger import ConnectLedger
 from scripts.m3_11_unattended.connect_setup import FORMAT, role_vaults
 from scripts.m3_11_unattended.journal import event, validate
-from scripts.m3_11_unattended.model import LifecycleError, Targets, digest, identity, strings
+from scripts.m3_11_unattended.model import (
+    LifecycleError,
+    Targets,
+    digest,
+    identity,
+    instant,
+    strings,
+)
 from scripts.m3_11_unattended.state import cleanup_lock, private_directory, replace_private
 from scripts.production_qualification_inputs import current_candidate, revision
 
@@ -516,7 +523,124 @@ class Activation:
             # all historical events and obligations, and the same registry.
             self.publish(selected, previous=previous)
             return selected
+        if (
+            isinstance(value, dict)
+            and value.get("stage") in {"discovery", "genesis"}
+            and value.get("active_helper") != self.helper
+        ):
+            return self.resume_original(value)
         return self.initialize()
+
+    def require_original_dispatch(self, selected: dict[str, object]) -> None:
+        """A successor must not replace an operation whose private identity was lost."""
+        operation = str(selected["stage"])
+        directory = self.directory / operation
+        expected = {"operation": operation, "selection_sha256": digest(selected), "run_sha256": ""}
+        saved = fields(
+            read_private(directory / "dispatch.json"), {*expected, "dispatch_id", "requested_at"}
+        )
+        identity(saved["dispatch_id"])
+        instant(saved["requested_at"])
+        if any(saved[key] != item for key, item in expected.items()) or read_private(
+            directory / "submitted.json"
+        ) != {"dispatch_sha256": digest(saved)}:
+            raise LifecycleError(
+                "coordinator recovery requires the exact original submitted dispatch"
+            )
+
+    def resume_original(self, value: dict[str, object]) -> dict[str, object]:
+        """A reviewed coordinator can recover receipts without rebinding the ceremony."""
+        stage_helper = revision(value.get("active_helper"))
+        previous = action.selection(value, helper=stage_helper)
+        self.bind(previous)
+        if not self.retained_inputs or previous["stage"] not in {"discovery", "genesis"}:
+            raise LifecycleError("coordinator recovery requires the original pending ceremony")
+        original = Activation(
+            self.bundle,
+            helper=stage_helper,
+            reference=f"op://{self.vaults['journal']}/{self.anchor}/notesPlain",
+            anchor_sha256=self.anchor_sha256,
+            directory=self.directory,
+            github=self.github,
+        )
+        discovery = genesis.discovery_request(
+            read_private(self.directory / "discovery-request.json")
+        )
+        probes = activation_probes(read_private(self.directory / "probes.json"))
+        request = cast(dict[str, object], previous["request"])
+        if (
+            discovery["helper_revision"] != stage_helper
+            or any(discovery[role + "_probe"] != probes[role] for role in probes)
+            or any(
+                discovery[key] != request[key]
+                for key in discovery
+                if key not in {"format", "initial"}
+            )
+            or (previous["stage"] == "discovery" and request != discovery)
+            or not strings(discovery["initial"]).items() <= strings(request["initial"]).items()
+        ):
+            raise LifecycleError("coordinator recovery changed the original discovery bindings")
+        shared = cast(dict[str, object], probes["shared"])
+        if read_private(self.directory / "journal" / (str(shared["event_id"]) + ".json")) != shared:
+            raise LifecycleError("coordinator recovery has lost the original shared probe intent")
+        self.require_original_dispatch(
+            {**previous, "stage": "discovery", "request": discovery, "receipt": None}
+        )
+        if previous["stage"] == "genesis":
+            self.require_original_dispatch(previous)
+            if (
+                read_private(self.directory / "shared-forgery.json")
+                != request["shared_forgery_probe"]
+            ):
+                raise LifecycleError("coordinator recovery has lost the original forgery probe")
+        if any(row["kind"] == "intent" for row in original.ledger.records()):
+            raise LifecycleError("coordinator recovery cannot discard credential obligations")
+        path = self.directory / ("coordinator-resume-" + self.helper + ".json")
+        files = {
+            str(entry.relative_to(self.directory)): digest(read_private(entry))
+            for entry in self.directory.rglob("*.json")
+            if entry != path
+        }
+        binding = {
+            "format": "lowerduckpond-m3-11-connect-coordinator-resume-v1",
+            "coordinator_revision": self.helper,
+            "stage_helper_revision": stage_helper,
+            "discovery_sha256": digest(discovery),
+            "probes_sha256": digest(probes),
+            "inputs_sha256": digest(read_private(self.directory / "inputs.json")),
+        }
+        if path.exists():
+            saved = fields(read_private(path), {*binding, "files", "original_selection"})
+            if (
+                any(saved[key] != item for key, item in binding.items())
+                or not strings(saved["files"]).items() <= files.items()
+            ):
+                raise LifecycleError("retained coordinator recovery evidence changed")
+            initial = action.selection(saved["original_selection"], helper=stage_helper)
+            self.bind(initial)
+            initial_request = cast(dict[str, object], initial["request"])
+            if (
+                initial["stage"] not in {"discovery", "genesis"}
+                or any(
+                    discovery[key] != initial_request[key]
+                    for key in discovery
+                    if key not in {"format", "initial"}
+                )
+                or (initial["stage"] == "discovery" and initial_request != discovery)
+                or not strings(discovery["initial"]).items()
+                <= strings(initial_request["initial"]).items()
+            ):
+                raise LifecycleError(
+                    "coordinator recovery audit differs from the original ceremony"
+                )
+        else:
+            retain(path, {**binding, "files": files, "original_selection": previous})
+        # Every pending request, dispatch, probe, registry and independent worker
+        # retains its original helper. Only a valid active genesis may advance.
+        active = original.initialize()
+        selected = {**active, "active_helper": self.helper}
+        self.publish(selected, previous=active)
+        return selected
 
     def activate(self, output: Path) -> None:
         selected = self.selected()

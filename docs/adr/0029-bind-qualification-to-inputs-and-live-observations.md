@@ -178,6 +178,14 @@ vault count. This does not replace independent persistence. A reviewed
 pre-discovery helper correction preserves the original initializing marker's
 bindings, probe identities, spool and inventory in an immutable private upgrade
 record; any started discovery or credential intent prevents that migration.
+After discovery starts, a reviewed successor coordinator may recover the original
+ceremony using its original merged helper, immutable requests and dispatches.
+It records both revisions and the retained evidence hashes before proceeding.
+Only completed original genesis permits publishing the successor active helper;
+fresh independent readiness is still required. GitHub receipt acceptance binds
+the successful current attempt and Connect job to its native artifact metadata,
+digest and observation interval. Legacy same-name artifacts require an
+unambiguous upload within that job; earlier failed artifacts remain retained.
 
 The launcher binds a running GitHub witness to the exact approved attempt before
 detaching the controller. Creation acknowledgements require current deletion

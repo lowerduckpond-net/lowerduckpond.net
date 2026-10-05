@@ -27,6 +27,7 @@ from infrastructure.test_m3_11_connect_ledger import REMOTE_AUTHOR, REMOTE_SERVE
 from infrastructure.test_m3_11_unattended_lifecycle import CANARY, TARGETS, ProviderDouble
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_unattended import connect_action as action
+from scripts.m3_11_unattended import connect_diagnostics as diagnostics
 from scripts.m3_11_unattended import connect_genesis as genesis
 from scripts.m3_11_unattended.cleanup import require_independent_ready
 from scripts.m3_11_unattended.config import Connections
@@ -41,7 +42,7 @@ from scripts.m3_11_unattended.github_checkpoint import (
 )
 from scripts.m3_11_unattended.journal import event
 from scripts.m3_11_unattended.lifecycle import Lifecycle
-from scripts.m3_11_unattended.model import Authority, Intent, LifecycleError, digest
+from scripts.m3_11_unattended.model import Authority, Intent, LifecycleError, digest, instant
 
 
 @pytest.fixture(autouse=True)
@@ -479,6 +480,86 @@ def test_real_main_atomically_replaces_progress_and_final_receipt(
     final = read_private(tmp_path / "m3-11-connect/receipt.json")
     assert final["status"] == ("unresolved" if fail else "ready")
     assert CANARY not in json.dumps(final)
+
+
+@pytest.mark.parametrize(
+    ("error", "category"),
+    [
+        (LifecycleError(CANARY), "lifecycle"),
+        (ValueError(CANARY), "input"),
+        (KeyError(CANARY), "input"),
+        (OSError(1, CANARY, CANARY), "io"),
+        (subprocess.CalledProcessError(1, CANARY, output=CANARY, stderr=CANARY), "subprocess"),
+        (type("PRIVATE_DYNAMIC_CLASS_CANARY", (Exception,), {})(CANARY), "unexpected"),
+    ],
+)
+def test_failure_diagnostics_export_only_closed_categories(error: Exception, category: str) -> None:
+    try:
+        raise error
+    except Exception as caught:
+        value = diagnostics.failure(caught)
+    assert value == {"category": category, "origin": None}
+    assert CANARY not in json.dumps(value)
+    assert "PRIVATE_DYNAMIC_CLASS_CANARY" not in json.dumps(value)
+
+
+def test_failure_location_comes_only_from_the_pinned_source_ast() -> None:
+    try:
+        instant(CANARY)
+    except LifecycleError as error:
+        value = diagnostics.failure(error)
+    origin = cast(dict[str, object], value["origin"])
+    assert origin["path"] == "scripts/m3_11_unattended/model.py"
+    assert origin["function"] == "instant" and type(origin["line"]) is int
+    assert CANARY not in json.dumps(value)
+
+
+@pytest.mark.parametrize("spoof_path", [False, True])
+def test_dynamic_traceback_filenames_and_function_names_cannot_be_exported(
+    spoof_path: bool,
+) -> None:
+    code = "def PRIVATE_FUNCTION_CANARY():\n    raise ValueError(secret)\nPRIVATE_FUNCTION_CANARY()"
+    filename = str(diagnostics.ROOT / diagnostics.SOURCES[0]) if spoof_path else CANARY
+    try:
+        exec(compile(code, filename, "exec"), {"secret": CANARY})  # noqa: S102 - static canary fixture
+    except ValueError as error:
+        value = diagnostics.failure(error)
+    assert value == {"category": "input", "origin": None}
+
+
+def test_unavailable_diagnostic_source_keeps_unresolved_output_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unavailable(_path: Path) -> str:
+        raise OSError(CANARY)
+
+    monkeypatch.setattr(Path, "read_text", unavailable)
+    try:
+        instant(CANARY)
+    except LifecycleError as error:
+        value = diagnostics.failure(error)
+    assert value == {"category": "lifecycle", "origin": None}
+
+
+def test_broken_diagnostic_reporter_cannot_suppress_the_unresolved_action_receipt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+    monkeypatch.setenv("GITHUB_ACTIONS", "false")
+
+    def broken(_error: Exception) -> dict[str, object]:
+        raise ValueError(CANARY)
+
+    monkeypatch.setattr(action, "failure", broken)
+    assert action.main() == 1
+    value = read_private(tmp_path / "m3-11-connect/receipt.json")
+    assert value == {
+        "format": action.RECEIPT_FORMAT,
+        "status": "unresolved",
+        "phase": "validate-protected-execution",
+    }
+    captured = capsys.readouterr()
+    assert CANARY not in json.dumps(value) + captured.out + captured.err
 
 
 def test_javascript_action_delivers_stdin_without_bootstrap_in_child_environment_or_logs(

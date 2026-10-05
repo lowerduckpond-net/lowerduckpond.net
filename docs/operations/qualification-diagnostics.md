@@ -10,6 +10,16 @@ and credential-cleanup status are independent. Sanitized export never traverses
 raw controller/production logs, fixture inputs or cleanup secret spools. Existing
 failed-fixture retirement authority is unchanged.
 
+Independent Connect cleanup retains an unresolved receipt with its fixed phase
+and failure category. Where available, the origin contains only an allowlisted
+pinned source path, a function name read from that source and a bounded line
+number. Exception text, arguments, locals, arbitrary class/function/file names
+and provider output are never exported. Missing diagnostics leave the outcome
+unresolved. Receipts use a GitHub run/attempt artifact name; the private
+`receipt-source.json` binds a successful readback to its exact job, artifact and
+digest. Earlier failed attempts remain separate evidence, including legacy
+artifacts that share a name.
+
 `just check-ansible-m3-8` runs the existing full installed sequence and records
 monotonic timing observations. Its private timing directory is printed before
 the run, under `${XDG_DATA_HOME:-$HOME/.local/share}/lowerduckpond.net/qualification/`

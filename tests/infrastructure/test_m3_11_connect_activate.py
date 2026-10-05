@@ -442,10 +442,18 @@ def test_interrupted_initializing_upgrade_requires_exact_retained_evidence(
 
 @pytest.mark.parametrize(
     "fault",
-    ["before-stage", "after-stage", "genesis-dispatch", "genesis-receipt", "active-publication"],
+    [
+        "discovery-receipt",
+        "before-stage",
+        "after-stage",
+        "genesis-dispatch",
+        "genesis-receipt",
+        "active-publication",
+    ],
 )
-def test_interrupted_activation_resumes_exact_probes_genesis_and_dispatch(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+@pytest.mark.parametrize("coordinator", [HELPER, "f" * 40])
+def test_interrupted_activation_resumes_exact_probes_genesis_and_dispatch(  # noqa: PLR0915 - exercise each real persistence boundary
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str, coordinator: str
 ) -> None:
     case = Case(tmp_path, monkeypatch)
     stage, dispatch = ConnectLedger.stage, case.github.dispatch
@@ -470,7 +478,7 @@ def test_interrupted_activation_resumes_exact_probes_genesis_and_dispatch(
 
     def interrupted_receipt(run_id: int) -> dict[str, object]:
         value = receipt(run_id)
-        if value["operation"] == "genesis" and fault == "genesis-receipt":
+        if fault == str(value["operation"]) + "-receipt":
             raise LifecycleError("interrupted activation")
         return value
 
@@ -492,18 +500,50 @@ def test_interrupted_activation_resumes_exact_probes_genesis_and_dispatch(
             case.activation().activate(case.output)
     assert not case.output.exists()
     directory = case.path / "activation"
-    retained = {
-        path: read_private(directory / path)
-        for path in ("discovery-request.json", "shared-forgery.json")
-    }
+    retained = {path: path.read_bytes() for path in directory.rglob("*.json")}
     original_genesis = [
         row["proof"] for row in case.github.receipts.values() if row["operation"] == "genesis"
     ]
-    case.activation().activate(case.output)
+    if coordinator != HELPER and fault == "genesis-dispatch":
+        # Publication preceded any private dispatch identity. A successor cannot
+        # distinguish that from lost evidence, so the original helper must resume.
+        before = dict(case.github.values)
+        with pytest.raises(OSError):
+            case.activation(helper=coordinator).activate(case.output)
+        assert case.github.values == before and len(case.github.executions) == 1
+        assert case.shared.posts == 2 and not case.output.exists()
+        return
+    case.activation(helper=coordinator).activate(case.output)
     selected = json.loads(case.github.values[control.SETTING])
-    assert selected["request"]["shared_forgery_probe"] == retained["shared-forgery.json"]
-    assert selected["request"]["epoch"] == retained["discovery-request.json"]["epoch"]
-    assert all(read_private(directory / path) == value for path, value in retained.items())
+    assert selected["request"]["shared_forgery_probe"] == read_private(
+        directory / "shared-forgery.json"
+    )
+    assert (
+        selected["request"]["epoch"] == read_private(directory / "discovery-request.json")["epoch"]
+    )
+    assert all(path.read_bytes() == value for path, value in retained.items())
+    assert selected["active_helper"] == coordinator
+    assert selected["request"]["helper_revision"] == HELPER
+    assert selected["request"]["registry_revision"] == HELPER
+    assert selected["receipt"]["helper_revision"] == HELPER
+    assert [value["helper_revision"] for value in case.github.receipts.values()] == [
+        HELPER,
+        HELPER,
+        coordinator,
+    ]
+    if coordinator != HELPER:
+        audit = read_private(directory / ("coordinator-resume-" + coordinator + ".json"))
+        assert audit["stage_helper_revision"] == HELPER
+        assert audit["coordinator_revision"] == coordinator
+        assert audit["files"] == {
+            str(path.relative_to(directory)): digest(json.loads(value))
+            for path, value in retained.items()
+        }
+        assert all(
+            value["active_helper"] == HELPER
+            for value in case.github.selection_history
+            if value["stage"] != "active"
+        )
     if original_genesis:
         assert selected["receipt"] == original_genesis[0]
     assert len(case.github.executions) == 3 and case.shared.posts == 2
@@ -548,6 +588,223 @@ def test_activation_retry_rejects_changed_probe_or_unrelated_inventory(
         case.activation().activate(case.output)
     assert not case.output.exists()
     assert len(case.github.executions) == 1 and case.provider.creates == 0
+
+
+def pause_at_discovery_receipt(case: Case, monkeypatch: pytest.MonkeyPatch) -> None:
+    def interrupt(_run_id: int) -> dict[str, object]:
+        raise LifecycleError("interrupted receipt readback")
+
+    with monkeypatch.context() as stopped:
+        stopped.setattr(case.github, "receipt", interrupt)
+        with pytest.raises(LifecycleError, match="interrupted receipt readback"):
+            case.activation().activate(case.output)
+    assert len(case.github.executions) == 1 and case.shared.posts == 1
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["after-audit", "genesis-receipt", "old-before", "old-after", "new-before", "new-after"],
+)
+def test_successor_coordinator_restarts_without_rebinding_or_replaying_the_ceremony(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    case = Case(tmp_path, monkeypatch)
+    pause_at_discovery_receipt(case, monkeypatch)
+    directory = case.path / "activation"
+    original_files = {path: path.read_bytes() for path in directory.rglob("*.json")}
+    initialize, publish, receipt = (
+        activate.Activation.initialize,
+        case.github.set_variable,
+        case.github.receipt,
+    )
+
+    def initialize_or_stop(self: activate.Activation) -> dict[str, object]:
+        if self.helper == HELPER and fault == "after-audit":
+            raise LifecycleError("interrupted coordinator")
+        return initialize(self)
+
+    def receipt_or_stop(run_id: int) -> dict[str, object]:
+        value = receipt(run_id)
+        if value["operation"] == "genesis" and fault == "genesis-receipt":
+            raise LifecycleError("interrupted coordinator")
+        return value
+
+    def publish_or_stop(name: str, value: str) -> None:
+        selected = json.loads(value) if name == control.SETTING else {}
+        affected = selected.get("stage") == "active" and selected.get("active_helper") == (
+            HELPER if fault.startswith("old-") else "f" * 40
+        )
+        if affected and fault.endswith("-before"):
+            raise LifecycleError("interrupted coordinator")
+        publish(name, value)
+        if affected and fault.endswith("-after"):
+            raise LifecycleError("interrupted coordinator")
+
+    with monkeypatch.context() as stopped:
+        stopped.setattr(activate.Activation, "initialize", initialize_or_stop)
+        stopped.setattr(case.github, "receipt", receipt_or_stop)
+        stopped.setattr(case.github, "set_variable", publish_or_stop)
+        with pytest.raises(LifecycleError, match="interrupted coordinator"):
+            case.activation(helper="f" * 40).activate(case.output)
+    assert not case.output.exists()
+    audit_path = directory / ("coordinator-resume-" + "f" * 40 + ".json")
+    audit = audit_path.read_bytes()
+    case.activation(helper="f" * 40).activate(case.output)
+    assert audit_path.read_bytes() == audit
+    assert all(path.read_bytes() == value for path, value in original_files.items())
+    assert len(case.github.executions) == 3 and case.shared.posts == 2
+    assert [value["helper_revision"] for value in case.github.receipts.values()] == [
+        HELPER,
+        HELPER,
+        "f" * 40,
+    ]
+    assert Configuration.load(case.output).targets == TARGETS
+    assert case.provider.creates == 0
+
+
+@pytest.mark.parametrize(
+    "fault",
+    ["old-unmerged", "new-unmerged", "inputs", "request", "probes", "spool", "targets", "intent"],
+)
+def test_successor_coordinator_refuses_missing_or_changed_original_authority_and_inputs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    case = Case(tmp_path, monkeypatch)
+    pause_at_discovery_receipt(case, monkeypatch)
+    directory = case.path / "activation"
+    if fault.endswith("-unmerged"):
+        case.github.allowed.remove(HELPER if fault == "old-unmerged" else "f" * 40)
+    elif fault == "intent":
+        intent = event("intent", str(uuid.uuid7()), {})
+        case.shared.items["8" * 26] = note(intent, "8" * 26)
+        case.shared.version += 1
+    elif fault == "targets":
+        selected = json.loads(case.github.values[control.SETTING])
+        selected["request"]["targets_sha256"] = "b" * 64
+        case.github.values[control.SETTING] = json.dumps(selected)
+    else:
+        paths = {
+            "inputs": "inputs.json",
+            "request": "discovery-request.json",
+            "probes": "probes.json",
+        }
+        path = (
+            directory / paths[fault]
+            if fault in paths
+            else next((directory / "journal").glob("*.json"))
+        )
+        path.unlink()
+    before = dict(case.github.values)
+    with pytest.raises((LifecycleError, ValueError, OSError)):
+        case.activation(helper="f" * 40).activate(case.output)
+    assert case.github.values == before
+    assert len(case.github.executions) == 1 and case.shared.posts == 1
+    assert case.provider.creates == 0 and not case.output.exists()
+
+
+@pytest.mark.parametrize("fault", ["file", "missing-file", "audit", "audit-selection"])
+def test_successor_coordinator_requires_its_immutable_recovery_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    case = Case(tmp_path, monkeypatch)
+    pause_at_discovery_receipt(case, monkeypatch)
+
+    def interrupt(_self: activate.Activation) -> dict[str, object]:
+        raise LifecycleError("interrupted after audit")
+
+    with monkeypatch.context() as stopped:
+        stopped.setattr(activate.Activation, "initialize", interrupt)
+        with pytest.raises(LifecycleError, match="interrupted after audit"):
+            case.activation(helper="f" * 40).activate(case.output)
+    directory = case.path / "activation"
+    path = directory / (
+        "coordinator-resume-" + "f" * 40 + ".json"
+        if fault.startswith("audit")
+        else "discovery/dispatch.json"
+    )
+    value = read_private(path)
+    if fault == "audit-selection":
+        request = cast(
+            dict[str, object], cast(dict[str, object], value["original_selection"])["request"]
+        )
+        request["epoch"] = str(uuid.uuid7())
+    else:
+        value["unexpected"] = True
+    path.unlink()
+    if fault != "missing-file":
+        write_private(path, value)
+    before = dict(case.github.values)
+    with pytest.raises((LifecycleError, ValueError, KeyError, OSError)):
+        case.activation(helper="f" * 40).activate(case.output)
+    assert case.github.values == before
+    assert len(case.github.executions) == 1 and case.shared.posts == 1
+    assert case.provider.creates == 0 and not case.output.exists()
+
+
+@pytest.mark.parametrize(
+    ("stage", "fault"),
+    [
+        (stage, fault)
+        for stage in ("discovery", "genesis")
+        for fault in (
+            "missing-dispatch",
+            "missing-submission",
+            "both-missing",
+            "dispatch",
+            "submission",
+            "prior-dispatch",
+            "forgery",
+        )
+        if stage == "genesis" or fault != "forgery"
+    ],
+)
+def test_successor_cannot_replace_lost_or_changed_dispatch_evidence_before_its_first_audit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stage: str, fault: str
+) -> None:
+    case = Case(tmp_path, monkeypatch)
+    receipt = case.github.receipt
+
+    def interrupt(run_id: int) -> dict[str, object]:
+        value = receipt(run_id)
+        if value["operation"] == stage:
+            raise LifecycleError("interrupted original receipt")
+        return value
+
+    with monkeypatch.context() as stopped:
+        stopped.setattr(case.github, "receipt", interrupt)
+        with pytest.raises(LifecycleError, match="interrupted original receipt"):
+            case.activation().activate(case.output)
+    directory = case.path / "activation"
+    if fault == "forgery":
+        (directory / "shared-forgery.json").unlink()
+    elif fault == "prior-dispatch":
+        (directory / "discovery/dispatch.json").unlink()
+    else:
+        names = (
+            ["dispatch", "submitted"]
+            if fault == "both-missing"
+            else ["dispatch" if fault.endswith("dispatch") else "submitted"]
+        )
+        for name in names:
+            path = directory / stage / (name + ".json")
+            value = read_private(path)
+            path.unlink()
+            if not fault.startswith("missing-") and fault != "both-missing":
+                value["dispatch_id" if name == "dispatch" else "dispatch_sha256"] = (
+                    str(uuid.uuid7()) if name == "dispatch" else "0" * 64
+                )
+                write_private(path, value)
+    before, executions, posts = (
+        dict(case.github.values),
+        len(case.github.executions),
+        case.shared.posts,
+    )
+    with pytest.raises((LifecycleError, ValueError, OSError)):
+        case.activation(helper="f" * 40).activate(case.output)
+    assert case.github.values == before
+    assert len(case.github.executions) == executions and case.shared.posts == posts
+    assert not (directory / ("coordinator-resume-" + "f" * 40 + ".json")).exists()
+    assert case.provider.creates == 0 and not case.output.exists()
 
 
 def test_final_legacy_heartbeat_reaches_genesis_after_delayed_shared_synchronization(
