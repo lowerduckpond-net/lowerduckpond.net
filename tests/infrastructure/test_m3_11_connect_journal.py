@@ -24,10 +24,11 @@ from infrastructure.test_m3_11_unattended_controller import subject
 from infrastructure.test_m3_11_unattended_lifecycle import Case as LifecycleCase
 from scripts.m3_11_unattended import cleanup
 from scripts.m3_11_unattended.cleanup import require_independent_ready, status_document
-from scripts.m3_11_unattended.connect_api import Response
+from scripts.m3_11_unattended.connect_api import TIMEOUT_SECONDS, Response
 from scripts.m3_11_unattended.connect_checkpoint import Checkpoint
 from scripts.m3_11_unattended.connect_journal import (
     ACK_POLL_SECONDS,
+    ACK_WAIT_SECONDS,
     ConnectJournal,
     IndependentJournal,
     Witness,
@@ -467,3 +468,149 @@ def test_readiness_wait_preserves_original_deadline_and_cancellation(
             check_cancelled=cancelled,
         )
     assert clock[0] == limit
+
+
+def test_readiness_snapshot_reads_share_one_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = Case(tmp_path)
+    pending_readiness(case)
+    case.witness_once()
+    clock = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    request, item = case.shared.request, case.shared.item
+    observed: list[tuple[float, float]] = []
+
+    def consume() -> None:
+        budget = case.shared._request_timeout
+        observed.append((clock[0], budget))
+        clock[0] += min(20, budget)
+
+    def slow_request(method: str, path: str, body: dict[str, object] | None = None) -> Response:
+        consume()
+        return request(method, path, body)
+
+    def slow_item(vault: str, selected_item: str) -> dict[str, object]:
+        consume()
+        return item(vault, selected_item)
+
+    monkeypatch.setattr(case.shared, "request", slow_request)
+    monkeypatch.setattr(case.shared, "item", slow_item)
+    with pytest.raises(LifecycleError, match="deadline elapsed"):
+        cleanup.wait_independent_ready(
+            case.controller,
+            helper=case.witness.helper,
+            deadline=600,
+            check_cancelled=lambda: None,
+        )
+    assert observed == [(0, 30), (20, 30), (40, 30), (60, 30), (80, 30), (100, 20)]
+    assert clock[0] == ACK_WAIT_SECONDS
+    assert case.controller.ledger._read_deadline is None
+    assert case.shared._request_timeout == TIMEOUT_SECONDS
+
+
+def test_readiness_rejects_late_success_after_complete_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = Case(tmp_path)
+    pending_readiness(case)
+    case.witness_once()
+    clock = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    records = case.controller.ledger.records
+
+    def delayed_result() -> list[dict[str, object]]:
+        snapshot = records()
+        clock[0] += ACK_WAIT_SECONDS + 1
+        return snapshot
+
+    monkeypatch.setattr(case.controller.ledger, "records", delayed_result)
+    with pytest.raises(cleanup.ReadinessPendingError, match="acknowledgement wait"):
+        cleanup.wait_independent_ready(
+            case.controller,
+            helper=case.witness.helper,
+            deadline=600,
+            check_cancelled=lambda: None,
+        )
+
+
+def test_readiness_cancellation_stops_snapshot_io_and_leaves_cleanup_uncancelled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = Case(tmp_path)
+    pending_readiness(case)
+    case.witness_once()
+    cancelled = False
+    calls = 0
+    request = case.shared.request
+    original_check = case.controller.check_cancelled
+
+    def check() -> None:
+        if cancelled:
+            raise LifecycleError("controller cancelled during readiness")
+
+    def cancel_after_read(
+        method: str, path: str, body: dict[str, object] | None = None
+    ) -> Response:
+        nonlocal cancelled, calls
+        calls += 1
+        result = request(method, path, body)
+        cancelled = True
+        return result
+
+    monkeypatch.setattr(case.shared, "request", cancel_after_read)
+    with pytest.raises(LifecycleError, match="cancelled during readiness"):
+        cleanup.wait_independent_ready(
+            case.controller,
+            helper=case.witness.helper,
+            deadline=time.monotonic() + 600,
+            check_cancelled=check,
+        )
+    assert calls == 1
+    assert case.controller.check_cancelled is original_check
+    assert case.controller.ledger._read_deadline is None
+    case.github.ledger.check_cancelled()
+    revoke = event("revoke", str(case.anchor["run_id"]), {"reason": "terminal-path"})
+    assert case.github.persist(revoke) == revoke
+    # The admission observation must not poison this same reader for cleanup.
+    assert case.controller.records()
+
+
+@pytest.mark.parametrize("acknowledged", [True, False])
+def test_readiness_and_ack_use_one_complete_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, acknowledged: bool
+) -> None:
+    case = Case(tmp_path)
+    pending_readiness(case)
+    if acknowledged:
+        case.witness_once()
+    records = case.controller.ledger.records
+    calls = 0
+
+    def newer_receipt_after_snapshot() -> list[dict[str, object]]:
+        nonlocal calls
+        snapshot = records()
+        calls += 1
+        if calls == 1:
+            case.witness_once()
+            pending_readiness(case, fault="unresolved")
+        return snapshot
+
+    monkeypatch.setattr(case.controller.ledger, "records", newer_receipt_after_snapshot)
+    if acknowledged:
+        require_independent_ready(
+            case.controller, helper=case.witness.helper, now=datetime.now(UTC)
+        )
+    else:
+        # A later ACK must not confirm a candidate from an earlier snapshot
+        # while overlooking the adverse receipt accompanying that later ACK.
+        with pytest.raises(cleanup.ReadinessPendingError):
+            require_independent_ready(
+                case.controller, helper=case.witness.helper, now=datetime.now(UTC)
+            )
+    assert calls == 1
+    with pytest.raises(LifecycleError, match="stale, overdue"):
+        require_independent_ready(
+            case.controller, helper=case.witness.helper, now=datetime.now(UTC)
+        )
+    assert calls == 2  # noqa: PLR2004 - one snapshot per readiness check

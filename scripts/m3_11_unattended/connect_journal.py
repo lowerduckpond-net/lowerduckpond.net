@@ -121,7 +121,9 @@ class ConnectJournal(_Canonical):
     def append(self, record: dict[str, object]) -> None:
         self.ledger.stage(self._original(record))
 
-    def confirmed(self, record: dict[str, object]) -> bool:
+    def confirmed(
+        self, record: dict[str, object], *, observed: list[dict[str, object]] | None = None
+    ) -> bool:
         if self.ledger.minimum.get(identity(record["event_id"])) == digest(record):
             # The explicitly approved genesis checkpoint contains this inventory.
             return True
@@ -131,6 +133,7 @@ class ConnectJournal(_Canonical):
             independent_author=self.witness.author,
             binding=self.witness.binding(),
             genesis_checkpoint=self.witness.genesis,
+            observed=observed,
         )
 
     def persist(self, record: dict[str, object]) -> dict[str, object]:

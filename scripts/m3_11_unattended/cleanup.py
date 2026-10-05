@@ -197,9 +197,10 @@ def sweep(  # noqa: PLR0913 - explicit initialization quiescence never suppresse
 
 
 def require_independent_ready(journal: Journal, *, helper: str, now: datetime) -> None:
+    observed = journal.records()
     records = [
         record
-        for record in journal.records()
+        for record in observed
         if record["kind"] == "heartbeat"
         and isinstance(record["payload"], dict)
         and record["payload"].get("actor") == "github"
@@ -244,7 +245,10 @@ def require_independent_ready(journal: Journal, *, helper: str, now: datetime) -
             or not journal.ledger.authored(newest, journal.witness.author)
         ):
             raise LifecycleError("independent Connect readiness or cleanup capacity is unverified")
-        if not journal.confirmed(newest):
+        # Candidate, native author and ACK come from this one complete snapshot.
+        # A confirmation refresh could observe a newer adverse receipt while
+        # still acknowledging the older candidate selected above.
+        if not journal.confirmed(newest, observed=observed):
             raise ReadinessPendingError("independent Connect readiness awaits acknowledgement")
 
 
@@ -259,8 +263,18 @@ def wait_independent_ready(
                 "independent Connect readiness exceeded its acknowledgement wait"
             )
         try:
-            require_independent_ready(journal, helper=helper, now=datetime.now(UTC))
+            budget = (
+                journal.ledger.read_budget(deadline=until, check_cancelled=check_cancelled)
+                if isinstance(journal, ConnectJournal)
+                else nullcontext()
+            )
+            with budget:
+                require_independent_ready(journal, helper=helper, now=datetime.now(UTC))
             check_cancelled()
+            if time.monotonic() >= until:
+                raise ReadinessPendingError(
+                    "independent Connect readiness exceeded its acknowledgement wait"
+                )
             return
         except ReadinessPendingError:
             remaining = until - time.monotonic()
