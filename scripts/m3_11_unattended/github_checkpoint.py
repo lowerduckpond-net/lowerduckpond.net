@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import cast
 from urllib.parse import urlencode
 
-from scripts.m3_11_private_inputs import write_private
+from scripts.m3_11_private_inputs import read_private_bytes, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes
 from scripts.m3_11_unattended.connect_checkpoint import FORMAT, Stored
 from scripts.m3_11_unattended.journal_cache import MAX_CACHE_BYTES, JournalCache
@@ -45,6 +45,41 @@ STATUS_AUTHOR = 41898282  # github-actions[bot], immutable GitHub user identity
 STATUS_LIMIT = 1000  # GitHub's hard per-SHA/context limit.
 MINIMUM_START_CAPACITY = 384  # 128 witness writes plus 256 reserved cleanup writes.
 MAX_STATUS_PAGES = 30
+READ_POLL_SECONDS = 2
+UPLOAD_OUTPUT_LINES = 9
+
+
+class _UnavailableError(LifecycleError):
+    """A bounded exchange failed before any metadata or integrity decision."""
+
+
+def upload_output(path: Path, *, run_id: int) -> tuple[int, str]:
+    """Read only the three outputs emitted by the pinned Actions toolkit."""
+    try:
+        lines = read_private_bytes(path, maximum=4096).decode("ascii").splitlines()
+        values = {}
+        if len(lines) != UPLOAD_OUTPUT_LINES:
+            raise ValueError
+        for offset in range(0, len(lines), 3):
+            match = re.fullmatch(
+                r"(artifact-id|artifact-digest|artifact-url)<<(ghadelimiter_[0-9a-f-]{36})",
+                lines[offset],
+            )
+            if match is None or lines[offset + 2] != match[2] or match[1] in values:
+                raise ValueError
+            values[match[1]] = lines[offset + 1]
+        if (
+            set(values) != {"artifact-id", "artifact-digest", "artifact-url"}
+            or re.fullmatch(r"[1-9][0-9]{0,19}", values["artifact-id"]) is None
+            or re.fullmatch(r"[0-9a-f]{64}", values["artifact-digest"]) is None
+            or values["artifact-url"]
+            != f"https://github.com/{REPOSITORY}/actions/runs/{run_id}/artifacts/"
+            + values["artifact-id"]
+        ):
+            raise ValueError
+        return int(values["artifact-id"]), values["artifact-digest"]
+    except OSError, ValueError, KeyError:
+        raise LifecycleError("checkpoint upload outputs are unavailable or ambiguous") from None
 
 
 def _number(value: object) -> int:
@@ -93,11 +128,13 @@ class GitHubArtifacts:
                 check=False,
                 timeout=remaining,
             )
-            if result.returncode or len(result.stdout) > MAX_CACHE_BYTES:
-                raise LifecycleError("GitHub checkpoint operation remains unresolved")
+            if result.returncode:
+                raise _UnavailableError("GitHub checkpoint operation remains unresolved")
+            if len(result.stdout) > MAX_CACHE_BYTES:
+                raise LifecycleError("GitHub checkpoint response exceeds its bound")
             return result.stdout if binary else json.loads(result.stdout)
         except OSError, subprocess.SubprocessError, ValueError:
-            raise LifecycleError("GitHub checkpoint operation remains unresolved") from None
+            raise _UnavailableError("GitHub checkpoint operation remains unresolved") from None
 
     def _runs(self) -> list[dict[str, object]]:
         observed: dict[int, dict[str, object]] = {}
@@ -151,34 +188,6 @@ class GitHubArtifacts:
                     observed.values(), key=lambda row: _number(row["run_number"]), reverse=True
                 )
         raise LifecycleError("GitHub workflow history exceeds its checkpoint scan bound")
-
-    def _artifacts(self, run_id: int) -> list[dict[str, object]]:
-        observed: dict[int, dict[str, object]] = {}
-        total = None
-        for page in range(1, MAX_ARTIFACTS // PAGE_SIZE + 1):
-            value = self._api(
-                f"repos/{REPOSITORY}/actions/runs/{run_id}/artifacts"
-                f"?per_page={PAGE_SIZE}&page={page}"
-            )
-            if (
-                not isinstance(value, dict)
-                or type(value.get("total_count")) is not int
-                or not isinstance(value.get("artifacts"), list)
-                or not 0 <= value["total_count"] <= MAX_ARTIFACTS
-                or (total is not None and value["total_count"] != total)
-            ):
-                raise LifecycleError("GitHub checkpoint inventory is partial or unavailable")
-            total = value["total_count"]
-            for row in value["artifacts"]:
-                if not isinstance(row, dict):
-                    raise LifecycleError("GitHub checkpoint inventory is invalid")
-                selected = _number(row.get("id"))
-                if selected in observed:
-                    raise LifecycleError("GitHub checkpoint inventory has duplicate identities")
-                observed[selected] = row
-            if len(observed) == total:
-                return list(observed.values())
-        raise LifecycleError("GitHub checkpoint inventory is incomplete")
 
     def _reference(self, value: dict[str, object], *, run_id: int | None = None) -> Stored:
         name, workflow = value.get("name"), value.get("workflow_run")
@@ -286,6 +295,10 @@ class GitHubArtifacts:
     def read(self, stored: Stored) -> dict[str, object]:
         self._until = time.monotonic() + SCAN_SECONDS
         metadata = self._api(f"repos/{REPOSITORY}/actions/artifacts/{stored.identity}")
+        return self._read(stored, metadata)
+
+    def _read(self, stored: Stored, metadata: object) -> dict[str, object]:
+        # The caller owns the deadline, including upload visibility retries.
         if (
             not isinstance(metadata, dict)
             or self._reference(metadata, run_id=self._published_runs.get(stored.identity)) != stored
@@ -328,6 +341,29 @@ class GitHubArtifacts:
             return value
         except OSError, ValueError, zipfile.BadZipFile:
             raise LifecycleError("GitHub checkpoint cannot be recovered") from None
+
+    def _uploaded(
+        self, stored: Stored, *, name: str, run_id: int, archive_sha256: str
+    ) -> dict[str, object]:
+        self._until = time.monotonic() + SCAN_SECONDS
+        while True:
+            try:
+                metadata = self._api(f"repos/{REPOSITORY}/actions/artifacts/{stored.identity}")
+                if (
+                    not isinstance(metadata, dict)
+                    or metadata.get("name") != name
+                    or self._reference(metadata, run_id=run_id) != stored
+                    or metadata.get("digest") != "sha256:" + archive_sha256
+                ):
+                    raise LifecycleError("uploaded checkpoint differs from its exact output")
+                return self._read(stored, metadata)
+            except _UnavailableError:
+                remaining = self._until - time.monotonic()
+                if remaining <= 0:
+                    raise LifecycleError(
+                        "uploaded checkpoint readback remains unavailable"
+                    ) from None
+                time.sleep(min(READ_POLL_SECONDS, remaining))
 
     @staticmethod
     def _parent(previous: Stored | None) -> dict[str, object] | None:
@@ -426,12 +462,12 @@ class GitHubArtifacts:
                 raise LifecycleError("checkpoint upload is uncertain; do not acknowledge") from None
             if result.returncode:
                 raise LifecycleError("checkpoint upload is uncertain; do not acknowledge")
-        self._until = time.monotonic() + SCAN_SECONDS
-        matches = [row for row in self._artifacts(run_id) if row.get("name") == name]
-        if len(matches) != 1:
-            raise LifecycleError("checkpoint upload has no unique registry readback")
-        created = self._reference(matches[0], run_id=run_id)
-        if self.read(created) != document:
+            artifact_id, archive_sha256 = upload_output(output, run_id=run_id)
+        created = Stored(artifact_id, digest(document))
+        if (
+            self._uploaded(created, name=name, run_id=run_id, archive_sha256=archive_sha256)
+            != document
+        ):
             raise LifecycleError("checkpoint upload has no exact plaintext readback")
         if self.lineage() != history:
             raise LifecycleError("checkpoint registry advanced during this upload")

@@ -19,7 +19,7 @@ from pathlib import Path
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
 from scripts.m3_11_unattended import connect_action
-from scripts.m3_11_unattended.cleanup import require_independent_ready
+from scripts.m3_11_unattended.cleanup import ReadinessPendingError, require_independent_ready
 from scripts.m3_11_unattended.config import Configuration
 from scripts.m3_11_unattended.connect_admission import run_digest
 from scripts.m3_11_unattended.connect_journal import ConnectJournal
@@ -488,7 +488,7 @@ class GitHub:
         raise LifecycleError("cleanup dispatch remains pending; retain its identity and evidence")
 
 
-def await_witness(
+def await_witness(  # noqa: PLR0912 - exact dispatch, execution and readiness are separate gates
     configuration: Configuration, request: dict[str, object], *, directory: Path
 ) -> None:
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -573,7 +573,12 @@ def await_witness(
                     and journal.ledger.authored(record, journal.witness.author)
                     and journal.confirmed(record)
                 ):
-                    require_independent_ready(journal, helper=helper, now=datetime.now(UTC))
+                    try:
+                        require_independent_ready(journal, helper=helper, now=datetime.now(UTC))
+                    except ReadinessPendingError:
+                        # Poll the native execution again too; an exited witness
+                        # cannot become eligible through a late receipt alone.
+                        break
                     write_private(
                         directory / "witness-ready.json",
                         {

@@ -6,6 +6,8 @@ import ast
 import subprocess
 from pathlib import Path
 
+from scripts.m3_11_private_inputs import write_private
+from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended.model import LifecycleError
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -14,6 +16,7 @@ SOURCES = (
     "scripts/m3_11_qualification_evidence.py",
     "scripts/production_qualification_inputs.py",
     "scripts/check_m3_7_production_edge.py",
+    "scripts/check_m3_10_provider.py",
     *(
         "scripts/m3_11_unattended/" + name + ".py"
         for name in (
@@ -37,6 +40,9 @@ SOURCES = (
             "lifecycle",
             "model",
             "cleanup",
+            "worker",
+            "production",
+            "inputs",
         )
     ),
 )
@@ -78,4 +84,50 @@ def failure(error: Exception) -> dict[str, object]:
     except Exception:
         # A broken diagnostic must not change cleanup's unresolved outcome.
         value["origin"] = None
+    return value
+
+
+def retain_failure(path: Path, *, binding: dict[str, object], stage: str, error: Exception) -> None:
+    """A failed diagnostic can never prevent revocation or replace earlier evidence."""
+    try:
+        if not path.exists():
+            write_private(path, {"binding": binding, "stage": stage, "failure": failure(error)})
+    except Exception:
+        return  # Exception text can contain secrets; failure never blocks cleanup.
+
+
+def verified_failure(
+    raw: object, *, binding: dict[str, object], stages: frozenset[str]
+) -> dict[str, object]:
+    value = fields(raw, {"binding", "stage", "failure"})
+    if (
+        value["binding"] != binding
+        or not isinstance(value["stage"], str)
+        or value["stage"] not in stages
+    ):
+        raise LifecycleError("failure diagnostic differs from its bound attempt")
+    detail = fields(value["failure"], {"category", "origin"})
+    if not isinstance(detail["category"], str) or detail["category"] not in {
+        "lifecycle",
+        "input",
+        "io",
+        "subprocess",
+        "unexpected",
+    }:
+        raise LifecycleError("failure diagnostic category is invalid")
+    if detail["origin"] is not None:
+        origin = fields(detail["origin"], {"path", "function", "line"})
+        path, function, line = origin["path"], origin["function"], origin["line"]
+        if path not in SOURCES or not isinstance(path, str) or type(line) is not int:
+            raise LifecycleError("failure diagnostic source is invalid")
+        matches = [
+            node
+            for node in ast.walk(ast.parse((ROOT / path).read_text()))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == function
+            and node.end_lineno is not None
+            and node.lineno <= line <= node.end_lineno
+        ]
+        if len(matches) != 1:
+            raise LifecycleError("failure diagnostic location is not in the pinned source")
     return value

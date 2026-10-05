@@ -22,6 +22,7 @@ from scripts.m3_11_unattended import cleanup, inputs, quota
 from scripts.m3_11_unattended.cloudflare import Cloudflare
 from scripts.m3_11_unattended.config import Configuration, connect
 from scripts.m3_11_unattended.connect_admission import WINDOW
+from scripts.m3_11_unattended.connect_diagnostics import retain_failure
 from scripts.m3_11_unattended.connect_journal import ConnectJournal
 from scripts.m3_11_unattended.docker import SOCKET, Docker
 from scripts.m3_11_unattended.journal import Journal, OpJournal, event, validate
@@ -176,6 +177,18 @@ class Worker:
             },
         )
 
+    def _failure(self, error: Exception, *, cleanup_failed: bool = False) -> None:
+        try:
+            retain_failure(
+                self.directory
+                / ("cleanup-failure.json" if cleanup_failed else "worker-failure.json"),
+                binding=self.binding,
+                stage=str(self.state.status()["phase"]),
+                error=error,
+            )
+        except Exception:
+            return  # Diagnostics never change the terminal cleanup path.
+
     def remember_intent(self, intent: Intent) -> None:
         write_private(
             self.directory / "credential-intents" / (intent.sha256 + ".json"), intent.document()
@@ -282,7 +295,12 @@ class Worker:
             separate.journal.use_cache(self.cleanup_cache)
             self.cleanup_journal = separate.journal
         separate.authority.require(now + timedelta(hours=14))
-        cleanup.require_independent_ready(separate.journal, helper=self.helper, now=now)
+        cleanup.wait_independent_ready(
+            separate.journal,
+            helper=self.helper,
+            deadline=self.ends_at,
+            check_cancelled=self.check_cancelled,
+        )
         Lifecycle(separate.journal, separate.providers).require_clear()
         creator = connect(
             self.config.provision,
@@ -607,7 +625,8 @@ class Worker:
                     write_private(self.directory / "revocation.json", receipt)
             self.state.update("finished", cleanup="verified" if verified else "unresolved")
             return verified
-        except RuntimeError, OSError, ValueError, KeyError, TypeError:
+        except (RuntimeError, OSError, ValueError, KeyError, TypeError) as error:
+            self._failure(error, cleanup_failed=True)
             self.state.update("finished", cleanup="unresolved")
             return False
         finally:
@@ -695,7 +714,8 @@ class Worker:
                 KeyError,
                 TypeError,
                 subprocess.SubprocessError,
-            ):
+            ) as error:
+                self._failure(error)
                 if not (self.directory / "journey-result.json").exists():
                     expired = time.monotonic() >= self.ends_at
                     self.state.finish_journey(

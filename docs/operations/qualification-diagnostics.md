@@ -284,8 +284,12 @@ unavailable journals and other services report `unknown`.
 A provider-fault test stops immediately when the coordinator fails
 before provider observation and Caddy readiness, preserving the underlying
 failure instead of waiting for a secondary DNS-observation timeout.
-The live observer allows installed-state verification to reach Caddy startup
-under the existing coordinator ceiling; once Caddy is ready it allows at most
+Live and complete-history reconstruction observe the existing 30-minute
+coordinator ceiling plus 30 seconds for shutdown/reporting. Fresh independent
+fixtures keep their shorter observation windows. This does not extend the
+service deadline or the 600-minute live ceiling. The corresponding provider
+observer allows installed-state verification to reach Caddy startup within that
+bound; once Caddy is ready it allows at most
 120 seconds for the provider denial. A failed test exits before clearing its
 injected fault. A later coordinator timeout with Caddy active therefore does
 not, by itself, establish why the earlier observer failed. Compare the original

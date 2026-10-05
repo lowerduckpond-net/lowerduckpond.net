@@ -97,6 +97,24 @@ class ConnectLedger:
         self._cached_items: dict[str, tuple[dict[str, object], dict[str, object]]] = {}
 
     @contextmanager
+    def read_budget(
+        self, *, deadline: float, check_cancelled: Callable[[], None]
+    ) -> Iterator[None]:
+        """Bound a complete observation without changing subsequent cleanup reads."""
+        previous, previous_check = self._read_deadline, self.check_cancelled
+        self._read_deadline = min(previous, deadline) if previous is not None else deadline
+
+        def check() -> None:
+            previous_check()
+            check_cancelled()
+
+        self.check_cancelled = check
+        try:
+            yield
+        finally:
+            self._read_deadline, self.check_cancelled = previous, previous_check
+
+    @contextmanager
     def _reading(self) -> Iterator[None]:
         if self._read_deadline is None:
             yield
@@ -296,7 +314,7 @@ class ConnectLedger:
             write_private(self.spool / (event_id + ".returned.json"), {"item_id": returned})
         self._readback(record)
 
-    def confirmed(
+    def confirmed(  # noqa: PLR0913 - native identities, lineage and observation remain explicit
         self,
         record: dict[str, object],
         *,
@@ -304,12 +322,18 @@ class ConnectLedger:
         independent_author: str,
         binding: dict[str, object],
         genesis_checkpoint: Stored | None = None,
+        observed: list[dict[str, object]] | None = None,
     ) -> bool:
-        """Require the provider's read-only author identity, not a self-asserted actor tag."""
+        """Use native authors from a complete snapshot, optionally just read by the caller.
+
+        A supplied snapshot must have no intervening ledger I/O so its native
+        metadata and records describe the same observation.
+        """
         account_identity(independent_server)
         account_identity(independent_author)
         original_id = identity(record["event_id"])
-        observed = self.records()
+        if observed is None:
+            observed = self.records()
         if not any(value == record for value in observed):
             return False
         for value in observed:
