@@ -295,7 +295,9 @@ def reconcile(  # noqa: PLR0913 - request, execution identity and cleanup fallba
             decision: Admission = admission,
             ready: bool = connected is not None,
         ) -> bool:
-            return decision.allow(record) and (ready or record["kind"] not in {"run", "intent"})
+            return decision.allow(record, now=datetime.now(UTC)) and (
+                ready or record["kind"] not in {"run", "intent"}
+            )
 
         journal.acknowledge(
             run_id=run_id,

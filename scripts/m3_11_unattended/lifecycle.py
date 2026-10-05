@@ -192,6 +192,7 @@ class Lifecycle:
         provider: ProviderKind,
         scope: dict[str, object],
         authority: Authority,
+        provisioning_deadline: datetime | None = None,
     ) -> tuple[Intent, Credential]:
         if any(item.run_id == run_id and item.role == role for item in intents(self.journal)):
             raise LifecycleError(
@@ -226,7 +227,10 @@ class Lifecycle:
         if self.remember_intent is not None:
             self.remember_intent(intent)
         self.journal.persist(event("intent", run_id, intent.document()))
-        if self.clock() >= instant(intent.create_before):
+        before = instant(intent.create_before)
+        if provisioning_deadline is not None:
+            before = min(before, provisioning_deadline)
+        if self.clock() >= before:
             raise LifecycleError("credential creation window elapsed before acknowledgement")
         # Exactly one mutation. A timeout or lost response is an outstanding
         # obligation; no handler may call create again for this run and role.

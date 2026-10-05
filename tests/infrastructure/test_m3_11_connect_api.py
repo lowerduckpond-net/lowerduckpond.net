@@ -222,6 +222,38 @@ def test_deadline_terminates_trickling_mutation_without_replay(
     assert len(server.received) == 1
 
 
+@pytest.mark.parametrize("part", ["headers", "body"])
+def test_remaining_read_budget_terminates_live_exchange_and_restores_defaults(
+    server: Server, part: str
+) -> None:
+    server.drip = part
+    client = Connect(server.url, CANARY, local_cleanup=True)
+    started = time.monotonic()
+    with pytest.raises(LifecycleError, match="unresolved"), client.timeout_budget(0.6):
+        client.vaults()
+    assert time.monotonic() - started < 1.5  # noqa: PLR2004 - bounded process plus scheduling slack
+    assert server.disconnected.wait(1.0)
+    assert len(server.received) == 1
+    assert client._request_timeout == connect_api.TIMEOUT_SECONDS
+    independent = Connect(server.url, CANARY, local_cleanup=True)
+    assert independent._request_timeout == connect_api.TIMEOUT_SECONDS
+
+
+def test_nested_read_budgets_cannot_extend_outer_deadline_and_restore_on_failure(
+    server: Server,
+) -> None:
+    client = Connect(server.url, CANARY, local_cleanup=True)
+    budget = 5
+    with pytest.raises(LifecycleError, match="test interruption"), client.timeout_budget(budget):
+        with client.timeout_budget(budget * 2):
+            assert client._request_timeout == budget
+        with client.timeout_budget(1):
+            assert client._request_timeout == 1
+        assert client._request_timeout == budget
+        raise LifecycleError("test interruption")
+    assert client._request_timeout == connect_api.TIMEOUT_SECONDS
+
+
 @pytest.mark.parametrize(
     "method,path",
     [

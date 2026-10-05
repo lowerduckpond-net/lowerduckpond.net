@@ -107,6 +107,7 @@ files = [
   "tests/infrastructure/test_m3_11_connect_api.py",
   "tests/infrastructure/test_m3_11_connect_auth.py",
   "tests/infrastructure/test_m3_11_connect_ledger.py",
+  "tests/infrastructure/test_m3_11_connect_settling.py",
   "tests/infrastructure/test_m3_11_connect_checkpoint.py",
   "tests/infrastructure/test_m3_11_connect_journal.py",
   "tests/infrastructure/test_m3_11_connect_configuration.py",

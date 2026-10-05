@@ -21,6 +21,7 @@ from scripts.m3_11_qualification_evidence import canonical_bytes, fields
 from scripts.m3_11_unattended import cleanup, inputs, quota
 from scripts.m3_11_unattended.cloudflare import Cloudflare
 from scripts.m3_11_unattended.config import Configuration, connect
+from scripts.m3_11_unattended.connect_admission import WINDOW
 from scripts.m3_11_unattended.connect_journal import ConnectJournal
 from scripts.m3_11_unattended.docker import SOCKET, Docker
 from scripts.m3_11_unattended.journal import Journal, OpJournal, event, validate
@@ -318,7 +319,7 @@ class Worker:
                 and payload.get("mode") == self.request["mode"]
             ):
                 raise LifecycleError("this approved attempt has already been consumed")
-        creator.journal.persist(
+        run_record = creator.journal.persist(
             event(
                 "run",
                 self.run_id,
@@ -328,6 +329,13 @@ class Worker:
                     "approval_sha256": self.request["approval_sha256"],
                 },
             )
+        )
+        # Match the immutable reservation clock, not the time its ACK arrives.
+        # Keep the intent's separate five-minute provider settlement range intact.
+        provisioning_deadline = (
+            instant(run_record["recorded_at"]).replace(microsecond=0) + WINDOW
+            if isinstance(creator.journal, ConnectJournal)
+            else None
         )
         lifecycle = Lifecycle(
             creator.journal,
@@ -368,6 +376,7 @@ class Worker:
                 provider=provider,
                 scope=scope,
                 authority=separate.authority,
+                provisioning_deadline=provisioning_deadline,
             )
             if separate.providers[provider].inspect(credential.identifier) is None:
                 raise LifecycleError("independent cleanup cannot observe the created credential")
