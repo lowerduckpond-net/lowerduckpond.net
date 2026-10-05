@@ -335,35 +335,46 @@ class Activation:
         if not strings(discovery["initial"]).items() <= initial.items():
             raise LifecycleError("independent discovery lost previously observed journal records")
 
+        expected = {
+            **initial,
+            str(cast(dict[str, object], discovery["independent_probe"])["event_id"]): digest(
+                discovery["independent_probe"]
+            ),
+        }
+        payload = {
+            "format": genesis.PROBE_FORMAT,
+            "epoch": discovery["epoch"],
+            "actor": "shared-forgery",
+            "claimed_author": proof["independent_author"],
+        }
+        path = self.directory / "shared-forgery.json"
+        if path.exists():
+            forged = validate(read_private(path))
+        else:
+            forged = event("run", identity(discovery["epoch"]), payload)
+            write_private(path, forged)
+        if (
+            forged["kind"] != "run"
+            or forged["run_id"] != discovery["epoch"]
+            or forged["payload"] != payload
+            or str(forged["event_id"]) in expected
+        ):
+            raise LifecycleError("retained shared provenance probe differs from discovery")
+
         def synchronized() -> bool:
             records = [row for row in self.ledger.records() if not acknowledgement(row)]
-            expected = {
-                **initial,
-                str(cast(dict[str, object], discovery["independent_probe"])["event_id"]): digest(
-                    discovery["independent_probe"]
-                ),
-            }
-            return {str(row["event_id"]): digest(row) for row in records} == expected
+            observed = {str(row["event_id"]): digest(row) for row in records}
+            # A restart may precede or follow this exact probe's first POST.
+            # Its private identity and native author permit no other additions.
+            return observed == expected or (
+                observed == {**expected, str(forged["event_id"]): digest(forged)}
+                and self.ledger.authors(forged) == {discovery["shared_author"]}
+            )
 
         if not action.synchronize(synchronized):
             raise LifecycleError(
                 "shared Connect has not reached the independent complete inventory"
             )
-        path = self.directory / "shared-forgery.json"
-        if path.exists():
-            forged = validate(read_private(path))
-        else:
-            forged = event(
-                "run",
-                identity(discovery["epoch"]),
-                {
-                    "format": genesis.PROBE_FORMAT,
-                    "epoch": discovery["epoch"],
-                    "actor": "shared-forgery",
-                    "claimed_author": proof["independent_author"],
-                },
-            )
-            write_private(path, forged)
         self.ledger.stage(forged, claimed_author=str(proof["independent_author"]))
         self.ledger.records()
         if self.ledger.authors(forged) != {discovery["shared_author"]}:

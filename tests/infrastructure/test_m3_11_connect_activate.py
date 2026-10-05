@@ -259,6 +259,116 @@ def test_lost_discovery_reply_does_not_duplicate_remote_operation_or_probes(
     assert case.provider.creates == 0
 
 
+@pytest.mark.parametrize(
+    "fault",
+    ["before-stage", "after-stage", "genesis-dispatch", "genesis-receipt", "active-publication"],
+)
+def test_interrupted_activation_resumes_exact_probes_genesis_and_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    case = Case(tmp_path, monkeypatch)
+    stage, dispatch = ConnectLedger.stage, case.github.dispatch
+    receipt, publish = case.github.receipt, case.github.set_variable
+
+    def interrupted_stage(
+        ledger: ConnectLedger, record: dict[str, object], *, claimed_author: str | None = None
+    ) -> None:
+        forged = cast(dict[str, object], record["payload"]).get("actor") == "shared-forgery"
+        if forged and fault == "before-stage":
+            raise LifecycleError("interrupted activation")
+        stage(ledger, record, claimed_author=claimed_author)
+        if forged and fault == "after-stage":
+            raise LifecycleError("interrupted activation")
+
+    def interrupted_dispatch(
+        directory: Path, *, operation: str, selection: dict[str, object], run_sha256: str = ""
+    ) -> dict[str, object]:
+        if operation == "genesis" and fault == "genesis-dispatch":
+            raise LifecycleError("interrupted activation")
+        return dispatch(directory, operation=operation, selection=selection, run_sha256=run_sha256)
+
+    def interrupted_receipt(run_id: int) -> dict[str, object]:
+        value = receipt(run_id)
+        if value["operation"] == "genesis" and fault == "genesis-receipt":
+            raise LifecycleError("interrupted activation")
+        return value
+
+    def interrupted_publication(name: str, value: str) -> None:
+        if (
+            name == control.SETTING
+            and json.loads(value)["stage"] == "active"
+            and fault == "active-publication"
+        ):
+            raise LifecycleError("interrupted activation")
+        publish(name, value)
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(ConnectLedger, "stage", interrupted_stage)
+        interrupted.setattr(case.github, "dispatch", interrupted_dispatch)
+        interrupted.setattr(case.github, "receipt", interrupted_receipt)
+        interrupted.setattr(case.github, "set_variable", interrupted_publication)
+        with pytest.raises(LifecycleError, match="interrupted activation"):
+            case.activation().activate(case.output)
+    assert not case.output.exists()
+    directory = case.path / "activation"
+    retained = {
+        path: read_private(directory / path)
+        for path in ("discovery-request.json", "shared-forgery.json")
+    }
+    original_genesis = [
+        row["proof"] for row in case.github.receipts.values() if row["operation"] == "genesis"
+    ]
+    case.activation().activate(case.output)
+    selected = json.loads(case.github.values[control.SETTING])
+    assert selected["request"]["shared_forgery_probe"] == retained["shared-forgery.json"]
+    assert selected["request"]["epoch"] == retained["discovery-request.json"]["epoch"]
+    assert all(read_private(directory / path) == value for path, value in retained.items())
+    if original_genesis:
+        assert selected["receipt"] == original_genesis[0]
+    assert len(case.github.executions) == 3 and case.shared.posts == 2
+    assert Configuration.load(case.output).targets == TARGETS
+    assert case.provider.creates == 0
+
+
+@pytest.mark.parametrize("fault", ["epoch", "author", "unrelated", "native-author"])
+def test_activation_retry_rejects_changed_probe_or_unrelated_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    case = Case(tmp_path, monkeypatch)
+    stage = ConnectLedger.stage
+
+    def interrupt(
+        ledger: ConnectLedger, record: dict[str, object], *, claimed_author: str | None = None
+    ) -> None:
+        if cast(dict[str, object], record["payload"]).get("actor") == "shared-forgery":
+            raise LifecycleError("interrupted activation")
+        stage(ledger, record, claimed_author=claimed_author)
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(ConnectLedger, "stage", interrupt)
+        with pytest.raises(LifecycleError, match="interrupted activation"):
+            case.activation().activate(case.output)
+    path = case.path / "activation/shared-forgery.json"
+    forged = read_private(path)
+    if fault in {"epoch", "author"}:
+        payload = cast(dict[str, object], forged["payload"])
+        payload["epoch" if fault == "epoch" else "claimed_author"] = (
+            str(uuid.uuid7()) if fault == "epoch" else "X" * 26
+        )
+        path.unlink()
+        write_private(path, forged)
+    else:
+        record = forged if fault == "native-author" else event("run", str(uuid.uuid7()), {})
+        identifier = "8".zfill(26)
+        case.shared.items[identifier] = note(record, identifier, author="X" * 26)
+        case.shared.version += 1
+    monkeypatch.setattr(action, "SYNC_SECONDS", 0)
+    with pytest.raises(LifecycleError):
+        case.activation().activate(case.output)
+    assert not case.output.exists()
+    assert len(case.github.executions) == 1 and case.provider.creates == 0
+
+
 def test_final_legacy_heartbeat_reaches_genesis_after_delayed_shared_synchronization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
