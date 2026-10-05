@@ -205,6 +205,33 @@ def test_corrupt_metadata_is_fatal_without_waiting_or_retrying(
     assert clock.sleeps == []
 
 
+@pytest.mark.parametrize("cached", [True, False])
+def test_short_inventory_cannot_hide_malformed_present_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cached: bool
+) -> None:
+    case = Case(tmp_path)
+    case.controller.ledger.readback_seconds = 5
+    clock = Clock(monkeypatch)
+    request = case.shared.request
+
+    def malformed(method: str, path: str, body: dict[str, object] | None = None) -> Response:
+        response = request(method, path, body)
+        if method == "POST":
+            case.shared.reported_count = len(case.shared.items) + 1
+        if method == "GET" and case.shared.posts and path.endswith("/items"):
+            assert isinstance(response.body, list)
+            for row in response.body:
+                if (row["id"] == ANCHOR) == cached:
+                    row["version"] = 0
+        return response
+
+    monkeypatch.setattr(case.shared, "request", malformed)
+    with pytest.raises(LifecycleError, match="changed during readback"):
+        case.controller.ledger.stage(event("intent", str(case.anchor["run_id"]), {}))
+    assert case.shared.posts == 1
+    assert clock.sleeps == []
+
+
 def test_late_success_cannot_extend_the_readback_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

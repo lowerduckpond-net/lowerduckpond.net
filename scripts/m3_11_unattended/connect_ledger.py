@@ -148,7 +148,7 @@ class ConnectLedger:
             raise LifecycleError("Connect journal item content changed")
         return record, item
 
-    def _inventory(self, minimum_count: int) -> dict[str, dict[str, object]]:
+    def _inventory(self) -> dict[str, dict[str, object]]:
         # Connect documents an unpaginated complete list. The vault aggregate
         # can lag an accepted write, so it is only a conservative lower bound.
         with self._reading():
@@ -167,14 +167,12 @@ class ConnectLedger:
             if item_id in inventory:
                 raise LifecycleError("Connect journal inventory has duplicate items")
             inventory[item_id] = {key: listed.get(key) for key in ITEM_BINDING}
-        if len(inventory) < minimum_count:
-            raise SnapshotChangedError("Connect journal inventory is partial or unavailable")
         return inventory
 
     def records(self) -> list[dict[str, object]]:
         """A complete, stable cache snapshot; still not an independent-write receipt."""
         before = self._vault_state()
-        inventory = self._inventory(before[0])
+        inventory = self._inventory()
         records: dict[str, dict[str, object]] = {}
         metadata: dict[str, list[dict[str, object]]] = {}
         items: dict[str, str] = {}
@@ -195,10 +193,13 @@ class ConnectLedger:
             metadata.setdefault(event_id, []).append(item)
             records[event_id] = record
             cached_items[item_id] = record, item
+        # Validate every present row before treating a count-ahead inventory as
+        # transient; a short list must not conceal malformed or changed metadata.
         if (
-            self.anchor not in inventory
+            len(inventory) < before[0]
+            or self.anchor not in inventory
             or not self._known.keys() <= items.keys()
-            or self._inventory(before[0]) != inventory
+            or self._inventory() != inventory
             or self._vault_state() != before
         ):
             raise SnapshotChangedError(
