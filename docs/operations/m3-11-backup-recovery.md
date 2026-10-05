@@ -348,6 +348,13 @@ settlement range remains available for ownership and cleanup. Lost dispatch repl
 are reconciled by the saved execution identity, never by blind resubmission.
 No GitHub token enters the detached controller or fixture.
 
+Each acknowledgement pass waits within the existing bounded snapshot-read budget
+and checks prior acknowledgements against one complete native-author snapshot
+before publishing new ones. Journal growth does not require a full vault scan for
+every historical event. New entries are considered on the next pass; changed
+immutable records still fail closed. Neither snapshot settling nor acknowledgement
+batching extends the original provisioning cutoff.
+
 The independent journal uses encrypted GitHub artifacts retained for 30 days and
 an append-only commit-status registry. Full history is checked for missing,
 replayed or reordered entries. New attempts require at least 384 remaining
@@ -414,7 +421,10 @@ recorded deadline triggers deletion, not provider-enforced expiry.
 
 Bucket-scoped keys reach whole production buckets, and DNS Write reaches both
 whole zones. Run prefixes are ownership accounting, not an IAM boundary.
-The Spaces fullaccess operator stays controller-side. Provisioning bootstrap
+The Spaces fullaccess operator stays controller-side. Spaces may omit the empty
+`bucket` field when returning a `fullaccess` grant; only that exact representation
+is normalized for policy comparison. Null, bucket-specific, additional or missing
+grants still have to match the approved policy exactly. Provisioning bootstrap
 never enters qualification or guests. A separate short production-check process
 alone reads encrypted state, verifies the existing non-expiring exact-policy
 production Caddy token and runs the existing production archive/backup

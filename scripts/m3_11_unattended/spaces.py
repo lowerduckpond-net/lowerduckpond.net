@@ -25,11 +25,22 @@ class Spaces:
 
     @staticmethod
     def _metadata(value: dict[str, object]) -> dict[str, object]:
+        grants = value.get("grants")
+        if isinstance(grants, list):
+            # Spaces omits the empty bucket on account-wide fullaccess readback.
+            # Accept only that exact representation; null, extra fields and
+            # missing bucket-scoped grants remain mismatches.
+            grants = [
+                {"bucket": "", "permission": "fullaccess"}
+                if grant == {"permission": "fullaccess"}
+                else grant
+                for grant in grants
+            ]
         return {
             "id": identifier(value.get("access_key")),
             "name": value.get("name"),
             "created_at": value.get("created_at"),
-            "scope": {"grants": value.get("grants")},
+            "scope": {"grants": grants},
             # The Spaces metadata has no status/expiry fields. Presence PLUS the
             # authenticated S3 probe establishes activity, not a fictional TTL.
             "status": "active",
