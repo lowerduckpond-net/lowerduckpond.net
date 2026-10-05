@@ -253,12 +253,21 @@ class GitHubArtifacts:
         return max(0, STATUS_LIMIT - used)
 
     def _statuses(self) -> Iterator[dict[str, object]]:
-        seen = set()
+        seen: set[int] = set()
         for page in range(1, MAX_STATUS_PAGES + 1):
-            rows = self._api(
-                f"repos/{REPOSITORY}/commits/{self.registry_revision}/statuses"
-                f"?per_page={PAGE_SIZE}&page={page}"
-            )
+            try:
+                rows = self._api(
+                    f"repos/{REPOSITORY}/commits/{self.registry_revision}/statuses"
+                    f"?per_page={PAGE_SIZE}&page={page}"
+                )
+            except _UnavailableError:
+                if seen:
+                    # A later retry must not forget an entry already observed
+                    # during this incomplete scan, including a conflicting head.
+                    raise LifecycleError(
+                        "checkpoint registry became unavailable after observing entries"
+                    ) from None
+                raise
             if not isinstance(rows, list) or len(rows) > PAGE_SIZE:
                 raise LifecycleError("independent checkpoint registry is unavailable")
             for row in rows:
