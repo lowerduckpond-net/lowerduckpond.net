@@ -24,6 +24,8 @@ from scripts.m3_11_unattended.model import (
     stamp,
 )
 
+CreationRecorder = Callable[[str, str | None], None]
+
 
 class Provider(Protocol):
     kind: ProviderKind
@@ -33,7 +35,7 @@ class Provider(Protocol):
         """Complete bounded inventory; failures and partial pages must raise."""
         ...
 
-    def create(self, intent: Intent) -> Credential: ...
+    def create(self, intent: Intent, *, record: CreationRecorder) -> Credential: ...
 
     def inspect(self, identifier: str) -> dict[str, object] | None: ...
 
@@ -146,7 +148,7 @@ class CleanupResult:
 
 
 class Lifecycle:
-    def __init__(
+    def __init__(  # noqa: PLR0913 - persistence boundaries remain explicit
         self,
         journal: Journal,
         providers: Mapping[ProviderKind, Provider],
@@ -154,10 +156,30 @@ class Lifecycle:
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         remember: Callable[[Intent, Credential], None] | None = None,
         remember_intent: Callable[[Intent], None] | None = None,
+        remember_created: Callable[[Intent, dict[str, object]], None] | None = None,
     ) -> None:
         self.journal, self.providers, self.clock = journal, providers, clock
         self.remember = remember
         self.remember_intent = remember_intent
+        self.remember_created = remember_created
+
+    def _record_creation(self, intent: Intent, selected: str, secret: str | None) -> None:
+        record = event(
+            "created",
+            intent.run_id,
+            {"intent_sha256": intent.sha256, "credential_id": identifier(selected)},
+        )
+        try:
+            if self.remember_created is not None:
+                self.remember_created(intent, record)
+            if secret is not None and self.remember is not None:
+                self.remember(intent, Credential(selected, secret, {}))
+        finally:
+            # A private delivery failure must not discard an acknowledged ID.
+            # Conversely, retain its local record before a remote ACK can fail.
+            self.journal.persist(record)
+        if secret is not None and self.remember is not None:
+            self.journal.persist(_authentication_marker(intent))
 
     def provision(  # noqa: PLR0913 - all approval and authority bindings are explicit
         self,
@@ -208,24 +230,12 @@ class Lifecycle:
             raise LifecycleError("credential creation window elapsed before acknowledgement")
         # Exactly one mutation. A timeout or lost response is an outstanding
         # obligation; no handler may call create again for this run and role.
-        credential = client.create(intent)
-        if self.remember is not None:
-            self.remember(intent, credential)
-        self.journal.persist(
-            event(
-                "created",
-                run_id,
-                {
-                    "intent_sha256": intent.sha256,
-                    "credential_id": identifier(credential.identifier),
-                },
-            )
+        credential = client.create(
+            intent,
+            record=lambda selected, secret: self._record_creation(intent, selected, secret),
         )
-        if self.remember is not None:
-            # Establish the retained key's negative-authentication obligation
-            # while the independent provisioning witness is still available.
-            # A later host failure cannot turn a failed probe into "unavailable".
-            self.journal.persist(_authentication_marker(intent))
+        if known_id(self.journal, intent) != credential.identifier:
+            raise LifecycleError("creation response differs from its recorded identity")
         metadata = client.inspect(credential.identifier)
         if metadata is None:
             raise LifecycleError("new credential was not visible in provider readback")

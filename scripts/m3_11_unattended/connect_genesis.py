@@ -28,6 +28,7 @@ DISCOVERY_FORMAT = "lowerduckpond-m3-11-connect-discovery-request-v1"
 DISCOVERY_RECEIPT = "lowerduckpond-m3-11-connect-discovery-receipt-v1"
 RECEIPT_FORMAT = "lowerduckpond-m3-11-connect-genesis-receipt-v1"
 PROBE_FORMAT = "lowerduckpond-m3-11-connect-provenance-v1"
+CREDENTIAL_EVENTS = frozenset({"intent", "created", "revoke", "cleanup", "resolved"})
 REQUEST_FIELDS = {
     "format",
     "epoch",
@@ -128,7 +129,7 @@ def discover(
         or ledger.anchor != selected["anchor"]
         or ledger.anchor_sha256 != selected["anchor_sha256"]
         or not initial.items() <= observed.items()
-        or any(record["kind"] == "intent" for record in before)
+        or any(record["kind"] in CREDENTIAL_EVENTS for record in before)
         or ledger.authors(validate(selected["shared_probe"])) != {selected["shared_author"]}
     ):
         raise LifecycleError("Connect discovery inputs or complete initial inventory differ")
@@ -222,7 +223,7 @@ def initialize(  # noqa: PLR0913 - independent authority, provider identities an
     prior = {str(record["event_id"]): digest(record) for record in before if record != probe}
     if (
         prior != initial
-        or any(record["kind"] == "intent" for record in before)
+        or any(record["kind"] in CREDENTIAL_EVENTS for record in before)
         or ledger.authors(shared) != {selected["shared_author"]}
         or ledger.authors(shared_forgery) != {selected["shared_author"]}
     ):

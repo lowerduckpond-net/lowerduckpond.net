@@ -6,6 +6,7 @@ import copy
 import hashlib
 import io
 import subprocess
+import sys
 import uuid
 import zipfile
 from collections.abc import Callable
@@ -175,6 +176,52 @@ def test_encrypted_checkpoint_roundtrip_and_clean_uploader_boundary(
     assert registry.read(stored) == value
     captured = capsys.readouterr()
     assert CANARY not in captured.out + captured.err
+
+
+def test_uploader_can_publish_outputs_after_upload_without_losing_registry_acknowledgement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    action_environment(tmp_path, monkeypatch)
+    registry = Registry(tmp_path / "private")
+    upload = uploader(registry)
+    native_run = subprocess.run
+
+    def require_runner_output(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        uploaded = upload(command, **kwargs)
+        environment = kwargs["env"]
+        assert isinstance(environment, dict)
+        # The pinned Actions toolkit checks existence before appending outputs.
+        # Run that contract in a child process after the upload has succeeded.
+        result = native_run(
+            [
+                sys.executable,
+                "-c",
+                "import os, pathlib, stat\n"
+                "p = pathlib.Path(os.environ['GITHUB_OUTPUT'])\n"
+                "assert p.is_file() and not p.is_symlink()\n"
+                "assert stat.S_IMODE(p.stat().st_mode) == 0o600\n"
+                "assert p.read_bytes() == b''\n"
+                "fd = os.open(p, os.O_WRONLY | os.O_APPEND)\n"
+                "os.write(fd, b'artifact-id=10\\n')\n"
+                "os.close(fd)\n",
+            ],
+            env=environment,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+        return uploaded if result.returncode == 0 else result
+
+    monkeypatch.setattr(subprocess, "run", require_runner_output)
+    document: dict[str, object] = {"records": ["owned-intent"]}
+    created = registry.create(document)
+    assert registry.latest() == created
+    assert registry.read(created) == document
+    assert len(registry.archives) == 1
+    assert len(registry.statuses) == 1
+    assert list(registry.directory.iterdir()) == []
 
 
 def test_uncertain_upload_cannot_advance_registry_but_preserves_artifact(

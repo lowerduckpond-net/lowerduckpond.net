@@ -17,11 +17,13 @@ import pytest
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_unattended import approval, cleanup, evidence, setup, watchdog, worker
 from scripts.m3_11_unattended.config import Bootstrap, Configuration
-from scripts.m3_11_unattended.docker import SOCKET
+from scripts.m3_11_unattended.docker import SOCKET, Docker
 from scripts.m3_11_unattended.journal import OpJournal, event
-from scripts.m3_11_unattended.model import Credential, LifecycleError, stamp
+from scripts.m3_11_unattended.lifecycle import Lifecycle, intents, known_id
+from scripts.m3_11_unattended.model import Credential, Intent, LifecycleError, stamp
 from scripts.m3_11_unattended.state import RunState, replace_private
 
+from .test_m3_11_creation_identities import CreationApi, provision
 from .test_m3_11_unattended_lifecycle import CANARY, TARGETS, Case, DelayedPersistence
 
 DAEMON = dict.fromkeys(("ID", "Name", "DockerRootDir", "ServerVersion"), "approved-daemon")
@@ -216,6 +218,7 @@ def test_private_spool_is_durable_before_remote_creation_acknowledgement(
         selected.remember,
         selected.remember_intent,
     )
+    case.lifecycle.remember_created = selected.remember_created
     append = case.journal.append
 
     def lose_ack(record: dict[str, object]) -> None:
@@ -232,6 +235,107 @@ def test_private_spool_is_durable_before_remote_creation_acknowledgement(
     monkeypatch.setattr(case.journal, "append", append)
     assert selected.revoke()
     assert not worker.retained_credentials(selected.directory)
+
+
+@pytest.mark.parametrize("actor", ["controller", "watchdog"])
+@pytest.mark.parametrize("staged", [False, True])
+def test_id_only_creation_survives_remote_ack_failure_and_actor_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor: str, staged: bool
+) -> None:
+    selected, case = subject(tmp_path, monkeypatch)
+    directory = selected.directory.with_name(case.run_id)
+    selected.directory.rename(directory)
+    selected.directory, selected.state = directory, RunState(directory)
+    selected.state.begin(selected.binding)
+    (directory / "credential-intents").mkdir(mode=0o700)
+    case.lifecycle.remember = selected.remember
+    case.lifecycle.remember_intent = selected.remember_intent
+    case.lifecycle.remember_created = selected.remember_created
+    api = CreationApi("spaces", response_fault="missing", wrong_scope=True)
+    append = case.journal.append
+
+    def lose_ack(record: dict[str, object]) -> None:
+        if record["kind"] == "created":
+            if staged:
+                append(record)
+            raise LifecycleError("journal unavailable")
+        append(record)
+
+    monkeypatch.setattr(case.journal, "append", lose_ack)
+    with pytest.raises(LifecycleError, match="journal unavailable"):
+        provision(case, api)
+    intent = intents(case.journal)[0]
+    original = read_private(directory / "credential-created" / (intent.sha256 + ".json"))
+    assert known_id(case.journal, intent) == (api.selected if staged else None)
+    assert not worker.retained_credentials(directory)
+    assert not selected.revoke()
+    assert api.deletes == []
+    monkeypatch.setattr(case.journal, "append", append)
+    case.lifecycle = Lifecycle(case.journal, {"spaces": api.provider()}, clock=lambda: case.now)
+    if actor == "controller":
+        restarted = worker.Worker(directory, configuration(), tmp_path / "source")
+        assert restarted.revoke()
+    else:
+        available = watchdog.reconcile_processes(
+            case.lifecycle, directory.parent, cast(Docker, None), directories={directory}
+        )
+        assert available == {}
+        assert case.lifecycle.sweep()[0].status == "verified"
+    assert api.creates == 1 and api.deletes == [api.selected]
+    assert read_private(directory / "credential-created" / (intent.sha256 + ".json")) == original
+    assert len([row for row in case.journal.records() if row["kind"] == "created"]) == 1
+
+
+def test_private_delivery_failure_still_records_returned_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selected, case = subject(tmp_path, monkeypatch)
+    api = CreationApi("spaces", response_fault="valid", wrong_scope=True)
+    case.lifecycle.remember_created = selected.remember_created
+
+    def fail_delivery(_intent: Intent, _credential: Credential) -> None:
+        raise OSError("private spool unavailable")
+
+    case.lifecycle.remember = fail_delivery
+    with pytest.raises(OSError, match="private spool unavailable"):
+        provision(case, api)
+    intent = intents(case.journal)[0]
+    assert known_id(case.journal, intent) == api.selected
+    assert CANARY not in repr(case.journal.records())
+    assert selected.revoke()
+    assert api.deletes == [api.selected]
+
+
+@pytest.mark.parametrize("actor", ["controller", "watchdog"])
+def test_torn_local_creation_record_cannot_delay_independent_terminal_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor: str
+) -> None:
+    selected, case = subject(tmp_path, monkeypatch)
+    directory = selected.directory.with_name(case.run_id)
+    selected.directory.rename(directory)
+    selected.directory, selected.state = directory, RunState(directory)
+    selected.state.begin(selected.binding)
+    case.lifecycle.remember_created = selected.remember_created
+    api = CreationApi("spaces", response_fault="missing", wrong_scope=True)
+    with pytest.raises(LifecycleError, match="omitted its secret"):
+        provision(case, api)
+    intent = intents(case.journal)[0]
+    path = directory / "credential-created" / (intent.sha256 + ".json")
+    path.write_text('{"torn":')
+    if actor == "controller":
+        assert not selected.revoke()
+        assert selected.state.status()["credential_cleanup"] == "unresolved"
+    else:
+        with pytest.raises(ValueError):
+            watchdog.reconcile_processes(
+                case.lifecycle, directory.parent, cast(Docker, None), directories={directory}
+            )
+    assert api.deletes == []
+    assert any(row["kind"] == "revoke" for row in case.journal.records())
+    independent = Lifecycle(case.journal, {"spaces": api.provider()}, clock=lambda: case.now)
+    assert independent.reconcile(intent).status == "verified"
+    assert api.deletes == [api.selected]
+    assert path.read_text() == '{"torn":'
 
 
 @pytest.mark.parametrize("age", [timedelta(minutes=91), timedelta(days=1)])

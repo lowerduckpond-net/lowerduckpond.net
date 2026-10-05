@@ -16,7 +16,7 @@ from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended.cloudflare import ORIGIN, Cloudflare, result
 from scripts.m3_11_unattended.http import Api
 from scripts.m3_11_unattended.journal import Journal, OnePassword, OpJournal
-from scripts.m3_11_unattended.lifecycle import Provider
+from scripts.m3_11_unattended.lifecycle import CreationRecorder, Provider
 from scripts.m3_11_unattended.model import (
     Authority,
     Credential,
@@ -193,7 +193,7 @@ class UnavailableProvider:
     def delete(self, identifier: str) -> None:
         raise LifecycleError("provider cleanup authority is unavailable")
 
-    def create(self, intent: Intent) -> Credential:
+    def create(self, intent: Intent, *, record: CreationRecorder) -> Credential:
         raise LifecycleError("cleanup cannot provision credentials")
 
     def verify(self, intent: Intent, credential: Credential, *, now: datetime) -> None:

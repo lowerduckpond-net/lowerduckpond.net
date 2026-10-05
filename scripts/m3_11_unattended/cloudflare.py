@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 
 from scripts.check_m3_7_production_edge import validate_account_token_policy
 from scripts.m3_11_unattended.http import Api, collection
-from scripts.m3_11_unattended.lifecycle import identifier
+from scripts.m3_11_unattended.lifecycle import CreationRecorder, identifier
 from scripts.m3_11_unattended.model import (
     Credential,
     Intent,
@@ -167,7 +167,7 @@ class Cloudflare:
         )
         return {"permissions": permissions, "resources": resources}
 
-    def create(self, intent: Intent) -> Credential:
+    def create(self, intent: Intent, *, record: CreationRecorder) -> Credential:
         permissions = strings(intent.scope.get("permissions"))
         body: dict[str, object] = {
             "name": intent.name,
@@ -186,6 +186,7 @@ class Cloudflare:
         if not isinstance(item, dict):
             raise LifecycleError("Cloudflare creation response was not acknowledged")
         selected, secret = identifier(item.get("id")), item.get("value")
+        record(selected, secret if isinstance(secret, str) and secret else None)
         if not isinstance(secret, str) or not secret:
             raise LifecycleError("Cloudflare creation omitted its secret; reconcile its intent")
         return Credential(selected, secret, self._metadata(item))

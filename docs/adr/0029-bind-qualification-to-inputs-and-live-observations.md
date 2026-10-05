@@ -181,8 +181,24 @@ record; any started discovery or credential intent prevents that migration.
 After discovery starts, a reviewed successor coordinator may recover the original
 ceremony using its original merged helper, immutable requests and dispatches.
 It records both revisions and the retained evidence hashes before proceeding.
-Only completed original genesis permits publishing the successor active helper;
-fresh independent readiness is still required. GitHub receipt acceptance binds
+That recovery publishes the successor active helper only after the original
+genesis completes; fresh independent readiness is still required.
+
+A separate explicit replacement is permitted for failed genesis whose
+original executable cannot complete, only while its authoritative registry has
+no entries and both complete journal views contain no credential lifecycle
+activity. It requires unchanged bootstrap bindings, both helpers merged, retained
+original evidence and a separate private attempt directory. An immutable transition
+links old and new epochs, executable revisions, failed execution and orphan
+artifacts before mutation. A non-admitting protected marker fences old genesis
+requests, then all pending cleanup executions are drained and the complete old
+registry is checked again. Missing, ambiguous or changed evidence blocks progress.
+The new attempt retains every prior logical record and repeats full independent
+discovery, provenance, genesis and readiness. Interrupted replacement resumes its
+recorded epoch. It preserves the original failure and artifacts, cannot replace an
+active or registered genesis, and never replays a qualification attempt.
+
+GitHub receipt acceptance binds
 the successful current attempt and Connect job to its native artifact metadata,
 digest and observation interval. Legacy same-name artifacts require an
 unambiguous upload within that job; earlier failed artifacts remain retained.

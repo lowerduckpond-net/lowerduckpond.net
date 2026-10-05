@@ -266,6 +266,28 @@ If the pending stage was published before its private dispatch/submission record
 were retained, successor recovery refuses it as indistinguishable from lost
 evidence. Retain the directory and resume that boundary with the original helper.
 
+If a defect in the original executable prevents genesis completion, an explicit
+`--replace-failed-activation /private/original-activation` option permits a new
+activation attempt **only before any registered genesis or credential lifecycle
+activity**, after the original genesis execution has failed. Use the reviewed,
+merged correction with unchanged bootstrap inputs
+and a new `--directory` beside the original private directory. Both attempts share
+the same parent lock. Keep that replacement directory and the option when retrying.
+
+Replacement verifies the original failed GitHub execution and all retained inputs,
+requests, probes and dispatch records. Before changing protected configuration it
+records the old selection, execution, evidence hashes, orphan artifact identities,
+new epoch and transition record. It publishes a non-admitting transition marker,
+drains all pending cleanup executions and checks the original registry again.
+Any registry entry, incomplete read, changed binding or credential lifecycle event
+blocks replacement. Old files, uploaded artifacts and the failed result remain
+intact. The new attempt preserves every prior logical journal record and repeats
+independent discovery, both native author-forgery checks, genesis persistence and
+fresh cleanup readiness. A hidden obligation in the independent replica blocks
+genesis. An interrupted transition resumes only its retained new epoch; it never
+allocates another automatically. This exception does not apply to an active or
+registered genesis, and it does not qualify or replay a failed qualification run.
+
 Cleanup receipts are named by GitHub run and attempt. Readback verifies the
 successful native Connect job, workflow/repository/revision metadata, artifact
 digest and receipt observation time, and retains `receipt-source.json` with the
@@ -274,6 +296,10 @@ the same artifact name, exactly one upload must fall strictly after the current
 job started and no later than it completed. Stale, ambiguous or invalid results
 remain unresolved. Failed attempts and their artifacts are preserved; a rerun
 does not turn the original failed result into a pass.
+
+The pinned checkpoint uploader receives a private, pre-created Actions output file.
+An uploaded artifact alone is insufficient: encrypted readback and append-only
+registry publication must also succeed before the journal acknowledges durability.
 
 `M3_11_CONNECT_CONFIGURATION` holds those non-secret protected bindings and the
 active executable helper in one atomic publication. The workflow captures that
@@ -388,7 +414,11 @@ Each intent also pins its cleanup authority's secret hash: a different account's
 empty inventory or a replaced bootstrap token cannot manufacture removal proof.
 Changing that authority with outstanding obligations needs a separate reviewed
 authorization decision, not an automatic token roll.
-Returned IDs are immediately recorded locally and externally. Lost
+Returned IDs are immediately recorded locally and externally, before rejecting
+a missing secret or invalid metadata. Usable secrets remain private; an ID-only
+record does not claim that negative authentication was tested. Controller and
+watchdog recovery restore retained creation records before evaluating ownership,
+including when the original external acknowledgement failed. Lost
 responses reconcile exact intent metadata and provider inventory; no creation
 request is retried. Missing or ambiguous ownership remains unresolved.
 

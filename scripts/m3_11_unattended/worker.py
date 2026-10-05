@@ -23,8 +23,8 @@ from scripts.m3_11_unattended.cloudflare import Cloudflare
 from scripts.m3_11_unattended.config import Configuration, connect
 from scripts.m3_11_unattended.connect_journal import ConnectJournal
 from scripts.m3_11_unattended.docker import SOCKET, Docker
-from scripts.m3_11_unattended.journal import Journal, OpJournal, event
-from scripts.m3_11_unattended.lifecycle import Lifecycle, intents
+from scripts.m3_11_unattended.journal import Journal, OpJournal, event, validate
+from scripts.m3_11_unattended.lifecycle import Lifecycle, identifier, intents, known_id
 from scripts.m3_11_unattended.model import (
     ROLES,
     Credential,
@@ -75,6 +75,27 @@ def retained_credentials(directory: Path) -> dict[str, Credential]:
             raise LifecycleError("retained credential identity changed")
         values[record["intent_sha256"]] = Credential(record["identifier"], record["secret"], {})
     return values
+
+
+def restore_created(lifecycle: Lifecycle, directory: Path, *, run_id: str) -> None:
+    """Recover exact private creation receipts before cleanup evaluates ownership."""
+    owned = {
+        intent.sha256: intent for intent in intents(lifecycle.journal) if intent.run_id == run_id
+    }
+    for path in sorted((directory / "credential-created").glob("*.json")):
+        record = validate(read_private(path))
+        payload = fields(record["payload"], {"intent_sha256", "credential_id"})
+        if (
+            record["kind"] != "created"
+            or record["run_id"] != run_id
+            or payload["intent_sha256"] != path.stem
+            or path.stem not in owned
+        ):
+            raise LifecycleError("retained creation record has no matching obligation")
+        selected = identifier(payload["credential_id"])
+        if known_id(lifecycle.journal, owned[path.stem]) not in (None, selected):
+            raise LifecycleError("retained creation identity conflicts with its obligation")
+        lifecycle.journal.persist(record)
 
 
 def persist_terminal_result(lifecycle: Lifecycle, directory: Path) -> None:
@@ -158,6 +179,16 @@ class Worker:
         write_private(
             self.directory / "credential-intents" / (intent.sha256 + ".json"), intent.document()
         )
+
+    def remember_created(self, intent: Intent, record: dict[str, object]) -> None:
+        directory = self.directory / "credential-created"
+        directory.mkdir(mode=0o700, exist_ok=True)
+        private_directory(directory)
+        path = directory / (intent.sha256 + ".json")
+        if not path.exists():
+            write_private(path, record)
+        if read_private(path) != record:
+            raise LifecycleError("retained creation identity changed")
 
     def _verify_source(self) -> None:
         helper_root = Path(__file__).resolve().parents[2]
@@ -303,6 +334,7 @@ class Worker:
             creator.providers,
             remember=self.remember,
             remember_intent=self.remember_intent,
+            remember_created=self.remember_created,
         )
         credentials: dict[str, Credential] = {}
         deadlines: list[datetime] = []
@@ -538,6 +570,7 @@ class Worker:
                 self.cleanup_journal.refresh()
                 lifecycle.journal = self.cleanup_journal
             lifecycle.request_revocation(self.run_id)
+            restore_created(lifecycle, self.directory, run_id=self.run_id)
             available = retained_credentials(self.directory)
             receipt = cleanup.sweep(
                 lifecycle, actor="controller", helper=self.helper, secrets=available

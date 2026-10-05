@@ -22,6 +22,7 @@ SOURCES = (
             "connect_api",
             "connect_auth",
             "connect_checkpoint",
+            "connect_recovery",
             "connect_configuration",
             "connect_genesis",
             "connect_host",

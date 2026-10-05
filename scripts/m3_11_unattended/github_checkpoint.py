@@ -357,6 +357,10 @@ class GitHubArtifacts:
             codec = JournalCache(path, token=self._token, vault="connect:" + self.epoch)
             if not codec.write(document):
                 raise LifecycleError("independent checkpoint exceeds its encrypted bound")
+            output = Path(temporary) / "output"
+            # The pinned action sets outputs after uploading; the Actions SDK
+            # requires this runner-owned file to exist before setOutput runs.
+            output.touch(mode=0o600, exist_ok=False)
             environment = {
                 key: value
                 for key, value in os.environ.items()
@@ -372,7 +376,7 @@ class GitHubArtifacts:
                     "INPUT_COMPRESSION-LEVEL": "0",
                     "INPUT_INCLUDE-HIDDEN-FILES": "false",
                     "INPUT_ARCHIVE": "true",
-                    "GITHUB_OUTPUT": str(Path(temporary) / "output"),
+                    "GITHUB_OUTPUT": str(output),
                 }
             )
             try:
