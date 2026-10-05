@@ -12,6 +12,7 @@ import pytest
 
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_qualification_evidence import canonical_bytes
+from scripts.m3_11_unattended import connect_ledger
 from scripts.m3_11_unattended.connect_api import Connect, Response
 from scripts.m3_11_unattended.connect_checkpoint import Stored
 from scripts.m3_11_unattended.connect_ledger import ACK_FORMAT, ConnectLedger
@@ -49,6 +50,8 @@ class Replica(Connect):
         super().__init__("https://connect.example", CANARY)
         self.items = {ANCHOR: note(anchor, ANCHOR)}
         self.version = 1
+        self.reported_count: int | None = None
+        self.create_status = 200
         self.posts = 0
         self.reads = 0
         self.omit = False
@@ -81,10 +84,17 @@ class Replica(Connect):
                 self.items[selected]["version"] = 0
             if self.fail == "after":
                 raise LifecycleError("operation uncertain")
-            return Response(201, copy.deepcopy(created))
+            return Response(self.create_status, copy.deepcopy(created))
         if path == f"/v1/vaults/{VAULT}":
             return Response(
-                200, {"id": VAULT, "items": len(self.items), "contentVersion": self.version}
+                200,
+                {
+                    "id": VAULT,
+                    "items": len(self.items)
+                    if self.reported_count is None
+                    else self.reported_count,
+                    "contentVersion": self.version,
+                },
             )
         assert path == f"/v1/vaults/{VAULT}/items"
         values = [
@@ -227,10 +237,12 @@ def test_lost_response_is_reconciled_without_another_post(
     assert not confirmed(selected, addition)
 
 
+@pytest.mark.parametrize("status", [200, 201])
 def test_returned_identity_is_retained_before_failed_inspection(
-    tmp_path: Path, record: dict[str, object]
+    tmp_path: Path, record: dict[str, object], status: int
 ) -> None:
     cache = Replica(record)
+    cache.create_status = status
     selected = ledger(cache, tmp_path, record)
     addition = event("intent", str(record["run_id"]), {"scope": "bounded-double"})
     cache.corrupt_after_post = True
@@ -238,6 +250,110 @@ def test_returned_identity_is_retained_before_failed_inspection(
         selected.stage(addition)
     saved = read_private(tmp_path / "spool" / (str(addition["event_id"]) + ".returned.json"))
     assert saved == {"item_id": str(1).zfill(26)}
+
+
+def test_native_creation_with_lagging_vault_count_retains_id_and_exact_readback(
+    tmp_path: Path, record: dict[str, object]
+) -> None:
+    cache = Replica(record)
+    cache.reported_count = 1
+    selected = ledger(cache, tmp_path, record)
+    addition = event("intent", str(record["run_id"]), {"scope": "bounded-double"})
+    selected.stage(addition)
+    assert addition in selected.records()
+    assert read_private(tmp_path / "spool" / (str(addition["event_id"]) + ".returned.json")) == {
+        "item_id": str(1).zfill(26)
+    }
+    # Stable cache readback still does not authorize provider creation.
+    assert not confirmed(selected, addition)
+
+
+@pytest.mark.parametrize("fault", ["metadata", "addition", "duplicate"])
+def test_inventory_movement_without_vault_version_change_is_rejected(
+    tmp_path: Path, record: dict[str, object], monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    cache = Replica(record)
+    cache.reported_count = 1
+    calls, request = 0, cache.request
+
+    def moving(method: str, path: str, body: dict[str, object] | None = None) -> Response:
+        nonlocal calls
+        response = request(method, path, body)
+        if path.endswith("/items"):
+            calls += 1
+            if calls == 2:  # noqa: PLR2004 - second complete inventory
+                assert isinstance(response.body, list)
+                if fault == "metadata":
+                    response.body[0]["lastEditedBy"] = REMOTE_AUTHOR
+                elif fault == "addition":
+                    response.body.append(note(record, "b" * 26))
+                else:
+                    response.body.append(copy.deepcopy(response.body[0]))
+        return response
+
+    monkeypatch.setattr(cache, "request", moving)
+    with pytest.raises(LifecycleError):
+        ledger(cache, tmp_path, record).records()
+
+
+@pytest.mark.parametrize("fault", ["omitted", "substituted", "checkpoint-only"])
+def test_lagging_count_never_discards_a_known_or_checkpointed_obligation(
+    tmp_path: Path, record: dict[str, object], fault: str
+) -> None:
+    cache = Replica(record)
+    cache.reported_count = 1
+    addition = event("intent", str(record["run_id"]), {"scope": "bounded-double"})
+    cache.items["b" * 26] = note(addition, "b" * 26)
+    selected = ledger(cache, tmp_path, record)
+    if fault == "checkpoint-only":
+        selected = ConnectLedger(
+            cache,
+            VAULT,
+            spool=tmp_path / "restart",
+            anchor=ANCHOR,
+            anchor_sha256=digest(record),
+            minimum={str(row["event_id"]): digest(row) for row in (record, addition)},
+        )
+    else:
+        selected.records()
+    del cache.items["b" * 26]
+    if fault == "substituted":
+        cache.items["c" * 26] = note(event("result", str(record["run_id"]), {}), "c" * 26)
+    with pytest.raises(LifecycleError, match="checkpoint"):
+        selected.records()
+
+
+def test_inventory_order_is_not_a_change(
+    tmp_path: Path, record: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = Replica(record)
+    addition = event("result", str(record["run_id"]), {})
+    cache.items["b" * 26] = note(addition, "b" * 26)
+    request, calls = cache.request, 0
+
+    def reordered(method: str, path: str, body: dict[str, object] | None = None) -> Response:
+        nonlocal calls
+        response = request(method, path, body)
+        if path.endswith("/items"):
+            calls += 1
+            if calls % 2 == 0:
+                assert isinstance(response.body, list)
+                response.body.reverse()
+        return response
+
+    monkeypatch.setattr(cache, "request", reordered)
+    assert ledger(cache, tmp_path, record).records() == [record, addition]
+
+
+def test_lagging_vault_count_does_not_disable_inventory_size_bound(
+    tmp_path: Path, record: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache = Replica(record)
+    cache.reported_count = 1
+    cache.items["b" * 26] = note(record, "b" * 26)
+    monkeypatch.setattr(connect_ledger, "MAX_EVENTS", 1)
+    with pytest.raises(LifecycleError, match="partial or unavailable"):
+        ledger(cache, tmp_path, record).records()
 
 
 @pytest.mark.parametrize(

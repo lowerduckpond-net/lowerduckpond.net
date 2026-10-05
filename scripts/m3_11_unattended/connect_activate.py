@@ -41,6 +41,21 @@ def retain(path: Path, value: dict[str, object]) -> dict[str, object]:
     return value
 
 
+def activation_probes(value: object) -> dict[str, object]:
+    probes = fields(value, {"shared", "independent"})
+    shared, independent = (validate(probes[role]) for role in ("shared", "independent"))
+    epoch = identity(shared["run_id"])
+    for role, probe in (("shared", shared), ("independent", independent)):
+        if (
+            probe["kind"] != "run"
+            or probe["run_id"] != epoch
+            or probe["payload"] != {"format": genesis.PROBE_FORMAT, "epoch": epoch, "actor": role}
+            or shared["event_id"] == independent["event_id"]
+        ):
+            raise LifecycleError("retained Connect activation probes changed")
+    return probes
+
+
 def readers(bundle: dict[str, object]) -> dict[str, dict[str, object]]:
     fields(bundle, {"format", "manifest", "url", "tokens", "provider_metadata"})
     if bundle["format"] != FORMAT or not isinstance(bundle["manifest"], dict):
@@ -152,6 +167,13 @@ class Activation:
             or payload.get("manifest") != self.manifest
         ):
             raise LifecycleError("delivered Connect bootstrap differs from the approved manifest")
+        self.retained_inputs = (directory / "inputs.json").exists()
+        if not self.retained_inputs and any(
+            path.name != "cleanup.lock" for path in directory.iterdir()
+        ):
+            raise LifecycleError(
+                "existing activation evidence has lost its original private inputs"
+            )
         retain(
             directory / "inputs.json",
             {
@@ -220,7 +242,7 @@ class Activation:
             return value
         path = self.directory / "probes.json"
         if path.exists():
-            probes = fields(read_private(path), {"shared", "independent"})
+            probes = activation_probes(read_private(path))
         else:
             epoch = str(uuid.uuid7())
             probes = {
@@ -258,6 +280,85 @@ class Activation:
         )
         return retain(self.directory / "discovery-request.json", value)
 
+    def initializing_evidence(self) -> tuple[dict[str, object], dict[str, object]]:
+        """Require the original private state; never replace an uncertain probe."""
+        if not self.retained_inputs:
+            raise LifecycleError("initializing helper upgrade requires retained private inputs")
+        probes = activation_probes(read_private(self.directory / "probes.json"))
+        shared = cast(dict[str, object], probes["shared"])
+        intent = str(shared["event_id"]) + ".json"
+        returned = str(shared["event_id"]) + ".returned.json"
+        spool = self.directory / "journal"
+        if (
+            not {path.name for path in spool.iterdir()} <= {intent, returned}
+            or read_private(spool / intent) != shared
+        ):
+            raise LifecycleError("initializing helper upgrade has changed or later stage evidence")
+        return probes, {
+            "inputs_sha256": digest(read_private(self.directory / "inputs.json")),
+            "probes_sha256": digest(probes),
+            "spool": {path.name: digest(read_private(path)) for path in spool.iterdir()},
+        }
+
+    def upgrade_initializing(
+        self,
+        current: dict[str, object],
+        marker: dict[str, object],
+        records: list[dict[str, object]],
+    ) -> None:
+        """Migrate only the same pre-discovery epoch to a reviewed merged helper."""
+        path = self.directory / ("initializing-upgrade-" + self.helper + ".json")
+        saved = read_private(path) if path.exists() else None
+        previous = fields(saved["previous"], set(marker)) if saved else current
+        prior_helper = revision(previous.get("active_helper"))
+        if (
+            prior_helper == self.helper
+            or previous != {**marker, "active_helper": prior_helper}
+            or current not in (previous, marker)
+        ):
+            raise LifecycleError("initializing helper upgrade changed protected bootstrap bindings")
+        self.github.merged(prior_helper)
+        probes, evidence = self.initializing_evidence()
+        shared = cast(dict[str, object], probes["shared"])
+        allowed = {"inputs.json", "probes.json", "journal", "cleanup.lock", path.name}
+        request_path = self.directory / "discovery-request.json"
+        if request_path.exists() and saved and current == marker:
+            request = genesis.discovery_request(read_private(request_path))
+            self.bind({"request": request})
+            if (
+                request["helper_revision"] != self.helper
+                or request["registry_revision"] != self.helper
+                or any(request[role + "_probe"] != probes[role] for role in probes)
+            ):
+                raise LifecycleError(
+                    "retained discovery request differs from the completed upgrade"
+                )
+            allowed.add(request_path.name)
+        if any(entry.name not in allowed for entry in self.directory.iterdir()):
+            raise LifecycleError("unfinished discovery or genesis requires its original helper")
+        if (
+            shared not in records
+            or len(self.ledger.authors(shared)) != 1
+            or any(row["kind"] == "intent" for row in records)
+            or any(row["run_id"] == shared["run_id"] and row != shared for row in records)
+        ):
+            raise LifecycleError("initializing helper upgrade cannot discard later journal history")
+        initial = {str(row["event_id"]): digest(row) for row in records}
+        audit = {"previous": previous, "selected": marker, **evidence, "initial": initial}
+        if saved:
+            if {**saved, "initial": initial} != audit or not strings(
+                saved["initial"]
+            ).items() <= initial.items():
+                raise LifecycleError("retained initializing upgrade evidence changed")
+        else:
+            retain(path, audit)
+        variables = self.github.variables()
+        if variables.get(BACKEND) != "connect-initializing" or json.loads(
+            variables.get(SETTING, "null")
+        ) not in (previous, marker):
+            raise LifecycleError("protected initialization changed before helper publication")
+        self.github.set_variable(SETTING, canonical_bytes(marker).decode())
+
     def quiesce(self) -> dict[str, object]:
         marker: dict[str, object] = {
             "format": INITIALIZING_FORMAT,
@@ -276,13 +377,21 @@ class Activation:
         current = json.loads(variables[SETTING]) if SETTING in variables else None
         if variables.get(BACKEND, "") not in {"", "service-account", "connect-initializing"}:
             raise LifecycleError("active Connect cleanup cannot return to initialization")
-        if current is not None and current != marker:
+        records = self.ledger.records()
+        if any(row["kind"] == "intent" for row in records):
+            raise LifecycleError("initial Connect activation cannot discard existing obligations")
+        audit = self.directory / ("initializing-upgrade-" + self.helper + ".json")
+        if (
+            isinstance(current, dict)
+            and current.get("format") == INITIALIZING_FORMAT
+            and (current != marker or audit.exists())
+        ):
+            self.upgrade_initializing(current, marker, records)
+        elif current is not None and current != marker:
             prior = action.selection(current, helper=self.helper)
             if prior["stage"] not in {"discovery", "genesis"}:
                 raise LifecycleError("an existing Connect epoch cannot be reinitialized")
             self.bind(prior)
-        if any(row["kind"] == "intent" for row in self.ledger.records()):
-            raise LifecycleError("initial Connect activation cannot discard existing obligations")
         if current is None:
             self.github.set_variable(SETTING, canonical_bytes(marker).decode())
         # Independent cleanup continues. Only an empty journal suppresses idle

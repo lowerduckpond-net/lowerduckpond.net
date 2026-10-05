@@ -259,6 +259,187 @@ def test_lost_discovery_reply_does_not_duplicate_remote_operation_or_probes(
     assert case.provider.creates == 0
 
 
+def pause_before_discovery(case: Case, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+    stage = ConnectLedger.stage
+
+    def interrupt(
+        ledger: ConnectLedger, record: dict[str, object], *, claimed_author: str | None = None
+    ) -> None:
+        stage(ledger, record, claimed_author=claimed_author)
+        raise LifecycleError("interrupted before discovery")
+
+    with monkeypatch.context() as interrupted:
+        interrupted.setattr(ConnectLedger, "stage", interrupt)
+        with pytest.raises(LifecycleError, match="interrupted before discovery"):
+            case.activation().activate(case.output)
+    assert not case.github.executions and case.shared.posts == 1
+    return read_private(case.path / "activation/probes.json")
+
+
+def test_initializing_helper_upgrade_preserves_probes_spool_and_existing_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = Case(tmp_path, monkeypatch)
+    probes = pause_before_discovery(case, monkeypatch)
+    before = json.loads(case.github.values[control.SETTING])
+    files = {path: path.read_bytes() for path in (case.path / "activation/journal").iterdir()}
+    case.shared.reported_count = 1
+    case.activation(helper="f" * 40).activate(case.output)
+    selected = json.loads(case.github.values[control.SETTING])
+    assert selected["request"]["epoch"] == cast(dict[str, object], probes["shared"])["run_id"]
+    assert selected["request"]["shared_probe"] == probes["shared"]
+    assert selected["request"]["independent_probe"] == probes["independent"]
+    assert selected["request"]["helper_revision"] == "f" * 40
+    audit = read_private(case.path / "activation" / ("initializing-upgrade-" + "f" * 40 + ".json"))
+    assert audit["previous"] == before
+    assert audit["selected"] == {**before, "active_helper": "f" * 40}
+    assert all(path.read_bytes() == value for path, value in files.items())
+    assert case.shared.posts == 2 and len(case.github.executions) == 3
+    assert case.provider.creates == 0 and Configuration.load(case.output).targets == TARGETS
+
+
+@pytest.mark.parametrize("fault", ["before", "after", "discovery-request"])
+def test_initializing_upgrade_interruption_reconciles_without_replacing_epoch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    case = Case(tmp_path, monkeypatch)
+    probes = pause_before_discovery(case, monkeypatch)
+    publish = case.github.set_variable
+
+    def interrupt(name: str, value: str) -> None:
+        upgrading = name == control.SETTING and json.loads(value)["stage"] == "initializing"
+        if upgrading and fault == "before":
+            raise LifecycleError("interrupted publication")
+        publish(name, value)
+        if upgrading and fault == "after":
+            raise LifecycleError("lost publication response")
+
+    if fault == "discovery-request":
+        activation = case.activation(helper="f" * 40)
+        activation.quiesce()
+        activation.discovery()
+    else:
+        with monkeypatch.context() as interrupted:
+            interrupted.setattr(case.github, "set_variable", interrupt)
+            with pytest.raises(LifecycleError):
+                case.activation(helper="f" * 40).activate(case.output)
+    assert not case.github.executions
+    case.activation(helper="f" * 40).activate(case.output)
+    assert read_private(case.path / "activation/probes.json") == probes
+    assert case.shared.posts == 2 and case.provider.creates == 0
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "old-unmerged",
+        "targets",
+        "receipt",
+        "stage",
+        "inputs",
+        "missing-probes",
+        "epoch",
+        "actor",
+        "same-id",
+        "spool",
+        "extra-spool",
+        "independent",
+        "ack",
+        "intent",
+        "discovery-request",
+        "discovery",
+        "genesis",
+        "shared-forgery.json",
+    ],
+)
+def test_initializing_upgrade_refuses_changed_bindings_history_or_missing_evidence(  # noqa: PLR0912 - boundary fault matrix
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    case = Case(tmp_path, monkeypatch)
+    probes = pause_before_discovery(case, monkeypatch)
+    directory = case.path / "activation"
+    shared = cast(dict[str, object], probes["shared"])
+    selected = json.loads(case.github.values[control.SETTING])
+    if fault == "old-unmerged":
+        case.github.allowed.remove(HELPER)
+    elif fault == "targets":
+        selected["request"]["targets_sha256"] = "0" * 64
+    elif fault == "receipt":
+        selected["receipt"] = {}
+    elif fault == "stage":
+        selected["stage"] = "genesis"
+    elif fault in {"inputs", "missing-probes"}:
+        (directory / ("inputs.json" if fault == "inputs" else "probes.json")).unlink()
+    elif fault in {"epoch", "actor", "same-id"}:
+        independent = cast(dict[str, object], probes["independent"])
+        if fault == "epoch":
+            independent["run_id"] = str(uuid.uuid7())
+        elif fault == "actor":
+            cast(dict[str, object], independent["payload"])["actor"] = "shared"
+        else:
+            independent["event_id"] = shared["event_id"]
+        (directory / "probes.json").unlink()
+        write_private(directory / "probes.json", probes)
+    elif fault in {"spool", "extra-spool"}:
+        path = directory / "journal" / (str(shared["event_id"]) + ".json")
+        if fault == "spool":
+            path.unlink()
+        else:
+            write_private(path.with_name("unexpected.json"), {})
+    elif fault in {"independent", "ack", "intent"}:
+        row = (
+            cast(dict[str, object], probes["independent"])
+            if fault == "independent"
+            else event("intent" if fault == "intent" else "heartbeat", str(shared["run_id"]), {})
+        )
+        case.shared.items["b" * 26] = note(row, "b" * 26)
+        case.shared.version += 1
+    elif fault == "discovery-request":
+        case.activation().discovery()
+    else:
+        # Even a submitted operation without a receipt prohibits helper migration.
+        path = directory / fault
+        path.mkdir() if "." not in fault else write_private(path, {})
+    case.github.values[control.SETTING] = json.dumps(selected)
+    before = dict(case.github.values)
+    with pytest.raises((LifecycleError, ValueError, OSError)):
+        case.activation(helper="f" * 40).activate(case.output)
+    if fault == "inputs":
+        assert not (directory / "inputs.json").exists()
+    assert case.github.values == before
+    assert case.shared.posts == 1 and not case.github.executions
+    assert case.provider.creates == 0 and not case.output.exists()
+
+
+@pytest.mark.parametrize("fault", ["probe", "spool", "inventory", "audit", "other-upgrade"])
+def test_interrupted_initializing_upgrade_requires_exact_retained_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    case = Case(tmp_path, monkeypatch)
+    probes = pause_before_discovery(case, monkeypatch)
+    case.activation(helper="f" * 40).quiesce()
+    directory = case.path / "activation"
+    if fault == "inventory":
+        del case.shared.items[str(1).zfill(26)]
+    elif fault == "other-upgrade":
+        write_private(directory / ("initializing-upgrade-" + "e" * 40 + ".json"), {})
+    else:
+        path = {
+            "probe": directory / "probes.json",
+            "spool": directory
+            / "journal"
+            / (str(cast(dict[str, object], probes["shared"])["event_id"]) + ".returned.json"),
+            "audit": directory / ("initializing-upgrade-" + "f" * 40 + ".json"),
+        }[fault]
+        path.unlink()
+        write_private(path, {"changed": True})
+    before = dict(case.github.values)
+    with pytest.raises((LifecycleError, ValueError, KeyError)):
+        case.activation(helper="f" * 40).activate(case.output)
+    assert case.github.values == before and case.shared.posts == 1
+    assert case.provider.creates == 0 and not case.github.executions
+
+
 @pytest.mark.parametrize(
     "fault",
     ["before-stage", "after-stage", "genesis-dispatch", "genesis-receipt", "active-publication"],
