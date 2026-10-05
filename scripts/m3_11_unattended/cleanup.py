@@ -32,6 +32,7 @@ from scripts.m3_11_unattended.connect_journal import (
     ConnectJournal,
     IndependentJournal,
 )
+from scripts.m3_11_unattended.connect_ledger import SnapshotChangedError
 from scripts.m3_11_unattended.github_checkpoint import MINIMUM_START_CAPACITY
 from scripts.m3_11_unattended.http import Api
 from scripts.m3_11_unattended.journal import Journal, OpJournal, event
@@ -276,7 +277,7 @@ def wait_independent_ready(
                     "independent Connect readiness exceeded its acknowledgement wait"
                 )
             return
-        except ReadinessPendingError:
+        except ReadinessPendingError, SnapshotChangedError:
             remaining = until - time.monotonic()
             if remaining <= 0:
                 raise

@@ -115,6 +115,7 @@ files = [
   "tests/infrastructure/test_m3_11_connect_activate.py",
   "tests/infrastructure/test_m3_11_connect_recovery.py",
   "tests/infrastructure/test_m3_11_connect_control.py",
+  "tests/infrastructure/test_m3_11_launcher_readiness.py",
   "tests/infrastructure/test_m3_11_connect_admission.py",
   "tests/infrastructure/test_m3_11_connect_genesis.py",
   "tests/infrastructure/test_m3_11_connect_host.py",

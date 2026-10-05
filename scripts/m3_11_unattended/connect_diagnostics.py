@@ -27,6 +27,7 @@ SOURCES = (
             "connect_checkpoint",
             "connect_recovery",
             "connect_configuration",
+            "connect_control",
             "connect_genesis",
             "connect_host",
             "connect_journal",

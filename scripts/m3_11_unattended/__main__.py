@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,7 +14,7 @@ from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
 from scripts.m3_11_unattended import approval, cleanup, setup
 from scripts.m3_11_unattended.config import Configuration
-from scripts.m3_11_unattended.connect_control import await_witness
+from scripts.m3_11_unattended.connect_control import await_witness, launch_evidence
 from scripts.m3_11_unattended.docker import (
     EVIDENCE_VOLUME,
     OWNER,
@@ -91,11 +92,19 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
             "daemon": prepared["daemon"],
         }
         if configuration.cleanup.connect_settings is not None:
-            await_witness(
-                configuration,
-                request,
-                directory=config.parent / "connect-dispatch" / run_id,
-            )
+            try:
+                await_witness(
+                    configuration,
+                    request,
+                    directory=config.parent / "connect-dispatch" / run_id,
+                )
+            except Exception:
+                print(
+                    f"Controller launch failed for attempt {run_id}; "
+                    "retrieve launch-evidence with the same private configuration.",
+                    file=sys.stderr,
+                )
+                raise
         initialize_run(
             docker, image=image, request=canonical_bytes(request), run_id=run_id, config=config
         )
@@ -162,6 +171,9 @@ def argument_parser() -> argparse.ArgumentParser:
     github.add_argument("--helper-revision", required=True)
     remote = subparsers.add_parser("cleanup-status")
     remote.add_argument("--config", type=Path, required=True)
+    launcher = subparsers.add_parser("launch-evidence")
+    launcher.add_argument("run_id")
+    launcher.add_argument("--config", type=Path, required=True)
     build = subparsers.add_parser("prepare")
     build.add_argument("revision")
     build.add_argument("--output", type=Path, required=True)
@@ -212,6 +224,18 @@ def main() -> int:
                         journal,
                         helper=revision(git(ROOT, "rev-parse", "HEAD").decode().strip()),
                         now=datetime.now(UTC),
+                    ),
+                    sort_keys=True,
+                )
+            )
+        elif args.action == "launch-evidence":
+            run_id = identity(args.run_id)
+            print(
+                json.dumps(
+                    launch_evidence(
+                        args.config.parent / "connect-dispatch" / run_id,
+                        run_id=run_id,
+                        helper=revision(git(ROOT, "rev-parse", "HEAD").decode().strip()),
                     ),
                     sort_keys=True,
                 )

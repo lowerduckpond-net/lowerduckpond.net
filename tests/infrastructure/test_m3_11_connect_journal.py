@@ -426,6 +426,61 @@ def test_new_native_readiness_waits_for_its_ack_without_falling_back(
     assert waits == [ACK_POLL_SECONDS]
 
 
+@pytest.mark.parametrize("fault", ["settles", "deadline", "cancel", "adverse"])
+def test_worker_readiness_retries_only_snapshot_instability_within_original_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    case = Case(tmp_path)
+    pending_readiness(case)
+    case.witness_once()
+    clock = [0.0]
+    limit, second_inventory = 2 * ACK_POLL_SECONDS + 1, 2
+    native = case.shared.request
+    inventory_reads = 0
+    sleeps = []
+
+    def changing(method: str, path: str, body: dict[str, object] | None = None) -> Response:
+        nonlocal inventory_reads
+        if method == "GET" and path == f"/v1/vaults/{case.controller.ledger.vault}/items":
+            inventory_reads += 1
+            if fault == "deadline" or inventory_reads == second_inventory:
+                case.shared.version += 1
+        return native(method, path, body)
+
+    def wait(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+        if fault == "adverse":
+            pending_readiness(case, fault="unresolved")
+
+    def cancelled() -> None:
+        if fault == "cancel" and sleeps:
+            raise LifecycleError("cancelled")
+
+    monkeypatch.setattr(case.shared, "request", changing)
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(time, "sleep", wait)
+    if fault == "settles":
+        cleanup.wait_independent_ready(
+            case.controller,
+            helper=case.witness.helper,
+            deadline=limit,
+            check_cancelled=cancelled,
+        )
+        assert len(sleeps) == 1
+    else:
+        with pytest.raises(LifecycleError):
+            cleanup.wait_independent_ready(
+                case.controller,
+                helper=case.witness.helper,
+                deadline=limit,
+                check_cancelled=cancelled,
+            )
+        assert clock[0] <= limit
+    assert case.controller.ledger._read_deadline is None
+    assert case.shared._request_timeout == TIMEOUT_SECONDS
+
+
 @pytest.mark.parametrize("fault", ["unresolved", "helper", "stale", "malformed"])
 def test_new_adverse_readiness_is_never_waited_past_or_ignored(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
