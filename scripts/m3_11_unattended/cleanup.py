@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from scripts.m3_11_qualification_evidence import fields
+from scripts.m3_11_unattended import audit_policy_recovery
 from scripts.m3_11_unattended.cloudflare import ORIGIN, Cloudflare
 from scripts.m3_11_unattended.config import (
     DO_READ_SCOPES,
@@ -114,7 +115,7 @@ def cleanup_providers(
     return providers
 
 
-def sweep(  # noqa: PLR0913 - explicit initialization quiescence never suppresses obligations
+def sweep(  # noqa: PLR0912, PLR0913 - independent restoration never suppresses child obligations
     lifecycle: Lifecycle,
     *,
     actor: str,
@@ -123,6 +124,8 @@ def sweep(  # noqa: PLR0913 - explicit initialization quiescence never suppresse
     authority_verified: bool = True,
     recovery_verified: bool = True,
     quiet_empty: bool = False,
+    arm_policy_restore: Callable[[datetime], None] | None = None,
+    force_policy_restore: bool = False,
 ) -> dict[str, object]:
     if actor not in {"controller", "watchdog", "github"}:
         raise LifecycleError("unknown cleanup actor")
@@ -139,6 +142,35 @@ def sweep(  # noqa: PLR0913 - explicit initialization quiescence never suppresse
                 "observed_at": stamp(datetime.now(UTC)),
                 "status": "initializing-empty",
             }
+    # Restoration is separate from child revocation: failure must not prevent
+    # any ordinary credential from being deleted and independently verified.
+    try:
+        policy_status = audit_policy_recovery.reconcile(
+            lifecycle.journal,
+            lifecycle.providers.get("cloudflare-account"),
+            now=datetime.now(UTC),
+            arm_restore=arm_policy_restore,
+            force_restore=force_policy_restore,
+        )
+    except RuntimeError, OSError, ValueError, TypeError, KeyError:
+        policy_status = "restoration-unresolved"
+    if policy_status == "policy-metadata-verified" and (
+        not authority_verified or (actor == "github" and arm_policy_restore is None)
+    ):
+        # Fallback deletion can proceed with a still-active short-lived token;
+        # it must not authorize a future permission grant beyond its authority.
+        policy_status = "restoration-unresolved"
+    policy_observed_at = datetime.now(UTC)
+    try:
+        audit_policy_recovery.observation(
+            lifecycle.journal,
+            status=policy_status,
+            actor=actor,
+            helper=helper,
+            now=policy_observed_at,
+        )
+    except RuntimeError, OSError, ValueError, TypeError, KeyError:
+        policy_status = "restoration-unresolved"
     observed = lifecycle.sweep(secrets)
     by_digest = {value.intent_sha256: value for value in observed}
     now = datetime.now(UTC)
@@ -156,6 +188,7 @@ def sweep(  # noqa: PLR0913 - explicit initialization quiescence never suppresse
         "ready"
         if authority_verified
         and recovery_verified
+        and policy_status in {"no-obligation", "original-policy-verified"}
         and healthy
         and all(value.status in {"verified", "not-due"} for value in observed)
         else "unresolved"
@@ -219,6 +252,10 @@ def require_independent_ready(journal: Journal, *, helper: str, now: datetime) -
         newest["payload"],
         selected_fields,
     )
+    for record in audit_policy_recovery.plans(observed):
+        restore_after = instant(audit_policy_recovery.plan(record)["restore_after"])
+        if now < restore_after or instant(value["observed_at"]) < restore_after:
+            raise LifecycleError("diagnostic policy restoration has no fresh independent receipt")
     if (
         value["helper_revision"] != helper
         or value["status"] != "ready"

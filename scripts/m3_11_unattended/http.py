@@ -55,6 +55,29 @@ class Api:
             or "#" in path
         ):
             raise LifecycleError("provider request escaped its fixed API")
+        return self._request(method, path, body)
+
+    def audit_policy_update(
+        self, *, candidate: dict[str, object], body: dict[str, object]
+    ) -> Response:
+        from scripts.m3_11_unattended.audit_policy_recovery import (  # noqa: PLC0415
+            body as normalized,
+        )
+        from scripts.m3_11_unattended.audit_policy_recovery import (  # noqa: PLC0415
+            candidate as approved_candidate,
+        )
+
+        approved = approved_candidate(candidate)
+        if self.origin != "https://api.cloudflare.com/client/v4" or body not in (
+            normalized(approved["before"]),
+            normalized(approved["candidate_after"]),
+        ):
+            raise LifecycleError("audit policy update escaped its exact approved bodies")
+        return self._request(
+            "PUT", f"/accounts/{approved['account_id']}/tokens/{approved['credential_id']}", body
+        )
+
+    def _request(self, method: str, path: str, body: dict[str, object] | None) -> Response:
         try:
             result = subprocess.run(  # noqa: S603 - fixed helper; bearer/body only in private pipes
                 [sys.executable, "-m", __name__, "--exchange"],

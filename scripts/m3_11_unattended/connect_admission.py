@@ -9,6 +9,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 
 from scripts.m3_11_qualification_evidence import fields
+from scripts.m3_11_unattended import audit_policy_recovery
 from scripts.m3_11_unattended.connect_journal import IndependentJournal
 from scripts.m3_11_unattended.creation_outcome import FORMAT as CREATION_PROTOCOL
 from scripts.m3_11_unattended.creation_outcome import run_payload
@@ -48,6 +49,20 @@ class Admission:
     def __init__(self, journal: IndependentJournal, *, targets: Targets, now: datetime) -> None:
         self.journal, self.targets, self.now = journal, targets, now
         self.records = journal.records()
+
+    def _policy_clear(self, now: datetime) -> bool:
+        # acknowledge() retains its newer complete snapshot before invoking
+        # this callback. Include it even when this Admission predates that read.
+        observed = {str(row["event_id"]): row for row in self.records}
+        observed.update(self.journal.checkpoint.records)
+        return audit_policy_recovery.admission_clear(
+            list(observed.values()),
+            now=now,
+            independent=lambda record: (
+                self.journal.ledger.authored(record, self.journal.witness.author)
+                and self.journal.checkpoint.records.get(str(record["event_id"])) == record
+            ),
+        )
 
     def _run(self, record: dict[str, object]) -> dict[str, str]:
         payload = run_payload(record["payload"])
@@ -101,6 +116,8 @@ class Admission:
         self, expected: str, authority: Authority, *, require_clear: Callable[[], None]
     ) -> bool:
         """Called only for the exact request dispatched by the authorized launcher."""
+        if not self._policy_clear(self.now):
+            raise LifecycleError("diagnostic policy restoration blocks creation admission")
         if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
             raise LifecycleError("Connect witness dispatch needs an exact request digest")
         matches = [
@@ -132,6 +149,11 @@ class Admission:
             raise LifecycleError("Connect attempt lacks fresh independent capacity")
         authority.require(self.now + WINDOW + LIFETIME)
         require_clear()
+        # The clearance callback refreshes independent state; a diagnostic
+        # obligation may have arrived after this Admission object was built.
+        self.records = self.journal.records()
+        if not self._policy_clear(self.now):
+            raise LifecycleError("diagnostic policy changed during creation admission")
         # Anchor both timing and event identity to the immutable dispatched run.
         # Even a late POST after ephemeral-spool loss produces identical copies,
         # rather than another window or an ambiguous logical decision.
@@ -175,6 +197,8 @@ class Admission:
         observed_at = self.now if now is None else now
         if record["kind"] not in {"run", "intent"}:
             return True
+        if not self._policy_clear(observed_at):
+            return False
         candidates = [
             row
             for row in self.records

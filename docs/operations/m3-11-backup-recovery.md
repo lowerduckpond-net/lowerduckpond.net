@@ -466,6 +466,50 @@ and native acknowledgement are required first. Actual independent Connect startu
 the live credential rehearsal, complete M3.11 and verified revocation still need
 operational evidence; local doubles do not establish those outcomes.
 
+### Diagnostic audit recovery requiring additional approval
+
+The October 6 uncertain Page Rules intent has a separate, narrowly pinned audit
+diagnostic in `scripts.m3_11_unattended.audit_diagnostic`. It requires **additional
+operator approval** of its prepared proposal digest. Existing live-qualification
+approval does not grant Account Settings Read. This recovery adds that permission
+to the already inspected dedicated provisioning bootstrap for the approved account;
+it creates no credential, changes no production credential and does not extend the
+bootstrap's native expiry. The candidate identity and original/proposed policies
+are immutable. A changed candidate needs a new implementation and approval.
+
+`prepare` takes the reviewed helper revision, private candidate and original intent
+documents, and a private output directory. It makes no provider changes and returns
+the proposal digest. After approval and merge, select that helper for protected
+cleanup using the existing activation procedure; an unresolved credential receipt
+must remain unresolved. `execute` takes the same directory, private controller
+configuration and `--approved-sha256`. It first persists a restoration obligation
+outside the Docker host and requires a fresh independently authored policy
+observation. A global submission marker beside the controller configuration and a
+private per-attempt marker prevent replay. Restart uses `restore` with that original
+directory and configuration; it never opens a new grant window.
+
+The immutable obligation permits a single permission update within ten minutes
+of staging and schedules restoration after fifteen minutes. Audit collection is
+bounded to three minutes, ten pages and the fixed original creation interval. Raw
+provider pages remain private; the constructed analysis exports only hashes,
+counts and fixed predicates. A positive audit identity is a lead requiring native
+ownership/removal verification. Empty, failed or incomplete audit results never
+resolve the original credential intent or unblock qualification.
+
+The controller restores the exact original policy in its terminal path. The
+independent cleanup execution stays present through the restoration deadline, and
+later watchdog/scheduled cleanup repeats native policy checks. Failed updates,
+missing responses, unexpected policy changes and failed readbacks remain unresolved.
+Restoration never deletes the bootstrap or overwrites an independently changed
+policy. Provider outages and missed GitHub schedules can delay restoration; the
+fifteen-minute deadline is **not provider-enforced expiry**. Every existing bearer
+copy gains the permission during that interval, potentially until the unchanged
+native expiry if restoration cannot be completed. New creation admission requires
+a fresh independent restoration result as well as all existing credential gates.
+
+These commands are diagnostic recovery only. They do not qualify the installation,
+promote a failed run, delete evidence or authorize a new qualification attempt.
+
 ### Review, start and monitor
 
 Before the first live issuance, present the prepared source/helper commit,
