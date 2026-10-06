@@ -142,7 +142,26 @@ class ConnectJournal(_Canonical):
     def persist(self, record: dict[str, object]) -> dict[str, object]:
         original = self._original(record)
         self.ledger.stage(original)
+        return self._wait_for(original, until=time.monotonic() + self.wait_seconds)
+
+    def persist_creation(self, created: dict[str, object], marker: dict[str, object]) -> None:
+        original = self._original(created)
+        self.ledger.stage(original)
+        # Start the first record's ACK clock at the same boundary as persist().
+        # Marker staging and both confirmations share that original deadline.
         until = time.monotonic() + self.wait_seconds
+        deadline = until if self.wait_seconds else time.monotonic() + ACK_WAIT_SECONDS
+        try:
+            with self.ledger.read_budget(deadline=deadline, check_cancelled=lambda: None):
+                related = self._original(marker)
+                self.ledger.stage(related)
+        finally:
+            # Even a failed marker write must still try to confirm the returned ID.
+            # Retained stage intents ensure uncertainty never repeats either POST.
+            self._wait_for(original, until=until)
+        self._wait_for(related, until=until)
+
+    def _wait_for(self, original: dict[str, object], *, until: float) -> dict[str, object]:
         while True:
             self.check_cancelled()
             # The zero-wait double still performs one read. Ordinary polling

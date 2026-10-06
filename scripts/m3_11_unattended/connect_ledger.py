@@ -362,7 +362,10 @@ class ConnectLedger:
             # disabled unless native readback proves this forged field was ignored.
             item["lastEditedBy"] = account_identity(claimed_author)
         try:
-            response = self.client.request("POST", "/v1/vaults/" + self.vault + "/items", item)
+            # A grouped creation write may share an earlier record's deadline.
+            # Retain uncertainty if this bounded POST times out; never resubmit.
+            with self._reading():
+                response = self.client.request("POST", "/v1/vaults/" + self.vault + "/items", item)
         except LifecycleError:
             response = None
         if (
