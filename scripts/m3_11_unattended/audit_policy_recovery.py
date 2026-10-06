@@ -27,7 +27,14 @@ RUN_ID = "01a11021-76d1-775a-adb1-fe00b6fd6152"
 GRANT_WINDOW = timedelta(minutes=10)
 RESTORE_WINDOW = timedelta(minutes=15)
 WRITABLE = {"name", "policies", "condition", "expires_on", "not_before", "status"}
-NATIVE = WRITABLE | {"id", "issued_on", "modified_on", "last_used_on"}
+# Creator attribution is native response metadata, never a policy update input.
+NATIVE = WRITABLE | {
+    "id",
+    "issued_on",
+    "modified_on",
+    "last_used_on",
+    "creator_email_at_creation",
+}
 
 
 def candidate(value: object) -> dict[str, object]:
