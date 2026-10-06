@@ -214,6 +214,7 @@ def reconcile(
     *,
     now: datetime,
     arm_restore: Callable[[datetime], None] | None = None,
+    force_restore: bool = False,
 ) -> str:
     """Recheck forever after the deadline, even after a previous successful restore.
 
@@ -227,7 +228,7 @@ def reconcile(
     value = plan(selected[0])
     approved = candidate(value["candidate"])
     client = restoration_authority(journal, provider, approved)
-    if len(selected) == 1 and now < instant(value["restore_after"]):
+    if not force_restore and len(selected) == 1 and now < instant(value["restore_after"]):
         if arm_restore is not None:
             arm_restore(instant(value["restore_after"]))
         if inspect(client.api, approved) not in (

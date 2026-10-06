@@ -226,7 +226,7 @@ def restore(
     return IndependentJournal(ledger, checkpoint, independent, capacity=store.remaining_capacity)
 
 
-def reconcile(  # noqa: PLR0913 - request, deadlines, identity and fallback are explicit
+def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadlines and fallback
     journal: IndependentJournal,
     connections: Callable[[], Connections],
     *,
@@ -240,6 +240,9 @@ def reconcile(  # noqa: PLR0913 - request, deadlines, identity and fallback are 
     """One bounded witness execution; hourly independent sweeps continue afterward."""
     until = time.monotonic() + (WITNESS_SECONDS if request_sha256 else 0)
     audit_wait_selected = False
+    audit_deadline: datetime | None = None
+    audit_due_checked = False
+    final_policy_pass = False
     next_sweep = 0.0
     receipt: dict[str, object] = {}
     announced = False
@@ -248,7 +251,7 @@ def reconcile(  # noqa: PLR0913 - request, deadlines, identity and fallback are 
     last_flush = time.monotonic()
 
     def arm_policy_restore(deadline: datetime) -> None:
-        nonlocal until, audit_wait_selected
+        nonlocal until, audit_wait_selected, audit_deadline
         if not audit_wait_selected:
             # Arm from the same validated obligation path that emits readiness.
             # A separate failed inventory read cannot leave an acknowledged
@@ -256,6 +259,7 @@ def reconcile(  # noqa: PLR0913 - request, deadlines, identity and fallback are 
             remaining = max(0.0, (deadline - datetime.now(UTC)).total_seconds())
             until = max(until, time.monotonic() + min(remaining, 15 * 60) + 2 * SWEEP_SECONDS)
             audit_wait_selected = True
+            audit_deadline = deadline
 
     def cleanup_progress() -> None:
         nonlocal last_flush
@@ -291,6 +295,7 @@ def reconcile(  # noqa: PLR0913 - request, deadlines, identity and fallback are 
                 else fallback()
             )
             lifecycle.progress = cleanup_progress
+            policy_pass_started = datetime.now(UTC)
             with journal.reconciliation():
                 receipt = cleanup.sweep(
                     lifecycle,
@@ -298,7 +303,10 @@ def reconcile(  # noqa: PLR0913 - request, deadlines, identity and fallback are 
                     helper=journal.witness.current_helper,
                     authority_verified=connected is not None,
                     arm_policy_restore=arm_policy_restore,
+                    force_policy_restore=final_policy_pass,
                 )
+            if audit_deadline is not None and policy_pass_started >= audit_deadline:
+                audit_due_checked = True
             next_sweep = time.monotonic() + SWEEP_SECONDS
         if (
             request_sha256
@@ -351,6 +359,13 @@ def reconcile(  # noqa: PLR0913 - request, deadlines, identity and fallback are 
             allow=allow,
         )
         if time.monotonic() >= until:
+            if audit_wait_selected and not audit_due_checked and not final_policy_pass:
+                # Slow ordinary child cleanup can cross the deadline during the
+                # last pre-deadline pass. Attempt restoration before exiting;
+                # the fixed job timeout still bounds any provider outage.
+                final_policy_pass = True
+                next_sweep = 0.0
+                continue
             return receipt
         time.sleep(min(POLL_SECONDS, max(0, until - time.monotonic())))
 

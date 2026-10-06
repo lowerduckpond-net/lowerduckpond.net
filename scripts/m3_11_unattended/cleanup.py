@@ -125,6 +125,7 @@ def sweep(  # noqa: PLR0912, PLR0913 - independent restoration never suppresses 
     recovery_verified: bool = True,
     quiet_empty: bool = False,
     arm_policy_restore: Callable[[datetime], None] | None = None,
+    force_policy_restore: bool = False,
 ) -> dict[str, object]:
     if actor not in {"controller", "watchdog", "github"}:
         raise LifecycleError("unknown cleanup actor")
@@ -149,6 +150,7 @@ def sweep(  # noqa: PLR0912, PLR0913 - independent restoration never suppresses 
             lifecycle.providers.get("cloudflare-account"),
             now=datetime.now(UTC),
             arm_restore=arm_policy_restore,
+            force_restore=force_policy_restore,
         )
     except RuntimeError, OSError, ValueError, TypeError, KeyError:
         policy_status = "restoration-unresolved"

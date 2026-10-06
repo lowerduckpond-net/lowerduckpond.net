@@ -51,8 +51,12 @@ class Admission:
         self.records = journal.records()
 
     def _policy_clear(self, now: datetime) -> bool:
+        # acknowledge() retains its newer complete snapshot before invoking
+        # this callback. Include it even when this Admission predates that read.
+        observed = {str(row["event_id"]): row for row in self.records}
+        observed.update(self.journal.checkpoint.records)
         return audit_policy_recovery.admission_clear(
-            self.records,
+            list(observed.values()),
             now=now,
             independent=lambda record: (
                 self.journal.ledger.authored(record, self.journal.witness.author)

@@ -31,6 +31,7 @@ FORMAT = "lowerduckpond-m3-11-audit-access-proposal-v1"
 SINCE = "2026-10-06T07:44:00Z"
 BEFORE = "2026-10-06T07:53:00Z"
 ROOT = Path(__file__).resolve().parents[2]
+MAX_RETAINED_PAGE = 6 * MAX_BYTES + 1  # Canonical ASCII escaping can expand admitted UTF-8.
 
 
 def proposal(value: object) -> dict[str, object]:
@@ -191,12 +192,13 @@ def collect(config: Configuration, approved: dict[str, object], directory: Path)
         since=SINCE,
         before=BEFORE,
         retain=lambda page, value: write_private(
-            directory / f"audit-page-{page}.json", value, maximum=MAX_BYTES
+            directory / f"audit-page-{page}.json", value, maximum=MAX_RETAINED_PAGE
         ),
     )
     write_private(
         directory / "audit-analysis.json",
         audit_lookup.analyze(records, Intent.parse(approved["intent"]), parent_id=verified["id"]),
+        maximum=MAX_BYTES,
     )
 
 
