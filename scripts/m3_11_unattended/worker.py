@@ -26,7 +26,12 @@ from scripts.m3_11_unattended.connect_diagnostics import retain_failure
 from scripts.m3_11_unattended.connect_journal import ConnectJournal
 from scripts.m3_11_unattended.connect_provisioning import ProvisioningJournal
 from scripts.m3_11_unattended.creation_outcome import FORMAT as CREATION_PROTOCOL
-from scripts.m3_11_unattended.creation_outcome import original_abort, validate_abort
+from scripts.m3_11_unattended.creation_outcome import (
+    RETAINED_FORMAT,
+    AbortRecoveryError,
+    original_abort,
+    restore_aborted,
+)
 from scripts.m3_11_unattended.docker import SOCKET, Docker
 from scripts.m3_11_unattended.journal import Journal, OpJournal, event, validate
 from scripts.m3_11_unattended.lifecycle import Lifecycle, identifier, intents, known_id
@@ -103,12 +108,7 @@ def restore_created(lifecycle: Lifecycle, directory: Path, *, run_id: str) -> No
         lifecycle.journal.persist(record)
     # Never synthesize an outcome during recovery. Only transport an original
     # execution's immutable attestation, after all retained IDs are restored.
-    for path in sorted((directory / "credential-aborted").glob("*.json")):
-        record = validate(read_private(path))
-        if path.stem not in owned:
-            raise LifecycleError("retained pre-creation outcome has no matching obligation")
-        validate_abort(record, owned[path.stem], lifecycle.journal.records())
-        lifecycle.journal.persist(record)
+    restore_aborted(lifecycle.journal, directory, run_id=run_id)
 
 
 def persist_terminal_result(lifecycle: Lifecycle, directory: Path) -> None:
@@ -379,7 +379,10 @@ class Worker:
             directory.mkdir(mode=0o700, exist_ok=True)
             private_directory(directory)
             # Exclusive durable creation; a partial file remains unresolved.
-            write_private(directory / (intent.sha256 + ".json"), record)
+            write_private(
+                directory / (intent.sha256 + ".json"),
+                {"format": RETAINED_FORMAT, "intent": intent_record, "abort": record},
+            )
 
         lifecycle = Lifecycle(
             pipeline if pipeline is not None else creator.journal,
@@ -627,10 +630,19 @@ class Worker:
                 self.cleanup_journal.refresh()
                 lifecycle.journal = self.cleanup_journal
             lifecycle.request_revocation(self.run_id)
-            restore_created(lifecycle, self.directory, run_id=self.run_id)
+            recovered = True
+            try:
+                restore_created(lifecycle, self.directory, run_id=self.run_id)
+            except AbortRecoveryError as error:
+                recovered = False
+                self._failure(error, cleanup_failed=True)
             available = retained_credentials(self.directory)
             receipt = cleanup.sweep(
-                lifecycle, actor="controller", helper=self.helper, secrets=available
+                lifecycle,
+                actor="controller",
+                helper=self.helper,
+                secrets=available,
+                recovery_verified=recovered,
             )
             own = {
                 intent.sha256
@@ -641,10 +653,14 @@ class Worker:
             if not local <= own or not set(available) <= own:
                 raise LifecycleError("independent credential obligations are missing")
             results = receipt["results"]
-            verified = isinstance(results, list) and all(
-                isinstance(value, dict)
-                and (value.get("intent_sha256") not in own or value.get("status") == "verified")
-                for value in results
+            verified = (
+                recovered
+                and isinstance(results, list)
+                and all(
+                    isinstance(value, dict)
+                    and (value.get("intent_sha256") not in own or value.get("status") == "verified")
+                    for value in results
+                )
             )
             if verified and (self.directory / "journey-result.json").exists():
                 persist_terminal_result(lifecycle, self.directory)

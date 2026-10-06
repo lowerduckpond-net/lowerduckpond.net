@@ -7,13 +7,21 @@ prove non-submission. Recovery transports exact existing records only.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended.inputs import BINDING
-from scripts.m3_11_unattended.journal import event, validate
+from scripts.m3_11_unattended.journal import Journal, event, validate
 from scripts.m3_11_unattended.model import Intent, LifecycleError, digest
 
 FORMAT = "lowerduckpond-m3-11-before-creation-abort-v1"
 RUN_FIELDS = {"binding", "mode", "approval_sha256"}
+RETAINED_FORMAT = "lowerduckpond-m3-11-retained-creation-abort-v1"
+
+
+class AbortRecoveryError(LifecycleError):
+    """Known children must still be revoked; this run cannot close yet."""
 
 
 def run_payload(value: object) -> dict[str, object]:
@@ -128,16 +136,60 @@ def select_abort(intent: Intent, observed: list[dict[str, object]]) -> dict[str,
     return selected[0]
 
 
+def restore_aborted(journal: Journal, directory: Path, *, run_id: str) -> None:
+    """Transport original events only, including an intent never submitted to Connect."""
+    incomplete = False
+    for path in sorted((directory / "credential-aborted").glob("*.json")):
+        try:
+            saved = fields(read_private(path), {"format", "intent", "abort"})
+            original, record = validate(saved["intent"]), validate(saved["abort"])
+            intent = Intent.parse(original["payload"])
+            if (
+                saved["format"] != RETAINED_FORMAT
+                or original["kind"] != "intent"
+                or original["run_id"] != run_id
+                or intent.run_id != run_id
+                or path.stem != intent.sha256
+            ):
+                raise LifecycleError("retained pre-creation envelope differs from its intent")
+            observed = journal.records()
+            same_role = [
+                candidate
+                for candidate in observed
+                if candidate["kind"] == "intent"
+                and candidate["run_id"] == run_id
+                and Intent.parse(candidate["payload"]).role == intent.role
+            ]
+            if same_role and same_role != [original]:
+                raise LifecycleError("retained pre-creation intent conflicts with the journal")
+            # The run must already exist externally and declare this protocol.
+            # Only the exact saved intent can be absent before transport.
+            validate_abort(
+                record, intent, observed if original in observed else [*observed, original]
+            )
+            if original not in observed:
+                journal.append(original)
+            # append may canonicalize; demand the saved event's exact identity.
+            validate_abort(record, intent, journal.records())
+            journal.persist(record)
+        except RuntimeError, OSError, ValueError, KeyError, TypeError:
+            incomplete = True
+    if incomplete:
+        raise AbortRecoveryError("original pre-creation outcomes remain unresolved")
+
+
 def valid_resolution(
     record: dict[str, object], intent: Intent, observed: list[dict[str, object]]
 ) -> bool:
     """A read-only status cannot treat contradictory non-creation as closure."""
     payload = record["payload"]
-    if not isinstance(payload, dict) or "creation_outcome" not in payload:
-        return True  # Existing provider-revocation receipts keep their interpretation.
+    if not isinstance(payload, dict):
+        return False
     try:
         abort = select_abort(intent, observed)
-        if abort is None or payload != {
+        if abort is None:
+            return "creation_outcome" not in payload
+        if payload != {
             "intent_sha256": intent.sha256,
             "credential_id": None,
             "provider_readback": "absent",

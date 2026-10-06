@@ -8,6 +8,7 @@ from pathlib import Path
 
 from scripts import qualification_deadline
 from scripts.m3_11_private_inputs import read_private, write_private
+from scripts.m3_11_unattended.creation_outcome import AbortRecoveryError
 from scripts.m3_11_unattended.docker import Docker, controller_name
 from scripts.m3_11_unattended.lifecycle import Lifecycle, intents
 from scripts.m3_11_unattended.model import Credential, identity, instant
@@ -59,13 +60,23 @@ def due_processes(root: Path, docker: Docker) -> list[Path]:
 
 
 def reconcile_processes(
-    lifecycle: Lifecycle, root: Path, docker: Docker, *, directories: set[Path] | None = None
+    lifecycle: Lifecycle,
+    root: Path,
+    docker: Docker,
+    *,
+    directories: set[Path] | None = None,
+    outcome_failures: set[Path] | None = None,
 ) -> dict[str, Credential]:
     available: dict[str, Credential] = {}
     selected = due_processes(root, docker) if directories is None else directories
     for directory in selected:
         lifecycle.request_revocation(identity(directory.name))
-        restore_created(lifecycle, directory, run_id=identity(directory.name))
+        try:
+            restore_created(lifecycle, directory, run_id=identity(directory.name))
+        except AbortRecoveryError:
+            if outcome_failures is None:
+                raise
+            outcome_failures.add(directory)
         available.update(retained_credentials(directory))
     return available
 

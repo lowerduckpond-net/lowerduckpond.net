@@ -418,6 +418,7 @@ class Lifecycle:
                     raise LifecycleError("retained credential identity differs from its obligation")
                 if (
                     not pending
+                    and not abort_conflict
                     and prior is not None
                     and isinstance(prior["payload"], dict)
                     and prior["payload"].get("credential_id") == known
