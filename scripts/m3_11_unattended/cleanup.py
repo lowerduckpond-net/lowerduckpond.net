@@ -33,6 +33,7 @@ from scripts.m3_11_unattended.connect_journal import (
     IndependentJournal,
 )
 from scripts.m3_11_unattended.connect_ledger import SnapshotChangedError
+from scripts.m3_11_unattended.creation_outcome import valid_resolution
 from scripts.m3_11_unattended.github_checkpoint import MINIMUM_START_CAPACITY
 from scripts.m3_11_unattended.http import Api
 from scripts.m3_11_unattended.journal import Journal, OpJournal, event
@@ -120,6 +121,7 @@ def sweep(  # noqa: PLR0913 - explicit initialization quiescence never suppresse
     helper: str,
     secrets: dict[str, Credential] | None = None,
     authority_verified: bool = True,
+    recovery_verified: bool = True,
     quiet_empty: bool = False,
 ) -> dict[str, object]:
     if actor not in {"controller", "watchdog", "github"}:
@@ -153,6 +155,7 @@ def sweep(  # noqa: PLR0913 - explicit initialization quiescence never suppresse
     status = (
         "ready"
         if authority_verified
+        and recovery_verified
         and healthy
         and all(value.status in {"verified", "not-due"} for value in observed)
         else "unresolved"
@@ -296,6 +299,7 @@ def status_document(journal: Journal, *, helper: str, now: datetime) -> dict[str
             if record["kind"] in {"resolved", "cleanup"}
             and isinstance(record["payload"], dict)
             and record["payload"].get("intent_sha256") == intent.sha256
+            and (record["kind"] != "resolved" or valid_resolution(record, intent, records))
             and (
                 record["kind"] != "resolved"
                 or not isinstance(journal, ConnectJournal)
@@ -446,17 +450,25 @@ def main() -> int:  # noqa: PLR0912, PLR0915 - remote cadence and explicit backe
                         journal.refresh()
                     lifecycle.journal = journal
                 available = None
+                outcome_failures: set[Path] = set()
                 if args.runs is not None:
-                    available = reconcile_processes(lifecycle, args.runs, Docker(), directories=due)
+                    available = reconcile_processes(
+                        lifecycle,
+                        args.runs,
+                        Docker(),
+                        directories=due,
+                        outcome_failures=outcome_failures,
+                    )
                 receipt = sweep(
                     lifecycle,
                     actor=args.actor,
                     helper=helper,
                     secrets=available,
                     quiet_empty=args.quiet_empty,
+                    recovery_verified=not outcome_failures,
                 )
                 if args.runs is not None:
-                    finish_reconciled(lifecycle, due, receipt)
+                    finish_reconciled(lifecycle, due - outcome_failures, receipt)
             print(json.dumps(receipt, sort_keys=True), flush=True)
             status = (
                 0

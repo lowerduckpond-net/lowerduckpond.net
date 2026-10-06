@@ -303,8 +303,10 @@ class GitHubArtifacts:
         stored = Stored(int(match[2]), description.removeprefix("sha256:"))
         return stored, int(match[1])
 
-    def read(self, stored: Stored) -> dict[str, object]:
+    def read(self, stored: Stored, *, deadline: float | None = None) -> dict[str, object]:
         self._until = time.monotonic() + SCAN_SECONDS
+        if deadline is not None:
+            self._until = min(self._until, deadline)
         metadata = self._api(f"repos/{REPOSITORY}/actions/artifacts/{stored.identity}")
         return self._read(stored, metadata)
 

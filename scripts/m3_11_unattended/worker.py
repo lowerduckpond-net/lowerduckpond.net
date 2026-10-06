@@ -24,6 +24,14 @@ from scripts.m3_11_unattended.config import Configuration, connect
 from scripts.m3_11_unattended.connect_admission import WINDOW
 from scripts.m3_11_unattended.connect_diagnostics import retain_failure
 from scripts.m3_11_unattended.connect_journal import ConnectJournal
+from scripts.m3_11_unattended.connect_provisioning import ProvisioningJournal
+from scripts.m3_11_unattended.creation_outcome import FORMAT as CREATION_PROTOCOL
+from scripts.m3_11_unattended.creation_outcome import (
+    RETAINED_FORMAT,
+    AbortRecoveryError,
+    original_abort,
+    restore_aborted,
+)
 from scripts.m3_11_unattended.docker import SOCKET, Docker
 from scripts.m3_11_unattended.journal import Journal, OpJournal, event, validate
 from scripts.m3_11_unattended.lifecycle import Lifecycle, identifier, intents, known_id
@@ -98,6 +106,9 @@ def restore_created(lifecycle: Lifecycle, directory: Path, *, run_id: str) -> No
         if known_id(lifecycle.journal, owned[path.stem]) not in (None, selected):
             raise LifecycleError("retained creation identity conflicts with its obligation")
         lifecycle.journal.persist(record)
+    # Never synthesize an outcome during recovery. Only transport an original
+    # execution's immutable attestation, after all retained IDs are restored.
+    restore_aborted(lifecycle.journal, directory, run_id=run_id)
 
 
 def persist_terminal_result(lifecycle: Lifecycle, directory: Path) -> None:
@@ -345,6 +356,7 @@ class Worker:
                     "binding": self.binding,
                     "mode": self.request["mode"],
                     "approval_sha256": self.request["approval_sha256"],
+                    "creation_protocol": CREATION_PROTOCOL,
                 },
             )
         )
@@ -355,12 +367,30 @@ class Worker:
             if isinstance(creator.journal, ConnectJournal)
             else None
         )
+        pipeline = (
+            ProvisioningJournal(creator.journal)
+            if isinstance(creator.journal, ConnectJournal)
+            else None
+        )
+
+        def remember_aborted(intent: Intent, intent_record: dict[str, object]) -> None:
+            record = original_abort(intent, intent_record, run_record)
+            directory = self.directory / "credential-aborted"
+            directory.mkdir(mode=0o700, exist_ok=True)
+            private_directory(directory)
+            # Exclusive durable creation; a partial file remains unresolved.
+            write_private(
+                directory / (intent.sha256 + ".json"),
+                {"format": RETAINED_FORMAT, "intent": intent_record, "abort": record},
+            )
+
         lifecycle = Lifecycle(
-            creator.journal,
+            pipeline if pipeline is not None else creator.journal,
             creator.providers,
             remember=self.remember,
             remember_intent=self.remember_intent,
             remember_created=self.remember_created,
+            remember_aborted=remember_aborted,
         )
         credentials: dict[str, Credential] = {}
         deadlines: list[datetime] = []
@@ -400,6 +430,9 @@ class Worker:
                 raise LifecycleError("independent cleanup cannot observe the created credential")
             credentials[role] = credential
             deadlines.append(instant(intent.deadline))
+        if pipeline is not None:
+            pipeline.flush()
+        self.check_cancelled()
         if len({credential.secret for credential in credentials.values()}) != len(ROLES) or len(
             {credential.identifier for credential in credentials.values()}
         ) != len(ROLES):
@@ -597,10 +630,19 @@ class Worker:
                 self.cleanup_journal.refresh()
                 lifecycle.journal = self.cleanup_journal
             lifecycle.request_revocation(self.run_id)
-            restore_created(lifecycle, self.directory, run_id=self.run_id)
+            recovered = True
+            try:
+                restore_created(lifecycle, self.directory, run_id=self.run_id)
+            except AbortRecoveryError as error:
+                recovered = False
+                self._failure(error, cleanup_failed=True)
             available = retained_credentials(self.directory)
             receipt = cleanup.sweep(
-                lifecycle, actor="controller", helper=self.helper, secrets=available
+                lifecycle,
+                actor="controller",
+                helper=self.helper,
+                secrets=available,
+                recovery_verified=recovered,
             )
             own = {
                 intent.sha256
@@ -611,10 +653,14 @@ class Worker:
             if not local <= own or not set(available) <= own:
                 raise LifecycleError("independent credential obligations are missing")
             results = receipt["results"]
-            verified = isinstance(results, list) and all(
-                isinstance(value, dict)
-                and (value.get("intent_sha256") not in own or value.get("status") == "verified")
-                for value in results
+            verified = (
+                recovered
+                and isinstance(results, list)
+                and all(
+                    isinstance(value, dict)
+                    and (value.get("intent_sha256") not in own or value.get("status") == "verified")
+                    for value in results
+                )
             )
             if verified and (self.directory / "journey-result.json").exists():
                 persist_terminal_result(lifecycle, self.directory)

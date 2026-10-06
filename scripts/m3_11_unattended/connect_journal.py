@@ -148,6 +148,13 @@ class ConnectJournal(_Canonical):
         return self._wait_for(original, until=time.monotonic() + self.wait_seconds)
 
     def persist_creation(self, created: dict[str, object], marker: dict[str, object]) -> None:
+        original, related, until = self.stage_creation(created, marker)
+        self.wait_many([(original, until), (related, until)])
+
+    def stage_creation(
+        self, created: dict[str, object], marker: dict[str, object]
+    ) -> tuple[dict[str, object], dict[str, object], float]:
+        """Retain both canonical writes immediately; never defer a returned identity."""
         original = self._original(created)
         self.ledger.stage(original)
         # Start the first record's ACK clock at the same boundary as persist().
@@ -158,26 +165,51 @@ class ConnectJournal(_Canonical):
             with self.ledger.read_budget(deadline=deadline, check_cancelled=lambda: None):
                 related = self._original(marker)
                 self.ledger.stage(related)
-        finally:
+        except Exception as primary:
             # Even a failed marker write must still try to confirm the returned ID.
             # Retained stage intents ensure uncertainty never repeats either POST.
-            self._wait_for(original, until=until)
-        self._wait_for(related, until=until)
+            try:
+                self._wait_for(original, until=until)
+            except Exception as secondary:
+                raise primary from secondary
+            raise
+        return original, related, until
 
     def _wait_for(self, original: dict[str, object], *, until: float) -> dict[str, object]:
-        while True:
+        self.wait_many([(original, until)])
+        return original
+
+    def wait_many(self, pending: list[tuple[dict[str, object], float]]) -> None:
+        """Each event keeps its original deadline and requires a fresh native ACK."""
+        outstanding = list(pending)
+        while outstanding:
             self.check_cancelled()
+            until = min(deadline for _, deadline in outstanding)
             # The zero-wait double still performs one read. Ordinary polling
             # shares the original ACK deadline across all snapshot requests.
             deadline = until if self.wait_seconds else time.monotonic() + ACK_WAIT_SECONDS
             with self.ledger.read_budget(deadline=deadline, check_cancelled=lambda: None):
                 try:
-                    confirmed = self.confirmed(original)
+                    if len(outstanding) == 1:
+                        # Keep the ordinary single-event observation boundary.
+                        confirmed = [self.confirmed(outstanding[0][0])]
+                    else:
+                        observed = self.records()
+                        confirmed = [
+                            self.confirmed(record, observed=observed) for record, _ in outstanding
+                        ]
                 except SnapshotChangedError:
-                    confirmed = False
+                    confirmed = [False] * len(outstanding)
             self.check_cancelled()
-            if confirmed and (not self.wait_seconds or time.monotonic() < until):
-                return original
+            now = time.monotonic()
+            outstanding = [
+                (record, deadline)
+                for (record, deadline), ready in zip(outstanding, confirmed, strict=True)
+                if not ready or (self.wait_seconds and now >= deadline)
+            ]
+            if not outstanding:
+                return
+            until = min(deadline for _, deadline in outstanding)
             remaining = until - time.monotonic()
             if remaining <= 0:
                 raise LifecycleError("Connect event awaits independent persistence")

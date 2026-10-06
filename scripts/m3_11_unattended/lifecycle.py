@@ -6,10 +6,12 @@ import re
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
+from scripts.m3_11_unattended.creation_outcome import is_abort, select_abort
 from scripts.m3_11_unattended.journal import CreationJournal, Journal, event
 from scripts.m3_11_unattended.model import (
     CREATION_SETTLE,
@@ -36,6 +38,7 @@ def _obligation_basis(records: list[dict[str, object]]) -> str:
             digest(record)
             for record in records
             if record["kind"] in {"intent", "created", "revoke", "cleanup", "resolved"}
+            or is_abort(record)
         )
     )
 
@@ -170,12 +173,14 @@ class Lifecycle:
         remember: Callable[[Intent, Credential], None] | None = None,
         remember_intent: Callable[[Intent], None] | None = None,
         remember_created: Callable[[Intent, dict[str, object]], None] | None = None,
+        remember_aborted: Callable[[Intent, dict[str, object]], None] | None = None,
         progress: Callable[[], None] = lambda: None,
     ) -> None:
         self.journal, self.providers, self.clock = journal, providers, clock
         self.remember = remember
         self.remember_intent = remember_intent
         self.remember_created = remember_created
+        self.remember_aborted = remember_aborted
         self.progress = progress
         self._clearance: tuple[float, str] | None = None
 
@@ -186,19 +191,28 @@ class Lifecycle:
             {"intent_sha256": intent.sha256, "credential_id": identifier(selected)},
         )
         marker = None
+        local_error = None
         try:
             if self.remember_created is not None:
                 self.remember_created(intent, record)
             if secret is not None and self.remember is not None:
                 self.remember(intent, Credential(selected, secret, {}))
                 marker = _authentication_marker(intent)
-        finally:
+        except Exception as error:
+            local_error = error
+        try:
             # A private delivery failure must not discard an acknowledged ID.
             # Conversely, retain its local record before a remote ACK can fail.
             if marker is not None and isinstance(self.journal, CreationJournal):
                 self.journal.persist_creation(record, marker)
             else:
                 self.journal.persist(record)
+        except Exception as error:
+            if local_error is not None:
+                raise local_error from error
+            raise
+        if local_error is not None:
+            raise local_error
         if marker is not None and not isinstance(self.journal, CreationJournal):
             # Backends without retained-write idempotence keep serial persistence.
             self.journal.persist(marker)
@@ -242,18 +256,27 @@ class Lifecycle:
             requested_at=stamp(now),
             create_before=stamp(now + CREATION_SETTLE),
             deadline=stamp(deadline),
-            scope=scope,
+            scope=deepcopy(scope),
             baseline_ids=tuple(sorted(identifier(item.get("id")) for item in inventory)),
             targets=targets,
         )
-        if self.remember_intent is not None:
-            self.remember_intent(intent)
-        self.journal.persist(event("intent", run_id, intent.document()))
-        before = instant(intent.create_before)
-        if provisioning_deadline is not None:
-            before = min(before, provisioning_deadline)
-        if self.clock() >= before:
-            raise LifecycleError("credential creation window elapsed before acknowledgement")
+        intent_record = event("intent", run_id, intent.document())
+        try:
+            if self.remember_intent is not None:
+                self.remember_intent(intent)
+            intent_record = self.journal.persist(intent_record)
+            before = instant(intent.create_before)
+            if provisioning_deadline is not None:
+                before = min(before, provisioning_deadline)
+            if self.clock() >= before:
+                raise LifecycleError("credential creation window elapsed before acknowledgement")
+        except Exception as primary:
+            if self.remember_aborted is not None:
+                try:
+                    self.remember_aborted(intent, intent_record)
+                except Exception as secondary:
+                    raise primary from secondary
+            raise
         # Exactly one mutation. A timeout or lost response is an outstanding
         # obligation; no handler may call create again for this run and role.
         credential = client.create(
@@ -266,7 +289,7 @@ class Lifecycle:
         if metadata is None:
             raise LifecycleError("new credential was not visible in provider readback")
         _owned(intent, metadata, known=credential.identifier)
-        if metadata.get("scope") != scope or metadata.get("status") != "active":
+        if metadata.get("scope") != intent.scope or metadata.get("status") != "active":
             raise LifecycleError("new credential has an unexpected scope or inactive status")
         client.verify(intent, credential, now=self.clock())
         return intent, credential
@@ -307,6 +330,7 @@ class Lifecycle:
             if client.authority_sha256 != intent.cleanup_authority_sha256:
                 raise LifecycleError("cleanup authority differs from the original obligation")
             known = known_id(self.journal, intent)
+            abort = select_abort(intent, self.journal.records())
             inventory = client.inventory()
             candidates = [
                 item
@@ -315,6 +339,33 @@ class Lifecycle:
             ]
             if len(candidates) > 1:
                 raise LifecycleError("credential inventory is ambiguous")
+            abort_conflict = abort is not None and (
+                known is not None
+                or bool(candidates)
+                or credential is not None
+                or any(record["kind"] == "cleanup" for record in observations)
+            )
+            if abort is not None and not abort_conflict:
+                self.journal.persist(abort)
+                abort_proof = {
+                    "intent_sha256": intent.sha256,
+                    "credential_id": None,
+                    "provider_readback": "absent",
+                    "negative_authentication": "not-tested",
+                    "creation_outcome": "not-submitted",
+                    "abort_event_id": abort["event_id"],
+                    "abort_event_sha256": digest(abort),
+                }
+                prior_abort = next(
+                    (
+                        record
+                        for record in observations
+                        if record["kind"] == "resolved" and record["payload"] == abort_proof
+                    ),
+                    None,
+                )
+                self.journal.persist(prior_abort or event("resolved", intent.run_id, abort_proof))
+                return CleanupResult(intent.sha256, "verified", "not-tested")
             if candidates:
                 selected = _owned(intent, candidates[0], known=known)
                 known = selected
@@ -367,6 +418,7 @@ class Lifecycle:
                     raise LifecycleError("retained credential identity differs from its obligation")
                 if (
                     not pending
+                    and not abort_conflict
                     and prior is not None
                     and isinstance(prior["payload"], dict)
                     and prior["payload"].get("credential_id") == known
@@ -393,6 +445,10 @@ class Lifecycle:
                         "revoked credential still authenticates or rejection is unproven"
                     )
                 negative = "denied"
+            if abort_conflict:
+                # Still delete an exactly owned credential and probe its retained
+                # secret above. Contradictions forbid closure, not revocation.
+                raise LifecycleError("creation evidence conflicts with pre-creation outcome")
             proof: dict[str, object] = {
                 "intent_sha256": intent.sha256,
                 "credential_id": known,

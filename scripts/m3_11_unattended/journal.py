@@ -74,7 +74,12 @@ class CreationJournal(Protocol):
     """Optional idempotent publication of related post-creation obligations."""
 
     def persist_creation(self, created: dict[str, object], marker: dict[str, object]) -> None:
-        """Confirm both records within the first record's original ACK deadline."""
+        """Retain both records immediately under their original ACK deadline.
+
+        Ordinary journals confirm before returning. The invocation-local Connect
+        provisioning adapter confirms at its next intent barrier or final flush;
+        provisional credentials must remain inside that invocation until then.
+        """
         ...
 
 

@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import cast
 
 from scripts.m3_11_qualification_evidence import fields
-from scripts.m3_11_unattended import cleanup, connect_genesis
+from scripts.m3_11_unattended import checkpoint_audit, cleanup, connect_genesis
 from scripts.m3_11_unattended.config import BOOTSTRAP_FIELDS, Connections, provider_connections
 from scripts.m3_11_unattended.connect_admission import Admission
 from scripts.m3_11_unattended.connect_api import Connect
@@ -387,6 +387,7 @@ def execute(  # noqa: PLR0915 - staged cleanup keeps private authority in this b
     private, access, targets, references = bootstrap(value["bootstrap"], approved)
     vaults = strings(approved["vaults"])
     progress("start-independent-connect")
+    audit = None
     with independent_server(
         Docker(), cast(dict[str, object], private["server_credentials"])
     ) as url:
@@ -483,8 +484,10 @@ def execute(  # noqa: PLR0915 - staged cleanup keeps private authority in this b
                     independent, cleanup.cleanup_providers(client, references, targets)
                 ),
             )
+            if operation == "reconcile":
+                audit = (independent.checkpoint, store, proof)
         progress("remove-ephemeral-connect")
-        return {
+        receipt = {
             "format": RECEIPT_FORMAT,
             "operation": operation,
             "dispatch_id": dispatch_id,
@@ -494,6 +497,13 @@ def execute(  # noqa: PLR0915 - staged cleanup keeps private authority in this b
             "status": "ready" if operation in {"discovery", "genesis"} else proof["status"],
             "proof": proof,
         }
+    # Optional diagnostics start only after ephemeral teardown and durable
+    # retention of the completed cleanup result. Even SIGKILL during an audit
+    # must leave the sweep's original receipt available to the artifact step.
+    replace_private(directory / "receipt.json", receipt)
+    if audit is not None:
+        checkpoint_audit.retain(directory / "creation-checkpoint-audit.json", *audit)
+    return receipt
 
 
 def main() -> int:
