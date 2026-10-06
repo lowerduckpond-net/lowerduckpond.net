@@ -136,7 +136,9 @@ class GitHubArtifacts:
         except OSError, subprocess.SubprocessError, ValueError:
             raise _UnavailableError("GitHub checkpoint operation remains unresolved") from None
 
-    def _runs(self) -> list[dict[str, object]]:
+    def _runs(self, *, active_run: int | None = None) -> list[dict[str, object]]:
+        if active_run is not None:
+            _number(active_run)
         observed: dict[int, dict[str, object]] = {}
         seen: set[int] = set()
         ordinals: set[int] = set()
@@ -178,7 +180,14 @@ class GitHubArtifacts:
                     raise LifecycleError("GitHub workflow inventory changed during pagination")
                 seen.add(selected)
                 ordinals.add(ordinal)
-                if row.get("status") in {"in_progress", "completed"}:
+                # A sibling job can leave the aggregate workflow waiting or
+                # queued while this protected cleanup job is already running.
+                # Only the executing caller gets this exception; later queued
+                # requests cannot displace it, and newer started runs still win.
+                if row.get("status") in {"in_progress", "completed"} or (
+                    selected == active_run
+                    and row.get("status") in {"waiting", "queued", "pending", "requested"}
+                ):
                     observed[selected] = row
             # The epoch bounds this inventory independently of older repository
             # history. Complete pagination avoids assuming an API sort order.
@@ -438,7 +447,7 @@ class GitHubArtifacts:
         ):
             raise LifecycleError("checkpoint writes require the protected cleanup action")
         run_id = _number(int(os.environ.get("GITHUB_RUN_ID", "0")))
-        runs = self._runs()
+        runs = self._runs(active_run=run_id)
         if not runs or runs[0].get("id") != run_id:
             raise LifecycleError("an older cleanup run cannot publish over a newer checkpoint")
         history = self.lineage()
