@@ -234,6 +234,19 @@ Changed executable inputs require a new correctly bound attempt. Complete live
 Spaces/public-CA qualification, a demonstrated credential rehearsal and verified
 revocation remain operational acceptance requirements beyond component tests.
 
+On October 6, 2026 the operator authorized one immediate historical exception for
+the missing creation outcome of Page Rules intent
+`ccdc7926243530cf6dd6615745f8520440d29531f28869a226f432b31a64b574`.
+Repeated provider/UI absence and a successfully observed, independently revoked
+comparison token support accepting this uncertainty. The helper pins the exact
+intent and failed attempt; fresh inventory and an independent GitHub observation
+remain required. This permits new admission and aggregate operational acceptance
+without calling the historical credential revoked, expired, or never created.
+The original failed result remains unchanged, late discovery still triggers
+ordinary revocation, and all subsequent credentials retain the original verified
+cleanup requirement. The [operations runbook](../operations/m3-11-backup-recovery.md)
+describes its separate, visible acceptance receipt. This is not a general waiver.
+
 Administrative records can advance independently of qualification. Production
 still requires reviewed current main, exact artifacts, verified history, fresh
 live controls, and successful convergence/idempotence/acceptance. Input equivalence

@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from scripts.m3_11_qualification_evidence import fields
-from scripts.m3_11_unattended import audit_policy_recovery
+from scripts.m3_11_unattended import audit_policy_recovery, historical_absence
 from scripts.m3_11_unattended.cloudflare import ORIGIN, Cloudflare
 from scripts.m3_11_unattended.config import (
     DO_READ_SCOPES,
@@ -41,6 +41,7 @@ from scripts.m3_11_unattended.journal import Journal, OpJournal, event
 from scripts.m3_11_unattended.lifecycle import Lifecycle, Provider, intents, pending_authentication
 from scripts.m3_11_unattended.model import (
     Credential,
+    Intent,
     LifecycleError,
     ProviderKind,
     Targets,
@@ -175,7 +176,8 @@ def sweep(  # noqa: PLR0912, PLR0913 - independent restoration never suppresses 
     by_digest = {value.intent_sha256: value for value in observed}
     now = datetime.now(UTC)
     overdue = sum(
-        instant(intent.deadline) < now and by_digest[intent.sha256].status != "verified"
+        instant(intent.deadline) < now
+        and not historical_absence.admits(intent.sha256, by_digest[intent.sha256].status)
         for intent in intents(lifecycle.journal)
     )
     healthy = True
@@ -190,7 +192,11 @@ def sweep(  # noqa: PLR0912, PLR0913 - independent restoration never suppresses 
         and recovery_verified
         and policy_status in {"no-obligation", "original-policy-verified"}
         and healthy
-        and all(value.status in {"verified", "not-due"} for value in observed)
+        and all(
+            value.status == "not-due"
+            or historical_absence.admits(value.intent_sha256, value.status)
+            for value in observed
+        )
         else "unresolved"
     )
     if isinstance(lifecycle.journal, IndependentJournal) and not lifecycle.journal.cache_complete:
@@ -233,8 +239,14 @@ def sweep(  # noqa: PLR0912, PLR0913 - independent restoration never suppresses 
     return receipt
 
 
-def require_independent_ready(journal: Journal, *, helper: str, now: datetime) -> None:
-    observed = journal.records()
+def require_independent_ready(
+    journal: Journal,
+    *,
+    helper: str,
+    now: datetime,
+    observed: list[dict[str, object]] | None = None,
+) -> None:
+    observed = journal.records() if observed is None else observed
     records = [
         record
         for record in observed
@@ -252,6 +264,9 @@ def require_independent_ready(journal: Journal, *, helper: str, now: datetime) -
         newest["payload"],
         selected_fields,
     )
+    accepted = _accepted_results(journal, value, observed)
+    if accepted and not isinstance(journal, ConnectJournal):
+        raise LifecycleError("historical exception requires native independent Connect readiness")
     for record in audit_policy_recovery.plans(observed):
         restore_after = instant(audit_policy_recovery.plan(record)["restore_after"])
         if now < restore_after or instant(value["observed_at"]) < restore_after:
@@ -293,6 +308,40 @@ def require_independent_ready(journal: Journal, *, helper: str, now: datetime) -
             raise ReadinessPendingError("independent Connect readiness awaits acknowledgement")
 
 
+def _accepted_results(
+    journal: Journal, value: dict[str, object], records: list[dict[str, object]]
+) -> set[str]:
+    """Native cleanup observes absence; ACKed policy receipts only retain the decision."""
+    entries = value.get("results")
+    if not isinstance(entries, list):
+        raise LifecycleError("independent cleanup results are malformed")
+    accepted: set[str] = set()
+    selected_intents = [Intent.parse(row["payload"]) for row in records if row["kind"] == "intent"]
+    by_digest = {item.sha256: item for item in selected_intents}
+    for row in entries:
+        if not isinstance(row, dict) or row.get("status") != historical_absence.STATUS:
+            continue
+        if (
+            row
+            != {
+                "intent_sha256": historical_absence.INTENT,
+                "status": historical_absence.STATUS,
+                "negative_authentication": "unavailable",
+            }
+            or historical_absence.INTENT in accepted
+        ):
+            raise LifecycleError("independent historical exception result is invalid")
+        selected = by_digest.get(historical_absence.INTENT)
+        proofs = [] if selected is None else historical_absence.receipts(selected, records)
+        if not any(
+            not isinstance(journal, ConnectJournal) or journal.confirmed(proof, observed=records)
+            for proof in proofs
+        ):
+            raise LifecycleError("historical exception lacks its exact durable acceptance")
+        accepted.add(historical_absence.INTENT)
+    return accepted
+
+
 def wait_independent_ready(
     journal: Journal, *, helper: str, deadline: float, check_cancelled: Callable[[], None]
 ) -> None:
@@ -327,6 +376,22 @@ def wait_independent_ready(
 def status_document(journal: Journal, *, helper: str, now: datetime) -> dict[str, object]:
     """Observe external obligations without deleting, provisioning, or exporting IDs."""
     records = journal.records()
+    accepted: set[str] = set()
+    try:
+        require_independent_ready(journal, helper=helper, now=now, observed=records)
+        latest = max(
+            (
+                row
+                for row in records
+                if row["kind"] == "heartbeat"
+                and isinstance(row["payload"], dict)
+                and row["payload"].get("actor") == "github"
+            ),
+            key=lambda row: instant(row["recorded_at"]),
+        )
+        accepted = _accepted_results(journal, latest["payload"], records)  # type: ignore[arg-type] # filtered mapping
+    except LifecycleError, ValueError:
+        pass
     pending = 0
     overdue = 0
     for intent in intents(journal):
@@ -340,12 +405,13 @@ def status_document(journal: Journal, *, helper: str, now: datetime) -> dict[str
             and (
                 record["kind"] != "resolved"
                 or not isinstance(journal, ConnectJournal)
-                or journal.confirmed(record)
+                or journal.confirmed(record, observed=records)
             )
         ]
-        unresolved = not any(record["kind"] == "resolved" for record in results) or bool(
-            pending_authentication(results)
-        )
+        unresolved = (
+            not any(record["kind"] == "resolved" for record in results)
+            and intent.sha256 not in accepted
+        ) or bool(pending_authentication(results))
         pending += unresolved
         overdue += unresolved and instant(intent.deadline) < now
     heartbeats = [
@@ -376,7 +442,7 @@ def status_document(journal: Journal, *, helper: str, now: datetime) -> dict[str
         fresh = now - HEARTBEAT_MAX_AGE <= observed <= now + timedelta(minutes=5)
         if isinstance(journal, ConnectJournal):
             try:
-                require_independent_ready(journal, helper=helper, now=now)
+                require_independent_ready(journal, helper=helper, now=now, observed=records)
             except LifecycleError, ValueError:
                 fresh = False
         independent = {
@@ -391,6 +457,7 @@ def status_document(journal: Journal, *, helper: str, now: datetime) -> dict[str
     return {
         "observed_at": stamp(now),
         "outstanding": pending,
+        "accepted_historical_uncertainty": sorted(accepted),
         "overdue": overdue,
         "github": independent,
         "new_start": "blocked"
