@@ -355,6 +355,15 @@ every historical event. New entries are considered on the next pass; changed
 immutable records still fail closed. Neither snapshot settling nor acknowledgement
 batching extends the original provisioning cutoff.
 
+After a provider returns a credential, the controller immediately retains its ID
+and private secret locally. It stages the required negative-authentication marker
+before waiting for independent persistence of the ID, allowing the same witness
+pass to retain both records. It still requires independent confirmation of each
+record before continuing; a cache write cannot authorize runtime delivery. If
+private retention or marker staging fails, it still attempts to persist the ID
+and leaves the failed attempt available for cleanup. The original creation window
+and acknowledgement deadlines remain unchanged.
+
 The independent journal uses encrypted GitHub artifacts retained for 30 days and
 an append-only commit-status registry. Full history is checked for missing,
 replayed or reordered entries. New attempts require at least 384 remaining

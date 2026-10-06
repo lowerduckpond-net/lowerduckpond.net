@@ -169,17 +169,24 @@ class Lifecycle:
             intent.run_id,
             {"intent_sha256": intent.sha256, "credential_id": identifier(selected)},
         )
+        marker = None
         try:
             if self.remember_created is not None:
                 self.remember_created(intent, record)
             if secret is not None and self.remember is not None:
                 self.remember(intent, Credential(selected, secret, {}))
+                marker = _authentication_marker(intent)
+                # Start replication before waiting for the created-ID ACK so
+                # one independent pass can retain both post-creation records.
+                # Staging alone never satisfies either persistence requirement.
+                self.journal.append(record)
+                self.journal.append(marker)
         finally:
             # A private delivery failure must not discard an acknowledged ID.
             # Conversely, retain its local record before a remote ACK can fail.
             self.journal.persist(record)
-        if secret is not None and self.remember is not None:
-            self.journal.persist(_authentication_marker(intent))
+        if marker is not None:
+            self.journal.persist(marker)
 
     def provision(  # noqa: PLR0913 - all approval and authority bindings are explicit
         self,
