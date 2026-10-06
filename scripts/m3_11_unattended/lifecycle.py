@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
-from scripts.m3_11_unattended.journal import Journal, event
+from scripts.m3_11_unattended.journal import CreationJournal, Journal, event
 from scripts.m3_11_unattended.model import (
     CREATION_SETTLE,
     LIFETIME,
@@ -176,16 +176,15 @@ class Lifecycle:
             if secret is not None and self.remember is not None:
                 self.remember(intent, Credential(selected, secret, {}))
                 marker = _authentication_marker(intent)
-                # Start replication before waiting for the created-ID ACK so
-                # one independent pass can retain both post-creation records.
-                # Staging alone never satisfies either persistence requirement.
-                self.journal.append(record)
-                self.journal.append(marker)
         finally:
             # A private delivery failure must not discard an acknowledged ID.
             # Conversely, retain its local record before a remote ACK can fail.
-            self.journal.persist(record)
-        if marker is not None:
+            if marker is not None and isinstance(self.journal, CreationJournal):
+                self.journal.persist_creation(record, marker)
+            else:
+                self.journal.persist(record)
+        if marker is not None and not isinstance(self.journal, CreationJournal):
+            # Backends without retained-write idempotence keep serial persistence.
             self.journal.persist(marker)
 
     def provision(  # noqa: PLR0913 - all approval and authority bindings are explicit

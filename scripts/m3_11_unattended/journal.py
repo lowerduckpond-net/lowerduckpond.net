@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Protocol, cast
+from typing import Protocol, cast, runtime_checkable
 
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
@@ -67,6 +67,15 @@ class Journal(Protocol):
         ...
 
     def records(self) -> list[dict[str, object]]: ...
+
+
+@runtime_checkable
+class CreationJournal(Protocol):
+    """Optional idempotent publication of related post-creation obligations."""
+
+    def persist_creation(self, created: dict[str, object], marker: dict[str, object]) -> None:
+        """Confirm both records within the first record's original ACK deadline."""
+        ...
 
 
 class FileJournal:

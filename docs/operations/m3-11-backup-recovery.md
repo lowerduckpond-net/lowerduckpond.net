@@ -356,13 +356,14 @@ immutable records still fail closed. Neither snapshot settling nor acknowledgeme
 batching extends the original provisioning cutoff.
 
 After a provider returns a credential, the controller immediately retains its ID
-and private secret locally. It stages the required negative-authentication marker
-before waiting for independent persistence of the ID, allowing the same witness
-pass to retain both records. It still requires independent confirmation of each
-record before continuing; a cache write cannot authorize runtime delivery. If
-private retention or marker staging fails, it still attempts to persist the ID
-and leaves the failed attempt available for cleanup. The original creation window
-and acknowledgement deadlines remain unchanged.
+and private secret locally. With Connect, it stages the ID and required
+negative-authentication marker before awaiting confirmation, allowing the same
+witness pass to retain both records. The first record's original acknowledgement
+deadline covers marker staging and both confirmations. Each record must be
+independently confirmed before continuing; a cache write cannot authorize runtime
+delivery. If private retention or marker staging fails, it still attempts to
+persist the ID and leaves the failed attempt available for cleanup. Other journal
+backends keep serial persistence. The original creation window remains unchanged.
 
 The independent journal uses encrypted GitHub artifacts retained for 30 days and
 an append-only commit-status registry. Full history is checked for missing,
