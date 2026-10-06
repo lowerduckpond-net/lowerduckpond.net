@@ -226,7 +226,7 @@ def restore(
     return IndependentJournal(ledger, checkpoint, independent, capacity=store.remaining_capacity)
 
 
-def reconcile(  # noqa: PLR0913 - request, execution identity and cleanup fallback are explicit
+def reconcile(  # noqa: PLR0913 - request, deadlines, identity and fallback are explicit
     journal: IndependentJournal,
     connections: Callable[[], Connections],
     *,
@@ -239,12 +239,23 @@ def reconcile(  # noqa: PLR0913 - request, execution identity and cleanup fallba
 ) -> dict[str, object]:
     """One bounded witness execution; hourly independent sweeps continue afterward."""
     until = time.monotonic() + (WITNESS_SECONDS if request_sha256 else 0)
+    audit_wait_selected = False
     next_sweep = 0.0
     receipt: dict[str, object] = {}
     announced = False
     connected: Connections | None = None
     lifecycle: Lifecycle | None = None
     last_flush = time.monotonic()
+
+    def arm_policy_restore(deadline: datetime) -> None:
+        nonlocal until, audit_wait_selected
+        if not audit_wait_selected:
+            # Arm from the same validated obligation path that emits readiness.
+            # A separate failed inventory read cannot leave an acknowledged
+            # grant without this execution remaining through restoration.
+            remaining = max(0.0, (deadline - datetime.now(UTC)).total_seconds())
+            until = max(until, time.monotonic() + min(remaining, 15 * 60) + 2 * SWEEP_SECONDS)
+            audit_wait_selected = True
 
     def cleanup_progress() -> None:
         nonlocal last_flush
@@ -286,6 +297,7 @@ def reconcile(  # noqa: PLR0913 - request, execution identity and cleanup fallba
                     actor="github",
                     helper=journal.witness.current_helper,
                     authority_verified=connected is not None,
+                    arm_policy_restore=arm_policy_restore,
                 )
             next_sweep = time.monotonic() + SWEEP_SECONDS
         if (
