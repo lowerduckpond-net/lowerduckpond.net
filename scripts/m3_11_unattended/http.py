@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import sys
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from http import HTTPStatus
+from pathlib import Path
 from typing import Final, override
 
 from scripts.m3_11_unattended.model import LifecycleError
@@ -52,6 +55,45 @@ class Api:
             or "#" in path
         ):
             raise LifecycleError("provider request escaped its fixed API")
+        try:
+            result = subprocess.run(  # noqa: S603 - fixed helper; bearer/body only in private pipes
+                [sys.executable, "-m", __name__, "--exchange"],
+                input=json.dumps(
+                    {
+                        "origin": self.origin,
+                        "token": self._token,
+                        "method": method,
+                        "path": path,
+                        "body": body,
+                    }
+                ).encode(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env={"PYTHONDONTWRITEBYTECODE": "1"},
+                cwd=Path(__file__).resolve().parents[2],
+                timeout=TIMEOUT,
+                check=False,
+            )
+        except OSError, subprocess.SubprocessError:
+            # Includes the whole exchange: DNS, TLS, headers, trickling body and
+            # decoding. A killed CREATE remains uncertain and is never replayed.
+            raise LifecycleError("provider request failed; outcome remains unresolved") from None
+        if result.returncode or len(result.stdout) > MAX_BYTES + 1024:
+            raise LifecycleError("provider request failed; outcome remains unresolved")
+        try:
+            value = json.loads(result.stdout)
+        except ValueError, UnicodeError:
+            raise LifecycleError("provider response is invalid") from None
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"status", "body"}
+            or type(value["status"]) is not int
+            or not isinstance(value["body"], dict)
+        ):
+            raise LifecycleError("provider response is invalid")
+        return Response(value["status"], value["body"])
+
+    def _exchange(self, method: str, path: str, body: dict[str, object] | None) -> Response:
         request = urllib.request.Request(  # noqa: S310 - allowlisted HTTPS origin
             self.origin + path,
             data=None if body is None else json.dumps(body).encode(),
@@ -63,7 +105,7 @@ class Api:
             method=method,
         )
         try:
-            with urllib.request.build_opener(NoRedirect()).open(
+            with urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect()).open(
                 request, timeout=TIMEOUT
             ) as response:
                 status, raw = response.status, response.read(MAX_BYTES + 1)
@@ -95,3 +137,21 @@ def collection(value: object) -> list[dict[str, object]]:
     if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
         raise LifecycleError("provider inventory is malformed")
     return value
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] != ["--exchange"]:
+        raise SystemExit(2)
+    try:
+        selected = json.loads(sys.stdin.buffer.read(MAX_BYTES + 1024))
+        response = Api(selected["origin"], selected["token"])._exchange(
+            selected["method"], selected["path"], selected["body"]
+        )
+        output = json.dumps(
+            {"status": response.status, "body": response.body}, ensure_ascii=False
+        ).encode()
+        if len(output) > MAX_BYTES + 1024:
+            raise SystemExit(1)
+        sys.stdout.buffer.write(output)
+    except Exception:  # Child boundary must suppress credential-bearing diagnostics.
+        raise SystemExit(1) from None

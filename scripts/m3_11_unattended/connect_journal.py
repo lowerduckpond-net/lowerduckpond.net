@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import dataclass
 
 from scripts.m3_11_private_inputs import read_private, write_private
@@ -17,6 +19,7 @@ from scripts.production_qualification_inputs import revision
 
 ACK_WAIT_SECONDS = 120
 ACK_POLL_SECONDS = 5
+OBSERVATION_SECONDS = 5
 
 
 def acknowledgement(record: dict[str, object]) -> bool:
@@ -199,9 +202,45 @@ class IndependentJournal(_Canonical):
         self.capacity = capacity
         checkpoint.restore()
         self.cache_complete = False
+        self._reconciling = False
+        self._observation: list[dict[str, object]] | None = None
+        self._observed_until = 0.0
+
+    def _invalidate(self) -> None:
+        self._observation = None
+        self._observed_until = 0.0
+
+    @contextmanager
+    def reconciliation(self) -> Iterator[None]:
+        """Reuse exact durable history only within a short cleanup observation."""
+        previous = self._reconciling
+        self._invalidate()
+        self._reconciling = True
+        try:
+            yield
+        finally:
+            self._invalidate()
+            self._reconciling = previous
+
+    @contextmanager
+    def _fresh(self) -> Iterator[None]:
+        previous = self._reconciling
+        self._invalidate()
+        self._reconciling = False
+        try:
+            yield
+        finally:
+            self._invalidate()
+            self._reconciling = previous
 
     def records(self) -> list[dict[str, object]]:
+        if self._reconciling and time.monotonic() < self._observed_until:
+            return deepcopy(self._observation or [])
+        self._invalidate()
         try:
+            if self._reconciling:
+                # A pass never inherits an old registry/artifact observation.
+                self.checkpoint.restore()
             observed = self.ledger.records()
         except LifecycleError, OSError, ValueError:
             # This actor can still delete exactly owned credentials recovered
@@ -210,7 +249,11 @@ class IndependentJournal(_Canonical):
             if not self.checkpoint.records:
                 raise LifecycleError("independent obligations are unavailable") from None
             return list(self.checkpoint.records.values())
-        return self._merge(observed)
+        merged = self._merge(observed)
+        if self._reconciling and self.cache_complete:
+            self._observation = deepcopy(merged)
+            self._observed_until = time.monotonic() + OBSERVATION_SECONDS
+        return merged
 
     def _merge(self, observed: list[dict[str, object]]) -> list[dict[str, object]]:
         self.cache_complete = self.checkpoint.records.keys() <= {
@@ -218,12 +261,36 @@ class IndependentJournal(_Canonical):
         }
         return self.checkpoint.merge(observed)
 
+    def fresh_records(self) -> list[dict[str, object]]:
+        """Admission cannot use a cleanup observation or recovered-only fallback."""
+        with self._fresh():
+            self.cache_complete = False
+            self.checkpoint.restore()
+            records = self._merge(self.ledger.stable_records())
+            if not self.cache_complete:
+                raise LifecycleError("admission needs a complete fresh obligation observation")
+            # Preserve newly observed obligations even if later replica I/O
+            # fails and cleanup falls back to the independently recovered set.
+            self._retain(records)
+            return records
+
     def _retain(self, records: list[dict[str, object]]) -> Stored:
         return self.checkpoint.persist([value for value in records if not acknowledgement(value)])
 
     def persist(self, record: dict[str, object]) -> dict[str, object]:
         original = self._original(record)
         records = self.records()
+        if (
+            self._reconciling
+            and time.monotonic() < self._observed_until
+            and self.cache_complete
+            and self.checkpoint.records.get(str(original["event_id"])) == original
+            and original in records
+        ):
+            # This exact record is already present in both freshly validated
+            # stores. New IDs/proofs still take the full write/readback path.
+            return original
+        self._invalidate()
         if not any(value == original for value in records):
             records.append(original)
         self._retain(records)
@@ -241,14 +308,16 @@ class IndependentJournal(_Canonical):
         # strands a checkpoint-only heartbeat forever after process restart.
         # Do not select an arbitrary equal-payload checkpoint row here: that
         # could relabel a controller's forged receipt as independently authored.
-        self.ledger.stage(record)
-        self.records()
-        if not self.ledger.authored(record, self.witness.author):
-            raise LifecycleError("independent receipt awaits native author readback")
-        self.persist(record)
+        with self._fresh():
+            self.ledger.stage(record)
+            self.records()
+            if not self.ledger.authored(record, self.witness.author):
+                raise LifecycleError("independent receipt awaits native author readback")
+            self.persist(record)
 
     def readiness(self) -> dict[str, object]:
-        stored = self._retain(self.records())
+        with self._fresh():
+            stored = self._retain(self.records())
         capacity = self.capacity()
         if type(capacity) is not int or capacity < 0:
             raise LifecycleError("independent checkpoint write capacity is unavailable")
@@ -261,6 +330,12 @@ class IndependentJournal(_Canonical):
         }
 
     def acknowledge(
+        self, *, run_id: int, attempt: int, allow: Callable[[dict[str, object]], bool]
+    ) -> int:
+        with self._fresh():
+            return self._acknowledge(run_id=run_id, attempt=attempt, allow=allow)
+
+    def _acknowledge(
         self, *, run_id: int, attempt: int, allow: Callable[[dict[str, object]], bool]
     ) -> int:
         if type(run_id) is not int or run_id < 1 or type(attempt) is not int or attempt < 1:
