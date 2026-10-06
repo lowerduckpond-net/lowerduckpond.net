@@ -191,6 +191,9 @@ class IndependentJournal(_Canonical):
             if not self.checkpoint.records:
                 raise LifecycleError("independent obligations are unavailable") from None
             return list(self.checkpoint.records.values())
+        return self._merge(observed)
+
+    def _merge(self, observed: list[dict[str, object]]) -> list[dict[str, object]]:
         self.cache_complete = self.checkpoint.records.keys() <= {
             identity(record["event_id"]) for record in observed
         }
@@ -243,17 +246,27 @@ class IndependentJournal(_Canonical):
     ) -> int:
         if type(run_id) is not int or run_id < 1 or type(attempt) is not int or attempt < 1:
             raise LifecycleError("independent acknowledgement needs its GitHub execution identity")
-        records = self.records()
+        try:
+            observed = self.ledger.stable_records()
+        except LifecycleError, OSError, ValueError:
+            self.cache_complete = False
+            raise LifecycleError(
+                "Connect replica remains incomplete; cleanup is not ready"
+            ) from None
+        records = self._merge(observed)
         stored = self._retain(records)
         if not self.cache_complete:
             raise LifecycleError("Connect replica remains incomplete; cleanup is not ready")
-        published = 0
+        # Decide which records already have native acknowledgements from one
+        # complete snapshot. Do this before stage/_original/allow can perform
+        # ledger I/O: its author metadata must describe the same observation.
+        # Re-reading the entire vault for each historical event both races new
+        # writes and consumes the fixed creation window as history grows.
+        pending = []
         for record in records:
             if acknowledgement(record) or self.ledger.minimum.get(
                 identity(record["event_id"])
             ) == digest(record):
-                continue
-            if not allow(record):
                 continue
             if self.ledger.confirmed(
                 record,
@@ -261,8 +274,12 @@ class IndependentJournal(_Canonical):
                 independent_author=self.witness.author,
                 binding=self.witness.binding(),
                 genesis_checkpoint=self.witness.genesis,
+                observed=observed,
             ):
                 continue
+            pending.append(record)
+        published = 0
+        for record in pending:
             # Readback/checkpoint I/O or an earlier ACK may consume the original
             # admission window. Recheck immediately before another ACK mutation.
             if not allow(record):
@@ -282,6 +299,9 @@ class IndependentJournal(_Canonical):
                 },
             )
             # ACKs are transport receipts, not new obligations to ACK recursively.
-            self.ledger.stage(self._original(proof))
+            original = self._original(proof)
+            if not allow(record):
+                continue
+            self.ledger.stage(original)
             published += 1
         return published
