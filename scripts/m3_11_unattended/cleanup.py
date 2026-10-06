@@ -339,6 +339,13 @@ def _accepted_results(
         ):
             raise LifecycleError("historical exception lacks its exact durable acceptance")
         accepted.add(historical_absence.INTENT)
+    historical = by_digest.get(historical_absence.INTENT)
+    if (
+        historical is not None
+        and historical_absence.eligible(historical, records)
+        and historical_absence.INTENT not in accepted
+    ):
+        raise LifecycleError("independent cleanup has not observed the historical exception")
     return accepted
 
 
