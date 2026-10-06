@@ -416,6 +416,10 @@ when valid journal updates arrive during a read. All reads and retries share
 the original readiness deadline. The launcher preserves its dispatch identity
 and rechecks that the same native witness attempt is still running before
 accepting readiness. Malformed records and adverse cleanup receipts still fail.
+Connect GETs retry hostname-resolution failures at most twice, including short
+backoff within the original request deadline. HTTP errors, invalid responses and
+POSTs are not retried. Exhausted resolution failures retain a distinct sanitized
+source location without exporting hostnames, credentials or exception text.
 Controller journal reads and acknowledgement polling use the same bounded
 snapshot stabilization, including reads before a write. Retries never repeat a
 write or provider creation. Both inventory passes validate immutable metadata,

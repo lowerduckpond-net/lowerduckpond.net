@@ -5,8 +5,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import socket
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -24,6 +26,7 @@ from scripts.m3_11_unattended.model import LifecycleError
 
 MAX_BYTES = 16 * 1024 * 1024
 TIMEOUT_SECONDS = 30
+DNS_READ_ATTEMPTS = 3
 IDENTITY = re.compile(r"[a-z0-9]{26}")
 
 
@@ -141,6 +144,8 @@ class Connect:
             raise LifecycleError("Connect operation failed; outcome remains unresolved")
         if value.get("error") == "bound":
             raise LifecycleError("Connect response exceeds its bound")
+        if value == {"error": "dns"}:
+            raise LifecycleError("Connect DNS lookup failed; outcome remains unresolved")
         if set(value) != {"status", "body"} or type(value["status"]) is not int:
             raise LifecycleError("Connect operation failed; outcome remains unresolved")
         return Response(value["status"], value["body"])
@@ -243,18 +248,28 @@ def _exchange(value: dict[str, object]) -> dict[str, object]:  # noqa: PLR0911 -
     limit = value["limit"]
     if type(limit) is not int or not 1 <= limit <= MAX_BYTES:
         return {"error": "bound"}
-    try:
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
-        with opener.open(request, timeout=TIMEOUT_SECONDS) as response:
-            status, raw = response.status, response.read(limit + 1)
-    except urllib.error.HTTPError as error:
-        status = error.code
-        error.close()
-        if status in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND}:
-            return {"status": status, "body": None}
-        return {"error": "operation"}
-    except OSError, urllib.error.URLError, HTTPException, LifecycleError:
-        return {"error": "operation"}
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    for attempt in range(DNS_READ_ATTEMPTS):
+        try:
+            with opener.open(request, timeout=TIMEOUT_SECONDS) as response:
+                status, raw = response.status, response.read(limit + 1)
+            break
+        except urllib.error.HTTPError as error:
+            status = error.code
+            error.close()
+            if status in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND}:
+                return {"status": status, "body": None}
+            return {"error": "operation"}
+        except urllib.error.URLError as error:
+            if not isinstance(error.reason, socket.gaierror):
+                return {"error": "operation"}
+            if request.method != "GET" or attempt == DNS_READ_ATTEMPTS - 1:
+                return {"error": "dns"}
+            # Read-only resolution retries share the parent's original process
+            # deadline, including backoff. No HTTP error or POST is replayed.
+            time.sleep(0.25 * (attempt + 1))
+        except OSError, HTTPException, LifecycleError:
+            return {"error": "operation"}
     if len(raw) > limit:
         return {"error": "bound"}
     try:

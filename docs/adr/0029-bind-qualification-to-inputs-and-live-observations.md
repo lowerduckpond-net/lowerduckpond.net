@@ -184,8 +184,11 @@ vault count. Accepted writes can precede that stable inventory. The same ledger
 used by activation, controllers and independent cleanup therefore polls only
 readback for a bounded period after POST, preserving the original intent and
 returned ID across interruption. It never retries POST, accepts an incomplete
-snapshot, or treats cache visibility as independent persistence. A reviewed
-pre-discovery helper correction preserves the original initializing marker's
+snapshot, or treats cache visibility as independent persistence.
+A Connect GET may repeat hostname resolution twice within its original process
+deadline; the retry does not apply to HTTP errors, invalid responses or POSTs.
+This preserves the single-submission boundary during intermittent resolver failures.
+A reviewed pre-discovery helper correction preserves the original initializing marker's
 bindings, probe identities, spool and inventory in an immutable private upgrade
 record; any started discovery or credential intent prevents that migration.
 After discovery starts, a reviewed successor coordinator may recover the original
