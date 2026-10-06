@@ -11,6 +11,7 @@ from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended.model import LifecycleError
 
 ROOT = Path(__file__).resolve().parents[2]
+MAX_RELATED_FAILURES = 4
 SOURCES = (
     "scripts/m3_11_private_inputs.py",
     "scripts/m3_11_qualification_evidence.py",
@@ -32,6 +33,8 @@ SOURCES = (
             "connect_host",
             "connect_journal",
             "connect_ledger",
+            "connect_provisioning",
+            "creation_outcome",
             "github_checkpoint",
             "config",
             "cloudflare",
@@ -92,7 +95,25 @@ def retain_failure(path: Path, *, binding: dict[str, object], stage: str, error:
     """A failed diagnostic can never prevent revocation or replace earlier evidence."""
     try:
         if not path.exists():
-            write_private(path, {"binding": binding, "stage": stage, "failure": failure(error)})
+            value: dict[str, object] = {
+                "binding": binding,
+                "stage": stage,
+                "failure": failure(error),
+            }
+            related: list[dict[str, object]] = []
+            seen = {id(error)}
+            secondary = error.__cause__ or error.__context__
+            while (
+                isinstance(secondary, Exception)
+                and id(secondary) not in seen
+                and len(related) < MAX_RELATED_FAILURES
+            ):
+                seen.add(id(secondary))
+                related.append(failure(secondary))
+                secondary = secondary.__cause__ or secondary.__context__
+            if related:
+                value["related_failures"] = related
+            write_private(path, value)
     except Exception:
         return  # Exception text can contain secrets; failure never blocks cleanup.
 
@@ -100,7 +121,20 @@ def retain_failure(path: Path, *, binding: dict[str, object], stage: str, error:
 def verified_failure(
     raw: object, *, binding: dict[str, object], stages: frozenset[str]
 ) -> dict[str, object]:
-    value = fields(raw, {"binding", "stage", "failure"})
+    names = {"binding", "stage", "failure"}
+    if isinstance(raw, dict) and "related_failures" in raw:
+        names.add("related_failures")
+    value = fields(raw, names)
+    if "related_failures" in value:
+        related = value["related_failures"]
+        if not isinstance(related, list) or not 1 <= len(related) <= MAX_RELATED_FAILURES:
+            raise LifecycleError("related failure diagnostics exceed their bound")
+        for detail in related:
+            verified_failure(
+                {"binding": value["binding"], "stage": value["stage"], "failure": detail},
+                binding=binding,
+                stages=stages,
+            )
     if (
         value["binding"] != binding
         or not isinstance(value["stage"], str)

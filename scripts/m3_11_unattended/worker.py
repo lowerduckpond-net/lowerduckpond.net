@@ -24,6 +24,9 @@ from scripts.m3_11_unattended.config import Configuration, connect
 from scripts.m3_11_unattended.connect_admission import WINDOW
 from scripts.m3_11_unattended.connect_diagnostics import retain_failure
 from scripts.m3_11_unattended.connect_journal import ConnectJournal
+from scripts.m3_11_unattended.connect_provisioning import ProvisioningJournal
+from scripts.m3_11_unattended.creation_outcome import FORMAT as CREATION_PROTOCOL
+from scripts.m3_11_unattended.creation_outcome import original_abort, validate_abort
 from scripts.m3_11_unattended.docker import SOCKET, Docker
 from scripts.m3_11_unattended.journal import Journal, OpJournal, event, validate
 from scripts.m3_11_unattended.lifecycle import Lifecycle, identifier, intents, known_id
@@ -97,6 +100,14 @@ def restore_created(lifecycle: Lifecycle, directory: Path, *, run_id: str) -> No
         selected = identifier(payload["credential_id"])
         if known_id(lifecycle.journal, owned[path.stem]) not in (None, selected):
             raise LifecycleError("retained creation identity conflicts with its obligation")
+        lifecycle.journal.persist(record)
+    # Never synthesize an outcome during recovery. Only transport an original
+    # execution's immutable attestation, after all retained IDs are restored.
+    for path in sorted((directory / "credential-aborted").glob("*.json")):
+        record = validate(read_private(path))
+        if path.stem not in owned:
+            raise LifecycleError("retained pre-creation outcome has no matching obligation")
+        validate_abort(record, owned[path.stem], lifecycle.journal.records())
         lifecycle.journal.persist(record)
 
 
@@ -345,6 +356,7 @@ class Worker:
                     "binding": self.binding,
                     "mode": self.request["mode"],
                     "approval_sha256": self.request["approval_sha256"],
+                    "creation_protocol": CREATION_PROTOCOL,
                 },
             )
         )
@@ -355,12 +367,27 @@ class Worker:
             if isinstance(creator.journal, ConnectJournal)
             else None
         )
+        pipeline = (
+            ProvisioningJournal(creator.journal)
+            if isinstance(creator.journal, ConnectJournal)
+            else None
+        )
+
+        def remember_aborted(intent: Intent, intent_record: dict[str, object]) -> None:
+            record = original_abort(intent, intent_record, run_record)
+            directory = self.directory / "credential-aborted"
+            directory.mkdir(mode=0o700, exist_ok=True)
+            private_directory(directory)
+            # Exclusive durable creation; a partial file remains unresolved.
+            write_private(directory / (intent.sha256 + ".json"), record)
+
         lifecycle = Lifecycle(
-            creator.journal,
+            pipeline if pipeline is not None else creator.journal,
             creator.providers,
             remember=self.remember,
             remember_intent=self.remember_intent,
             remember_created=self.remember_created,
+            remember_aborted=remember_aborted,
         )
         credentials: dict[str, Credential] = {}
         deadlines: list[datetime] = []
@@ -400,6 +427,9 @@ class Worker:
                 raise LifecycleError("independent cleanup cannot observe the created credential")
             credentials[role] = credential
             deadlines.append(instant(intent.deadline))
+        if pipeline is not None:
+            pipeline.flush()
+        self.check_cancelled()
         if len({credential.secret for credential in credentials.values()}) != len(ROLES) or len(
             {credential.identifier for credential in credentials.values()}
         ) != len(ROLES):

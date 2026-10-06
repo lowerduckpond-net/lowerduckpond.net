@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended.connect_journal import IndependentJournal
+from scripts.m3_11_unattended.creation_outcome import FORMAT as CREATION_PROTOCOL
+from scripts.m3_11_unattended.creation_outcome import run_payload
 from scripts.m3_11_unattended.github_checkpoint import MINIMUM_START_CAPACITY
 from scripts.m3_11_unattended.inputs import BINDING
 from scripts.m3_11_unattended.journal import event
@@ -32,7 +34,14 @@ WINDOW = timedelta(minutes=10)
 
 
 def run_digest(run_id: str, payload: dict[str, object]) -> str:
-    return digest({"run_id": identity(run_id), "payload": payload})
+    selected = (
+        {key: value for key, value in payload.items() if key != "creation_protocol"}
+        if payload.get("creation_protocol") == CREATION_PROTOCOL
+        else payload
+    )
+    # The launch request identifies the same attempt across protocol versions;
+    # the independent native ACK still covers the complete original run record.
+    return digest({"run_id": identity(run_id), "payload": selected})
 
 
 class Admission:
@@ -41,7 +50,7 @@ class Admission:
         self.records = journal.records()
 
     def _run(self, record: dict[str, object]) -> dict[str, str]:
-        payload = fields(record["payload"], {"binding", "mode", "approval_sha256"})
+        payload = run_payload(record["payload"])
         binding = strings(fields(payload["binding"], BINDING))
         if (
             record["kind"] != "run"
@@ -65,7 +74,7 @@ class Admission:
     ) -> dict[str, object] | None:
         wanted = run_digest(
             identity(record["run_id"]),
-            fields(record["payload"], {"binding", "mode", "approval_sha256"}),
+            run_payload(record["payload"]),
         )
         matches = []
         for value in self.records:

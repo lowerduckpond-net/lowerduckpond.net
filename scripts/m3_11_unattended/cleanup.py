@@ -33,6 +33,7 @@ from scripts.m3_11_unattended.connect_journal import (
     IndependentJournal,
 )
 from scripts.m3_11_unattended.connect_ledger import SnapshotChangedError
+from scripts.m3_11_unattended.creation_outcome import valid_resolution
 from scripts.m3_11_unattended.github_checkpoint import MINIMUM_START_CAPACITY
 from scripts.m3_11_unattended.http import Api
 from scripts.m3_11_unattended.journal import Journal, OpJournal, event
@@ -296,6 +297,7 @@ def status_document(journal: Journal, *, helper: str, now: datetime) -> dict[str
             if record["kind"] in {"resolved", "cleanup"}
             and isinstance(record["payload"], dict)
             and record["payload"].get("intent_sha256") == intent.sha256
+            and (record["kind"] != "resolved" or valid_resolution(record, intent, records))
             and (
                 record["kind"] != "resolved"
                 or not isinstance(journal, ConnectJournal)

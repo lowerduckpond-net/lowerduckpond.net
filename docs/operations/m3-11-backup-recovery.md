@@ -428,6 +428,35 @@ remaining process budget. Inventory reads and writes remain sequential, and
 failed or cancelled scans stop queued reads and join active exchanges before
 restoring their enclosing deadline. This avoids rereading the whole history
 after growth without extending the 60-second snapshot window.
+Provisioning stages each returned credential ID and authentication obligation
+immediately. Their independent confirmations share a fresh observation with the
+next role's intent; that role cannot be created until all three are confirmed.
+The final pair is confirmed before any fixture receipt or runtime delivery.
+Each event retains its original 120-second acknowledgement deadline, and the
+ten-minute reservation and five-minute submission windows remain unchanged.
+Cleanup journals retain synchronous persistence; deferred confirmations exist
+only within one provisioning invocation.
+
+New attempts declare the pre-creation outcome protocol in their independently
+confirmed run record. If the original controller fails before invoking a provider,
+it can retain an immutable attestation bound to that run and exact intent event.
+Cleanup transports that original attestation, checks for contradictory identities
+or authentication obligations, and obtains fresh provider inventory before
+independently retaining a `not-submitted` resolution. This trusts the pinned
+controller's control flow; the independent actor does not directly observe it.
+No negative-authentication test is claimed for an unissued credential. A missing,
+partial, conflicting or legacy attestation leaves creation uncertain. Recovery
+never generates attestations from absent IDs, empty inventory or expired windows.
+Failures after provider invocation always use ordinary credential reconciliation.
+Private retention and journal failures preserve their separate sanitized source
+locations, without exporting exception text or credentials.
+When independent reconciliation still reports uncertain creation, it may also
+publish a separate checkpoint membership diagnostic. This reads the original
+registry and encrypted history within a three-minute total budget, verifies
+cumulative events, and exports only intent digests, event IDs, checkpoint
+references and native publication times. It does not infer clock ordering or
+resolve a credential obligation. Missing history remains inconclusive and the
+cleanup result is preserved separately.
 The unchanged immediate cleanup, watchdog and hourly GitHub reconciliation paths
 continue to require provider removal and available negative-authentication proof.
 

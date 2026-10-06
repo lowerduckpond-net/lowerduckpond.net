@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import cast
 
 from scripts.m3_11_qualification_evidence import fields
-from scripts.m3_11_unattended import cleanup, connect_genesis
+from scripts.m3_11_unattended import checkpoint_audit, cleanup, connect_genesis
 from scripts.m3_11_unattended.config import BOOTSTRAP_FIELDS, Connections, provider_connections
 from scripts.m3_11_unattended.connect_admission import Admission
 from scripts.m3_11_unattended.connect_api import Connect
@@ -483,6 +483,13 @@ def execute(  # noqa: PLR0915 - staged cleanup keeps private authority in this b
                     independent, cleanup.cleanup_providers(client, references, targets)
                 ),
             )
+            if operation == "reconcile":
+                checkpoint_audit.retain(
+                    directory / "creation-checkpoint-audit.json",
+                    independent.checkpoint,
+                    store,
+                    proof,
+                )
         progress("remove-ephemeral-connect")
         return {
             "format": RECEIPT_FORMAT,
