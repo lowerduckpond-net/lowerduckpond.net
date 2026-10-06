@@ -261,6 +261,11 @@ def reconcile(  # noqa: PLR0913 - request, execution identity and cleanup fallba
             )
         last_flush = time.monotonic()
 
+    def require_clear(selected: Lifecycle) -> None:
+        # Capacity/native-reservation I/O can reveal new obligations after the
+        # admission snapshot. Never compare clearance against that cached view.
+        selected.require_clear(observed=journal.fresh_records())
+
     while True:
         now = datetime.now(UTC)
         if time.monotonic() >= next_sweep:
@@ -283,7 +288,12 @@ def reconcile(  # noqa: PLR0913 - request, execution identity and cleanup fallba
                     authority_verified=connected is not None,
                 )
             next_sweep = time.monotonic() + SWEEP_SECONDS
-        if request_sha256 and connected is not None and lifecycle is not None:
+        if (
+            request_sha256
+            and connected is not None
+            and lifecycle is not None
+            and receipt.get("status") == "ready"
+        ):
             # Existing reservations retain their original deadline. Only a new
             # reservation invokes the full reconciliation gate before creation.
             with journal.reconciliation():
@@ -291,7 +301,7 @@ def reconcile(  # noqa: PLR0913 - request, execution identity and cleanup fallba
                 admission.reserve(
                     request_sha256,
                     connected.authority,
-                    require_clear=partial(lifecycle.require_clear, reuse_clearance=True),
+                    require_clear=partial(require_clear, lifecycle),
                 )
             if not announced and receipt.get("status") == "ready":
                 journal.append(
@@ -317,7 +327,7 @@ def reconcile(  # noqa: PLR0913 - request, execution identity and cleanup fallba
         def allow(
             record: dict[str, object],
             decision: Admission = admission,
-            ready: bool = connected is not None,
+            ready: bool = connected is not None and receipt.get("status") == "ready",
         ) -> bool:
             return decision.allow(record, now=datetime.now(UTC)) and (
                 ready or record["kind"] not in {"run", "intent"}

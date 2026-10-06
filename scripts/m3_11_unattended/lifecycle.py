@@ -436,15 +436,17 @@ class Lifecycle:
             self._clearance = time.monotonic(), after
         return results
 
-    def require_clear(self, *, reuse_clearance: bool = False) -> None:
+    def require_clear(self, *, observed: list[dict[str, object]] | None = None) -> None:
         clearance, self._clearance = self._clearance, None
-        if reuse_clearance and clearance is not None:
+        if observed is not None and clearance is not None:
             # Admission immediately following a successful sweep can reuse it
             # only while every relevant journal record remains identical. New
             # IDs, intents, revocations or authentication markers force a sweep.
             completed, basis = clearance
-            observed = _obligation_basis(self.journal.records())
-            if time.monotonic() - completed < CLEARANCE_SECONDS and observed == basis:
+            if (
+                time.monotonic() - completed < CLEARANCE_SECONDS
+                and _obligation_basis(observed) == basis
+            ):
                 return
         # Recheck provider inventory even for a previously resolved intent. This
         # catches delayed creation responses without trusting old DELETE receipts.

@@ -363,7 +363,11 @@ Connect observation. Writes, errors and expired observations invalidate reuse.
 Cleanup yields between credentials to publish returned-ID and cleanup ACKs;
 creation ACKs remain gated until reconciliation and admission finish. Admission
 may consume the just-completed clearance once, within thirty seconds, only when
-every obligation was verified and all relevant journal records remain identical.
+every obligation was verified and a fresh complete observation after capacity
+checks proves all relevant journal records remain identical. Failed or incomplete
+admission observations cannot fall back to checkpoint-only history.
+An unresolved final cleanup receipt, including a later provider health failure,
+blocks run and creation-intent acknowledgements; cleanup ACKs continue.
 Other clearance checks still perform a fresh sweep, including historical provider
 inventory checks that detect late creations.
 

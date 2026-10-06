@@ -261,6 +261,19 @@ class IndependentJournal(_Canonical):
         }
         return self.checkpoint.merge(observed)
 
+    def fresh_records(self) -> list[dict[str, object]]:
+        """Admission cannot use a cleanup observation or recovered-only fallback."""
+        with self._fresh():
+            self.cache_complete = False
+            self.checkpoint.restore()
+            records = self._merge(self.ledger.stable_records())
+            if not self.cache_complete:
+                raise LifecycleError("admission needs a complete fresh obligation observation")
+            # Preserve newly observed obligations even if later replica I/O
+            # fails and cleanup falls back to the independently recovered set.
+            self._retain(records)
+            return records
+
     def _retain(self, records: list[dict[str, object]]) -> Stored:
         return self.checkpoint.persist([value for value in records if not acknowledgement(value)])
 
