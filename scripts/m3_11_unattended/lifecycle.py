@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
+from scripts.m3_11_unattended import historical_absence
 from scripts.m3_11_unattended.creation_outcome import is_abort, select_abort
 from scripts.m3_11_unattended.journal import CreationJournal, Journal, event
 from scripts.m3_11_unattended.model import (
@@ -39,6 +40,7 @@ def _obligation_basis(records: list[dict[str, object]]) -> str:
             for record in records
             if record["kind"] in {"intent", "created", "revoke", "cleanup", "resolved"}
             or is_abort(record)
+            or historical_absence.is_receipt(record)
         )
     )
 
@@ -307,7 +309,7 @@ class Lifecycle:
             for record in self.journal.records()
         )
 
-    def reconcile(  # noqa: PLR0912, PLR0915 - separate ownership, removal, authentication and durability gates
+    def reconcile(  # noqa: PLR0911, PLR0912, PLR0915 - independent cleanup gates
         self, intent: Intent, credential: Credential | None = None
     ) -> CleanupResult:
         """Delete credentials only. No container, DNS record, backup or object deletion."""
@@ -394,6 +396,8 @@ class Lifecycle:
                     _owned(intent, current, known=selected)
                     client.delete(selected)
             elif known is None:
+                if credential is None and historical_absence.record_absence(self.journal, intent):
+                    return CleanupResult(intent.sha256, historical_absence.STATUS, negative)
                 # Neither API gives a server-side bound on a request whose reply
                 # was lost. Empty inventory cannot prove that creation will never
                 # commit, even after our five-minute submission window. Preserve
@@ -488,7 +492,9 @@ class Lifecycle:
             results.append(self.reconcile(item, available.get(item.sha256)))
             self.progress()
         after = _obligation_basis(self.journal.records())
-        if before == after and all(result.status == "verified" for result in results):
+        if before == after and all(
+            historical_absence.admits(result.intent_sha256, result.status) for result in results
+        ):
             self._clearance = time.monotonic(), after
         return results
 
@@ -506,7 +512,10 @@ class Lifecycle:
                 return
         # Recheck provider inventory even for a previously resolved intent. This
         # catches delayed creation responses without trusting old DELETE receipts.
-        if any(result.status != "verified" for result in self.sweep()):
+        if any(
+            not historical_absence.admits(result.intent_sha256, result.status)
+            for result in self.sweep()
+        ):
             raise LifecycleError("outstanding credential obligations block a new qualification")
 
 

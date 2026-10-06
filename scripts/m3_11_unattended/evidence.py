@@ -11,6 +11,7 @@ from scripts.m3_10_qualification_report import verify_report
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_qualification_evidence import digest as sha256
 from scripts.m3_11_qualification_evidence import fields
+from scripts.m3_11_unattended import historical_absence
 from scripts.m3_11_unattended.connect_diagnostics import verified_failure
 from scripts.m3_11_unattended.inputs import BINDING
 from scripts.m3_11_unattended.model import LifecycleError, identity, instant, stamp
@@ -74,6 +75,7 @@ def export(  # noqa: PLR0912 - each evidence family has its own closed validatio
                 "not-due",
                 "unresolved",
                 "creation-uncertain",
+                historical_absence.STATUS,
             } or record["negative_authentication"] not in {
                 "denied",
                 "unavailable",
@@ -81,6 +83,11 @@ def export(  # noqa: PLR0912 - each evidence family has its own closed validatio
                 "not-tested",
             }:
                 raise LifecycleError("revocation result is invalid")
+            if record["status"] == historical_absence.STATUS and (
+                record["intent_sha256"] != historical_absence.INTENT
+                or record["negative_authentication"] != "unavailable"
+            ):
+                raise LifecycleError("historical exception differs from the approved obligation")
             public.append(record)
         result["revocation"] = {
             "observed_at": stamp(instant(value["observed_at"])),

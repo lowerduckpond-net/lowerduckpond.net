@@ -12,7 +12,7 @@ from pathlib import Path
 
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
-from scripts.m3_11_unattended import approval, cleanup, setup
+from scripts.m3_11_unattended import approval, cleanup, historical_absence, setup
 from scripts.m3_11_unattended.config import Configuration
 from scripts.m3_11_unattended.connect_control import await_witness, launch_evidence
 from scripts.m3_11_unattended.docker import (
@@ -73,6 +73,8 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
             if (
                 progress.get("credential_cleanup") != "verified"
                 or progress.get("phase") != "finished"
+            ) and not historical_absence.retained_failure(
+                previous, progress, status.get("binding")
             ):
                 raise LifecycleError("an active attempt or unresolved revocation blocks new starts")
         run_id = str(uuid.uuid7())

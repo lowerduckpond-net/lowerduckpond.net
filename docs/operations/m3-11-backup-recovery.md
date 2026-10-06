@@ -448,6 +448,31 @@ No negative-authentication test is claimed for an unissued credential. A missing
 partial, conflicting or legacy attestation leaves creation uncertain. Recovery
 never generates attestations from absent IDs, empty inventory or expired windows.
 Failures after provider invocation always use ordinary credential reconciliation.
+
+One operator-approved historical exception applies only to Page Rules intent
+`ccdc7926243530cf6dd6615745f8520440d29531f28869a226f432b31a64b574`
+from failed run `01a11021-76d1-775a-adb1-fe00b6fd6152`. On October 6, 2026 the
+operator accepted its unavailable original creation outcome after repeated
+complete provider inventories, dashboard inspection, and a same-process
+comparison token that was seen, revoked, independently verified absent with
+authentication denied, and confirmed gone in the dashboard. The acceptance is
+immediate; it does not depend on the requested expiry or assert that expiry was
+accepted by the provider.
+
+The reviewed helper pins this complete intent and original attempt binding;
+there is no configurable waiver or prefix match. Fresh successful inventory
+absence yields `operator-accepted-uncertainty`, retained outside the runner as a
+separate receipt, never a `resolved` record. Independent readiness additionally
+requires a current native GitHub cleanup observation of that exact status and
+acknowledged acceptance. Provider errors, conflicting identities or retained
+authentication obligations still block admission. If a child appears later,
+ordinary ownership checks and deletion take over. The exception affects only
+aggregate admission and operational acceptance for this historical obligation;
+the old attempt stays failed with unresolved revocation evidence. Its containers,
+logs and records remain. New attempts still require verified revocation of every
+owned credential, a full rehearsal and complete live qualification. Read-only
+status and sanitized cleanup receipts expose the accepted uncertainty explicitly.
+
 Private retention and journal failures preserve their separate sanitized source
 locations, without exporting exception text or credentials.
 When independent reconciliation still reports uncertain creation, it may also

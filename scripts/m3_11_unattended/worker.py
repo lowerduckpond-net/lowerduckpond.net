@@ -18,7 +18,7 @@ from scripts import qualification_deadline
 from scripts.m3_10_qualification_report import verify_report
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
-from scripts.m3_11_unattended import cleanup, inputs, quota
+from scripts.m3_11_unattended import cleanup, historical_absence, inputs, quota
 from scripts.m3_11_unattended.cloudflare import Cloudflare
 from scripts.m3_11_unattended.config import Configuration, connect
 from scripts.m3_11_unattended.connect_admission import WINDOW
@@ -290,7 +290,11 @@ class Worker:
         for sibling in self.directory.parent.iterdir():
             if sibling != self.directory and (sibling / "status.json").exists():
                 progress = RunState(sibling).status()
-                if progress["credential_cleanup"] != "verified" or progress["phase"] != "finished":
+                if (
+                    progress["credential_cleanup"] != "verified" or progress["phase"] != "finished"
+                ) and not historical_absence.retained_failure(
+                    sibling.name, progress, read_private(sibling / "attempt.json")["binding"]
+                ):
                     raise LifecycleError(
                         "another attempt or unresolved cleanup blocks provisioning"
                     )
