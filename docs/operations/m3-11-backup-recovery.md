@@ -355,6 +355,23 @@ every historical event. New entries are considered on the next pass; changed
 immutable records still fail closed. Neither snapshot settling nor acknowledgement
 batching extends the original provisioning cutoff.
 
+During cleanup, the independent witness may reuse a complete Connect observation
+and verified checkpoint for five seconds when persisting an identical historical
+record. New IDs and proofs still require full persistence, and readiness and ACK
+publication always refresh the complete registry, recoverable artifact and native
+Connect observation. Writes, errors and expired observations invalidate reuse.
+Cleanup yields between credentials to publish returned-ID and cleanup ACKs;
+creation ACKs remain gated until reconciliation and admission finish. Admission
+may consume the just-completed clearance once, within thirty seconds, only when
+every obligation was verified and all relevant journal records remain identical.
+Other clearance checks still perform a fresh sweep, including historical provider
+inventory checks that detect late creations.
+
+Each provider HTTP exchange has a thirty-second total process deadline, including
+DNS, TLS, response headers and a slowly arriving body. Credentials cross private
+pipes; error bodies and child diagnostics are discarded. A timeout retains an
+uncertain creation obligation and never repeats CREATE.
+
 After a provider returns a credential, the controller immediately retains its ID
 and private secret locally. With Connect, it stages the ID and required
 negative-authentication marker before awaiting confirmation, allowing the same

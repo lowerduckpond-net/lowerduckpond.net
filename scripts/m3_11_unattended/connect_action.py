@@ -17,6 +17,7 @@ import uuid
 from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import cast
 
@@ -242,6 +243,24 @@ def reconcile(  # noqa: PLR0913 - request, execution identity and cleanup fallba
     receipt: dict[str, object] = {}
     announced = False
     connected: Connections | None = None
+    lifecycle: Lifecycle | None = None
+    last_flush = time.monotonic()
+
+    def cleanup_progress() -> None:
+        nonlocal last_flush
+        if time.monotonic() - last_flush < POLL_SECONDS:
+            return
+        # A due cleanup pass cannot monopolize returned-ID/proof ACKs. Until
+        # the full pass and admission gates finish, no creation ACK is allowed.
+        # Continue deletion if ACK delivery fails; final readiness still verifies.
+        with suppress(LifecycleError, OSError, ValueError):
+            journal.acknowledge(
+                run_id=run_id,
+                attempt=attempt,
+                allow=lambda record: record["kind"] not in {"run", "intent"},
+            )
+        last_flush = time.monotonic()
+
     while True:
         now = datetime.now(UTC)
         if time.monotonic() >= next_sweep:
@@ -251,24 +270,29 @@ def reconcile(  # noqa: PLR0913 - request, execution identity and cleanup fallba
             except RuntimeError, OSError, ValueError, KeyError, TypeError:
                 connected = None
             lifecycle = (
-                Lifecycle(journal, connected.providers) if connected is not None else fallback()
+                Lifecycle(journal, connected.providers, progress=cleanup_progress)
+                if connected is not None
+                else fallback()
             )
-            receipt = cleanup.sweep(
-                lifecycle,
-                actor="github",
-                helper=journal.witness.current_helper,
-                authority_verified=connected is not None,
-            )
+            lifecycle.progress = cleanup_progress
+            with journal.reconciliation():
+                receipt = cleanup.sweep(
+                    lifecycle,
+                    actor="github",
+                    helper=journal.witness.current_helper,
+                    authority_verified=connected is not None,
+                )
             next_sweep = time.monotonic() + SWEEP_SECONDS
-        admission = Admission(journal, targets=targets, now=datetime.now(UTC))
-        if request_sha256 and connected is not None:
+        if request_sha256 and connected is not None and lifecycle is not None:
             # Existing reservations retain their original deadline. Only a new
             # reservation invokes the full reconciliation gate before creation.
-            admission.reserve(
-                request_sha256,
-                connected.authority,
-                require_clear=Lifecycle(journal, connected.providers).require_clear,
-            )
+            with journal.reconciliation():
+                admission = Admission(journal, targets=targets, now=datetime.now(UTC))
+                admission.reserve(
+                    request_sha256,
+                    connected.authority,
+                    require_clear=partial(lifecycle.require_clear, reuse_clearance=True),
+                )
             if not announced and receipt.get("status") == "ready":
                 journal.append(
                     event(

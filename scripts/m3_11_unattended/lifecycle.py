@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -19,12 +20,24 @@ from scripts.m3_11_unattended.model import (
     LifecycleError,
     ProviderKind,
     Targets,
+    digest,
     identity,
     instant,
     stamp,
 )
 
 CreationRecorder = Callable[[str, str | None], None]
+CLEARANCE_SECONDS = 30
+
+
+def _obligation_basis(records: list[dict[str, object]]) -> str:
+    return digest(
+        sorted(
+            digest(record)
+            for record in records
+            if record["kind"] in {"intent", "created", "revoke", "cleanup", "resolved"}
+        )
+    )
 
 
 class Provider(Protocol):
@@ -157,11 +170,14 @@ class Lifecycle:
         remember: Callable[[Intent, Credential], None] | None = None,
         remember_intent: Callable[[Intent], None] | None = None,
         remember_created: Callable[[Intent, dict[str, object]], None] | None = None,
+        progress: Callable[[], None] = lambda: None,
     ) -> None:
         self.journal, self.providers, self.clock = journal, providers, clock
         self.remember = remember
         self.remember_intent = remember_intent
         self.remember_created = remember_created
+        self.progress = progress
+        self._clearance: tuple[float, str] | None = None
 
     def _record_creation(self, intent: Intent, selected: str, secret: str | None) -> None:
         record = event(
@@ -408,10 +424,28 @@ class Lifecycle:
             return CleanupResult(intent.sha256, "unresolved", negative)
 
     def sweep(self, secrets: Mapping[str, Credential] | None = None) -> list[CleanupResult]:
+        self._clearance = None
+        before = _obligation_basis(self.journal.records())
         available = secrets or {}
-        return [self.reconcile(item, available.get(item.sha256)) for item in intents(self.journal)]
+        results = []
+        for item in intents(self.journal):
+            results.append(self.reconcile(item, available.get(item.sha256)))
+            self.progress()
+        after = _obligation_basis(self.journal.records())
+        if before == after and all(result.status == "verified" for result in results):
+            self._clearance = time.monotonic(), after
+        return results
 
-    def require_clear(self) -> None:
+    def require_clear(self, *, reuse_clearance: bool = False) -> None:
+        clearance, self._clearance = self._clearance, None
+        if reuse_clearance and clearance is not None:
+            # Admission immediately following a successful sweep can reuse it
+            # only while every relevant journal record remains identical. New
+            # IDs, intents, revocations or authentication markers force a sweep.
+            completed, basis = clearance
+            observed = _obligation_basis(self.journal.records())
+            if time.monotonic() - completed < CLEARANCE_SECONDS and observed == basis:
+                return
         # Recheck provider inventory even for a previously resolved intent. This
         # catches delayed creation responses without trusting old DELETE receipts.
         if any(result.status != "verified" for result in self.sweep()):
