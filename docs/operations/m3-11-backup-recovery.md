@@ -420,6 +420,14 @@ Controller journal reads and acknowledgement polling use the same bounded
 snapshot stabilization, including reads before a write. Retries never repeat a
 write or provider creation. Both inventory passes validate immutable metadata,
 and an event already read cannot disappear from the next accepted snapshot.
+Validated item details survive an interrupted or unstable scan in that reader's
+memory. A retry compares each retained item against current native metadata and
+still requires the complete stable inventory before returning any records.
+Cold reads use at most four concurrent item-detail GETs, each within its own
+remaining process budget. Inventory reads and writes remain sequential, and
+failed or cancelled scans stop queued reads and join active exchanges before
+restoring their enclosing deadline. This avoids rereading the whole history
+after growth without extending the 60-second snapshot window.
 The unchanged immediate cleanup, watchdog and hourly GitHub reconciliation paths
 continue to require provider removal and available negative-authentication proof.
 

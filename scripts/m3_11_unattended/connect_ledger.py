@@ -10,8 +10,11 @@ import json
 import re
 import time
 from collections.abc import Callable, Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from contextvars import Context, copy_context
 from http import HTTPStatus
+from itertools import chain
 from pathlib import Path
 from typing import cast
 
@@ -27,6 +30,8 @@ from scripts.m3_11_unattended.state import private_directory
 ACK_FORMAT = "lowerduckpond-m3-11-connect-ack-v1"
 READBACK_SECONDS = 60
 READBACK_POLL_SECONDS = 1
+ITEM_READ_WORKERS = 4
+type Item = tuple[dict[str, object], dict[str, object]]
 TITLE = re.compile(r"m3-11-([0-9a-f-]{36})-([0-9a-f]{64})")
 ACK_FIELDS = {
     "format",
@@ -96,7 +101,7 @@ class ConnectLedger:
         self._metadata: dict[str, list[dict[str, object]]] = {}
         self._known: dict[str, str] = dict(minimum)
         self._items: dict[str, str] = {}
-        self._cached_items: dict[str, tuple[dict[str, object], dict[str, object]]] = {}
+        self._cached_items: dict[str, Item] = {}
 
     @contextmanager
     def read_budget(
@@ -147,7 +152,7 @@ class ConnectLedger:
             raise LifecycleError("Connect journal has not reached a usable synchronized state")
         return value["items"], value["contentVersion"]
 
-    def _read(self, item_id: str) -> tuple[dict[str, object], dict[str, object]]:
+    def _read(self, item_id: str) -> Item:
         with self._reading():
             item = self.client.item(self.vault, item_id)
         if (
@@ -206,46 +211,78 @@ class ConnectLedger:
             inventory[item_id] = {key: listed.get(key) for key in ITEM_BINDING}
         return inventory
 
-    def records(self) -> list[dict[str, object]]:
-        """A complete, stable cache snapshot; still not an independent-write receipt."""
-        before = self._vault_state()
-        inventory = self._inventory()
-        records: dict[str, dict[str, object]] = {}
-        metadata: dict[str, list[dict[str, object]]] = {}
-        items: dict[str, str] = {}
-        cached_items = {}
-        for item_id, listed in inventory.items():
-            cached = self._cached_items.get(item_id)
-            record, item = cached if cached is not None else self._read(item_id)
-            if any(listed.get(key) != item.get(key) for key in ITEM_BINDING):
-                raise LifecycleError("Connect journal changed during readback")
-            event_id = identity(record["event_id"])
-            if event_id in records and records[event_id] != record:
-                raise LifecycleError("Connect journal contains conflicting event identities")
-            if event_id in self._known and self._known[event_id] != digest(record):
-                raise LifecycleError("an immutable Connect journal event changed")
-            if item_id == self.anchor and digest(record) != self.anchor_sha256:
-                raise LifecycleError("Connect journal anchor changed")
-            items[event_id] = item_id
-            metadata.setdefault(event_id, []).append(item)
-            records[event_id] = record
-            cached_items[item_id] = record, item
-        # Every decoded immutable event remains known even if the surrounding
-        # snapshot is unstable. A retry cannot forget a newly seen obligation.
-        self._known.update({key: digest(record) for key, record in records.items()})
-        after = self._inventory()
-        if any(after[key] != inventory[key] for key in after.keys() & inventory.keys()):
-            raise LifecycleError("immutable Connect journal metadata changed during readback")
-        for listed in after.values():
+    def _remember_inventory(self, inventory: Mapping[str, dict[str, object]]) -> None:
+        for listed in inventory.values():
             advertised = TITLE.fullmatch(str(listed["title"]))
             if advertised is None:  # Already validated by _inventory; never accept an unbound row.
                 raise LifecycleError("Connect inventory event binding is invalid")
             event_id, expected = advertised.groups()
             if event_id in self._known and self._known[event_id] != expected:
-                raise LifecycleError("an immutable Connect journal event binding changed")
-            # A new valid summary also establishes an expectation for the next
-            # complete scan. It proves neither its contents nor durability yet.
+                raise LifecycleError("immutable Connect journal has conflicting event identities")
+            # Pin every advertised event even if a later detail read fails.
+            # A valid summary proves neither its contents nor durability yet.
             self._known[event_id] = expected
+
+    @contextmanager
+    def _details(
+        self, inventory: Mapping[str, dict[str, object]]
+    ) -> Iterator[Iterator[tuple[str, Item]]]:
+        """Bound parallel GETs; join them before the enclosing deadline is restored."""
+        cached = [(key, self._cached_items[key]) for key in inventory if key in self._cached_items]
+        missing = [key for key in inventory if key not in self._cached_items]
+
+        def read(job: tuple[Context, str]) -> tuple[str, Item]:
+            context, key = job
+            # Each worker inherits any narrower caller budget without sharing
+            # mutable timeout state with other in-flight reads.
+            return key, context.run(self._read, key)
+
+        executor = ThreadPoolExecutor(max_workers=ITEM_READ_WORKERS)
+        try:
+            fresh = executor.map(
+                read,
+                ((copy_context(), key) for key in missing),
+                buffersize=ITEM_READ_WORKERS,
+            )
+            yield chain(cached, fresh)
+        finally:
+            # Errors/cancellation discard queued reads. Running exchanges still
+            # have their original process budgets and must finish before return.
+            executor.shutdown(wait=True, cancel_futures=True)
+
+    def records(self) -> list[dict[str, object]]:
+        """A complete, stable cache snapshot; still not an independent-write receipt."""
+        before = self._vault_state()
+        inventory = self._inventory()
+        self._remember_inventory(inventory)
+        records: dict[str, dict[str, object]] = {}
+        metadata: dict[str, list[dict[str, object]]] = {}
+        items: dict[str, str] = {}
+        with self._details(inventory) as details:
+            for item_id, (record, item) in details:
+                listed = inventory[item_id]
+                if any(listed.get(key) != item.get(key) for key in ITEM_BINDING):
+                    raise LifecycleError("Connect journal changed during readback")
+                event_id = identity(record["event_id"])
+                if event_id in records and records[event_id] != record:
+                    raise LifecycleError("Connect journal contains conflicting event identities")
+                record_sha256 = digest(record)
+                if event_id in self._known and self._known[event_id] != record_sha256:
+                    raise LifecycleError("an immutable Connect journal event changed")
+                if item_id == self.anchor and record_sha256 != self.anchor_sha256:
+                    raise LifecycleError("Connect journal anchor changed")
+                items[event_id] = item_id
+                metadata.setdefault(event_id, []).append(item)
+                records[event_id] = record
+                # Retain validated immutable details even if a later read fails
+                # or the snapshot grows. This cannot publish a partial snapshot:
+                # every retry checks current native bindings and both inventories.
+                self._known[event_id] = record_sha256
+                self._cached_items[item_id] = record, item
+        after = self._inventory()
+        if any(after[key] != inventory[key] for key in after.keys() & inventory.keys()):
+            raise LifecycleError("immutable Connect journal metadata changed during readback")
+        self._remember_inventory(after)
         # Validate both inventories before treating growth as transient. Changed
         # known metadata and malformed new summaries cannot be waited past.
         if (
@@ -262,7 +299,7 @@ class ConnectLedger:
         # An independent worker can recover the same event from its checkpoint
         # after losing a POST reply and its ephemeral spool. Exact immutable
         # copies share one logical event; conflicting copies still fail closed.
-        self._cached_items = cached_items
+        self._cached_items = {key: self._cached_items[key] for key in inventory}
         return sorted(records.values(), key=lambda row: str(row["event_id"]))
 
     def _readback(self, record: dict[str, object]) -> None:
