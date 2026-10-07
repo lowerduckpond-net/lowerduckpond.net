@@ -24,7 +24,7 @@ from scripts.m3_11_unattended.config import Configuration, connect
 from scripts.m3_11_unattended.connect_admission import WINDOW
 from scripts.m3_11_unattended.connect_diagnostics import retain_failure
 from scripts.m3_11_unattended.connect_journal import ConnectJournal
-from scripts.m3_11_unattended.connect_provisioning import ProvisioningJournal
+from scripts.m3_11_unattended.connect_provisioning import ProvisioningJournal, persist_run
 from scripts.m3_11_unattended.creation_outcome import FORMAT as CREATION_PROTOCOL
 from scripts.m3_11_unattended.creation_outcome import (
     RETAINED_FORMAT,
@@ -352,7 +352,8 @@ class Worker:
                 and payload.get("mode") == self.request["mode"]
             ):
                 raise LifecycleError("this approved attempt has already been consumed")
-        run_record = creator.journal.persist(
+        run_record = persist_run(
+            creator.journal,
             event(
                 "run",
                 self.run_id,
@@ -362,7 +363,8 @@ class Worker:
                     "approval_sha256": self.request["approval_sha256"],
                     "creation_protocol": CREATION_PROTOCOL,
                 },
-            )
+            ),
+            deadline=self.ends_at,
         )
         # Match the immutable reservation clock, not the time its ACK arrives.
         # Keep the intent's separate five-minute provider settlement range intact.

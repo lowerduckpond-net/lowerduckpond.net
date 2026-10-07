@@ -348,6 +348,17 @@ settlement range remains available for ownership and cleanup. Lost dispatch repl
 are reconciled by the saved execution identity, never by blind resubmission.
 No GitHub token enters the detached controller or fixture.
 
+The initial run-reservation acknowledgement may use the time remaining in that
+same ten-minute window, also bounded by the controller deadline. Cleanup and
+replica delivery can consume most of a two-minute wait before any credential is
+issued. Canonicalization, staging and observation consume one fixed budget;
+retained run timestamps cannot renew it. Only typed snapshot-read expiry can
+retry observation, with each complete snapshot still bounded to sixty seconds.
+Staging and provider calls are never replayed. A late acknowledgement leaves less
+time to provision and cannot reopen the original cutoff. The independent
+two-minute freshness gate and twelve-minute witness execution remain unchanged;
+neither guarantees that a slow attempt will finish provisioning.
+
 Each acknowledgement pass waits within the existing bounded snapshot-read budget
 and checks prior acknowledgements against one complete native-author snapshot
 before publishing new ones. Journal growth does not require a full vault scan for
@@ -436,8 +447,8 @@ Provisioning stages each returned credential ID and authentication obligation
 immediately. Their independent confirmations share a fresh observation with the
 next role's intent; that role cannot be created until all three are confirmed.
 The final pair is confirmed before any fixture receipt or runtime delivery.
-Each event retains its original 120-second acknowledgement deadline, and the
-ten-minute reservation and five-minute submission windows remain unchanged.
+Each credential event retains its original 120-second acknowledgement deadline,
+and the ten-minute reservation and five-minute submission windows remain unchanged.
 Cleanup journals retain synchronous persistence; deferred confirmations exist
 only within one provisioning invocation.
 

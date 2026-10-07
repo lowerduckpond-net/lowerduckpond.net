@@ -4,9 +4,61 @@ from __future__ import annotations
 
 import time
 from contextlib import nullcontext
+from datetime import UTC, datetime
 
+from scripts.m3_11_unattended.connect_admission import WINDOW
 from scripts.m3_11_unattended.connect_journal import ConnectJournal
-from scripts.m3_11_unattended.model import LifecycleError
+from scripts.m3_11_unattended.connect_ledger import ReadbackExpiredError
+from scripts.m3_11_unattended.creation_outcome import run_payload
+from scripts.m3_11_unattended.journal import Journal
+from scripts.m3_11_unattended.model import LifecycleError, instant
+
+
+def persist_run(
+    journal: Journal, record: dict[str, object], *, deadline: float
+) -> dict[str, object]:
+    """Wait for this run's reservation within its original creation window only."""
+    if not isinstance(journal, ConnectJournal):
+        return journal.persist(record)
+    if record["kind"] != "run":
+        raise LifecycleError("creation reservation requires a run record")
+    run_payload(record["payload"])
+
+    def cutoff(value: dict[str, object]) -> tuple[datetime, float]:
+        accepted = instant(value["recorded_at"]).replace(microsecond=0)
+        now = datetime.now(UTC)
+        expires = accepted + WINDOW
+        if not accepted <= now < expires:
+            raise LifecycleError("original creation reservation window is unavailable")
+        return expires, min(deadline, time.monotonic() + (expires - now).total_seconds())
+
+    _, until = cutoff(record)
+    with journal.ledger.read_budget(deadline=until, check_cancelled=lambda: None):
+        original = journal._original(record)
+        # A retained canonical record can be older than the proposed event.
+        # Neither canonicalization nor a clock correction can renew this budget.
+        expires, original_until = cutoff(original)
+        until = min(until, original_until)
+        with journal.ledger.read_budget(deadline=until, check_cancelled=lambda: None):
+            journal.ledger.stage(original)
+            while True:
+                journal.check_cancelled()
+                if time.monotonic() >= until or datetime.now(UTC) >= expires:
+                    raise LifecycleError("original creation reservation window elapsed")
+                try:
+                    result = journal._wait_for(
+                        original, until=until if journal.wait_seconds else time.monotonic()
+                    )
+                except ReadbackExpiredError:
+                    if not journal.wait_seconds:
+                        raise  # Explicit single-observation mode for local doubles.
+                    # Retry observations only. Each still needs a complete,
+                    # stable native snapshot within its own 60-second cap.
+                    continue
+                journal.check_cancelled()
+                if time.monotonic() >= until or datetime.now(UTC) >= expires:
+                    raise LifecycleError("original creation reservation window elapsed")
+                return result
 
 
 class ProvisioningJournal:
