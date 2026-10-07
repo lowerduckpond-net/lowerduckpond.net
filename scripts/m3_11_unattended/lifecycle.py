@@ -650,6 +650,9 @@ class Lifecycle:
             if result.status == "not-due":
                 if not self._due(intent, records):
                     return result
+            elif result.status == historical_absence.STATUS:
+                if historical_absence.receipts(intent, records):
+                    return result
             elif result.status == "verified":
                 known = _known_id(records, intent)
                 intent_sha256 = intent.sha256
