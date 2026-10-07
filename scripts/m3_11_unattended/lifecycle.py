@@ -3,14 +3,19 @@
 from __future__ import annotations
 
 import re
+import signal
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
+from scripts import qualification_deadline
 from scripts.m3_11_unattended import historical_absence
 from scripts.m3_11_unattended.creation_outcome import is_abort, select_abort, valid_resolution
 from scripts.m3_11_unattended.journal import CreationJournal, Journal, event
@@ -32,6 +37,7 @@ from scripts.qualification_timing import measure
 
 CreationRecorder = Callable[[str, str | None], None]
 CLEARANCE_SECONDS = 30
+READBACK_WORKERS = 4
 
 
 def _obligation_basis(records: list[dict[str, object]]) -> str:
@@ -176,6 +182,33 @@ class _Historical:
     identifier: str
     created: dict[str, object]
     resolved: dict[str, object]
+
+
+def _historical_details(client: Provider, identifiers: list[str]) -> list[bool]:
+    """Join one bounded read-only wave before progress, inventory or deletion."""
+    if not 0 < len(identifiers) <= READBACK_WORKERS:
+        raise LifecycleError("historical readback wave exceeds its bound")
+    pending = qualification_deadline.Interruption()
+    guard = (
+        qualification_deadline.interrupts()
+        if threading.current_thread() is threading.main_thread()
+        else nullcontext(pending)
+    )
+    try:
+        # The provider bounds each whole exchange to 30 seconds. Record repeated
+        # signals until shutdown has joined every GET, including on submission
+        # or response failure; no fallback DELETE may race an unfinished read.
+        with guard as pending, ThreadPoolExecutor(max_workers=READBACK_WORKERS) as executor:
+            return [value is not None for value in executor.map(client.inspect, identifiers)]
+    except RuntimeError:
+        # Thread creation/submission can fail too. The executor has already
+        # drained; ordinary reconciliation must still reach reappeared siblings.
+        raise LifecycleError("historical credential readback failed") from None
+    finally:
+        # Preserve the caller's interruption behavior after restoring its handler.
+        # Worker cleanup records signals; the independent action raises on them.
+        if pending.signum is not None:
+            signal.raise_signal(pending.signum)
 
 
 class Lifecycle:
@@ -579,14 +612,16 @@ class Lifecycle:
             except LifecycleError, OSError, ValueError, KeyError, TypeError:
                 return unresolved
             visible = False
-            for _, proof in selected:
+            for offset in range(0, len(selected), READBACK_WORKERS):
+                wave = selected[offset : offset + READBACK_WORKERS]
                 present = (
-                    any(item.get("id") == proof.identifier for item in first)
+                    [any(item.get("id") == proof.identifier for item in first) for _, proof in wave]
                     if first is not None
-                    else client.inspect(proof.identifier) is not None
+                    else _historical_details(client, [proof.identifier for _, proof in wave])
                 )
-                visible = present or visible
-                self.progress()
+                visible = any(present) or visible
+                for _ in wave:
+                    self.progress()
             if visible:
                 # No shared observation survives an ordinary reconciliation,
                 # which may delete an exactly owned credential.

@@ -385,7 +385,10 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
                 next_sweep = 0.0
                 continue
             return receipt
-        time.sleep(min(POLL_SECONDS, max(0, until - time.monotonic())))
+        now_monotonic = time.monotonic()
+        # ACK/checkpoint I/O may have crossed the next cleanup deadline. Start
+        # that due pass immediately instead of adding an unnecessary poll delay.
+        time.sleep(min(POLL_SECONDS, max(0, min(until, next_sweep) - now_monotonic)))
 
 
 def synchronize(ready: Callable[[], bool]) -> bool:
