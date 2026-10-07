@@ -29,6 +29,7 @@ from scripts.m3_11_unattended.model import (
     strings,
 )
 from scripts.production_qualification_inputs import revision
+from scripts.qualification_timing import measure
 
 FORMAT = "lowerduckpond-m3-11-connect-creation-reservation-v1"
 WINDOW = timedelta(minutes=10)
@@ -112,6 +113,7 @@ class Admission:
             raise LifecycleError("Connect creation reservation is ambiguous")
         return matches[0] if matches else None
 
+    @measure("credential-reservation")
     def reserve(
         self, expected: str, authority: Authority, *, require_clear: Callable[[], None]
     ) -> datetime | None:

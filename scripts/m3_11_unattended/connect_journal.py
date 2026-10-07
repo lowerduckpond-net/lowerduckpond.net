@@ -16,6 +16,7 @@ from scripts.m3_11_unattended.journal import event, validate
 from scripts.m3_11_unattended.model import LifecycleError, digest, identity
 from scripts.m3_11_unattended.state import cleanup_lock
 from scripts.production_qualification_inputs import revision
+from scripts.qualification_timing import measure
 
 ACK_WAIT_SECONDS = 120
 ACK_POLL_SECONDS = 5
@@ -369,6 +370,7 @@ class IndependentJournal(_Canonical):
         with self._fresh():
             return self._acknowledge(run_id=run_id, attempt=attempt, allow=allow)
 
+    @measure("credential-acknowledgement")
     def _acknowledge(
         self, *, run_id: int, attempt: int, allow: Callable[[dict[str, object]], bool]
     ) -> int:
@@ -382,7 +384,16 @@ class IndependentJournal(_Canonical):
                 "Connect replica remains incomplete; cleanup is not ready"
             ) from None
         records = self._merge(observed)
-        stored = self._retain(records)
+        retained = {
+            str(value["event_id"]): value for value in records if not acknowledgement(value)
+        }
+        # New obligations must survive even a malformed ACK or admission
+        # callback failure. Retain them before inspecting transport receipts.
+        stored = (
+            self._retain(records)
+            if retained != self.checkpoint.records or not self.cache_complete
+            else None
+        )
         if not self.cache_complete:
             raise LifecycleError("Connect replica remains incomplete; cleanup is not ready")
         # Decide which records already have native acknowledgements from one
@@ -406,6 +417,14 @@ class IndependentJournal(_Canonical):
             ):
                 continue
             pending.append(record)
+        if stored is None and not any(allow(record) for record in pending):
+            # A cleanup progress poll can have no eligible ACKs. It emits no
+            # readiness or durability claim, so unchanged obligations need no
+            # registry/artifact recovery here. New obligations must still be
+            # retained even when their creation ACK is currently prohibited.
+            return 0
+        if stored is None:
+            stored = self._retain(records)
         published = 0
         for record in pending:
             # Readback/checkpoint I/O or an earlier ACK may consume the original

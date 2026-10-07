@@ -27,6 +27,7 @@ GROUPS = frozenset(
         "failed-retirement",
         "unclassified",
         "storage-credentials",
+        "credential-lifecycle",
         "archive-credentials",
         "core",
         "export-import",
@@ -78,6 +79,19 @@ KINDS = frozenset(
         "restore-source-capture",
         "restore-verify-state",
         "restore-replay-retire",
+        "credential-authority",
+        "credential-sweep",
+        "credential-reconcile",
+        "credential-clearance",
+        "credential-reservation",
+        "credential-acknowledgement",
+        "credential-journal-read",
+        "checkpoint-recovery",
+        "checkpoint-persistence",
+        "checkpoint-registry",
+        "checkpoint-read",
+        "checkpoint-write",
+        "checkpoint-request",
     }
 )
 MAX_EVENTS_BYTES = 8 * 1024 * 1024
@@ -132,9 +146,12 @@ def record_span(kind: str, start: int, outcome: str = "completed") -> None:
             os.write(descriptor, raw)
         finally:
             os.close(descriptor)
-    except Exception:  # Timing diagnostics must not replace the command result.
+    except OSError, ValueError, TypeError:
+        # Handle ordinary sink/encoding failures, not RuntimeError-based signal
+        # interruptions raised by a measured command's own handler.
         # Missing events are visible as incomplete attribution, never a test pass.
-        print("Qualification timing event unavailable.", file=sys.stderr)
+        with contextlib.suppress(OSError, ValueError, TypeError):
+            print("Qualification timing event unavailable.", file=sys.stderr)
 
 
 @contextlib.contextmanager

@@ -15,6 +15,7 @@ from typing import Protocol
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended.journal import MAX_EVENTS, validate
 from scripts.m3_11_unattended.model import LifecycleError, digest, identity
+from scripts.qualification_timing import measure
 
 FORMAT = "lowerduckpond-m3-11-connect-checkpoint-v1"
 
@@ -87,6 +88,7 @@ class Checkpoint:
         self.observed_history: tuple[Stored, ...] = ()
         self.records: dict[str, dict[str, object]] = {}
 
+    @measure("checkpoint-recovery")
     def restore(self) -> None:
         history = self.store.lineage()
         if not history:
@@ -141,6 +143,7 @@ class Checkpoint:
         ):
             raise LifecycleError("independent checkpoint lost or changed an acknowledged event")
 
+    @measure("checkpoint-persistence")
     def persist(self, records: list[dict[str, object]]) -> Stored:
         """Publish and verify the recoverable records before a caller may emit an ACK."""
         selected = _records(records)
