@@ -26,6 +26,7 @@ from scripts.m3_11_unattended.connect_checkpoint import Stored
 from scripts.m3_11_unattended.journal import MAX_EVENTS, TAG, OpJournal, _note_content, validate
 from scripts.m3_11_unattended.model import LifecycleError, digest, identity, instant
 from scripts.m3_11_unattended.state import private_directory
+from scripts.qualification_timing import measure
 
 ACK_FORMAT = "lowerduckpond-m3-11-connect-ack-v1"
 READBACK_SECONDS = 60
@@ -250,6 +251,7 @@ class ConnectLedger:
             # have their original process budgets and must finish before return.
             executor.shutdown(wait=True, cancel_futures=True)
 
+    @measure("credential-journal-read")
     def records(self) -> list[dict[str, object]]:
         """A complete, stable cache snapshot; still not an independent-write receipt."""
         before = self._vault_state()

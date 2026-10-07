@@ -51,6 +51,7 @@ from scripts.m3_11_unattended.model import (
 from scripts.m3_11_unattended.spaces import Spaces
 from scripts.m3_11_unattended.state import cleanup_lock
 from scripts.production_qualification_inputs import git, revision
+from scripts.qualification_timing import measure
 
 HEARTBEAT_MAX_AGE = timedelta(minutes=90)
 POLL_SECONDS = 60
@@ -116,6 +117,7 @@ def cleanup_providers(
     return providers
 
 
+@measure("credential-sweep")
 def sweep(  # noqa: PLR0912, PLR0913 - independent restoration never suppresses child obligations
     lifecycle: Lifecycle,
     *,

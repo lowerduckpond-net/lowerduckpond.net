@@ -28,6 +28,7 @@ from scripts.m3_11_unattended.model import (
     instant,
     stamp,
 )
+from scripts.qualification_timing import measure
 
 CreationRecorder = Callable[[str, str | None], None]
 CLEARANCE_SECONDS = 30
@@ -309,6 +310,7 @@ class Lifecycle:
             for record in self.journal.records()
         )
 
+    @measure("credential-reconcile")
     def reconcile(  # noqa: PLR0911, PLR0912, PLR0915 - independent cleanup gates
         self, intent: Intent, credential: Credential | None = None
     ) -> CleanupResult:
@@ -498,6 +500,7 @@ class Lifecycle:
             self._clearance = time.monotonic(), after
         return results
 
+    @measure("credential-clearance")
     def require_clear(self, *, observed: list[dict[str, object]] | None = None) -> None:
         clearance, self._clearance = self._clearance, None
         if observed is not None and clearance is not None:

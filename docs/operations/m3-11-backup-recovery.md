@@ -383,6 +383,19 @@ and verified checkpoint for five seconds when persisting an identical historical
 record. New IDs and proofs still require full persistence, and readiness and ACK
 publication always refresh the complete registry, recoverable artifact and native
 Connect observation. Writes, errors and expired observations invalidate reuse.
+An ACK poll that finds no eligible unconfirmed event and exactly the already
+retained non-ACK obligations returns without rereading the registry or artifact.
+It emits no ACK or readiness claim. New obligations still take the full retention
+path even when their creation ACK is prohibited. Admission and actual ACK
+publication retain their fresh independent recovery checks.
+
+The independent job also exports `m3-11-cleanup-timing-RUN-attempt-N`, containing
+only the existing allowlisted monotonic timing-event format. It separates
+credential reconciliation, authority checks, reservation, ACK processing, native
+journal reads, and checkpoint recovery/publication. Nested spans overlap; their
+sums are not total elapsed time. Timings never establish cleanup or qualification
+success, and a missing diagnostic cannot suppress revocation or alter a deadline.
+
 Cleanup yields between credentials to publish returned-ID and cleanup ACKs;
 creation ACKs remain gated until reconciliation and admission finish. Admission
 may consume the just-completed clearance once, within thirty seconds, only when

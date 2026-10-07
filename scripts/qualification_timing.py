@@ -27,6 +27,7 @@ GROUPS = frozenset(
         "failed-retirement",
         "unclassified",
         "storage-credentials",
+        "credential-lifecycle",
         "archive-credentials",
         "core",
         "export-import",
@@ -78,6 +79,19 @@ KINDS = frozenset(
         "restore-source-capture",
         "restore-verify-state",
         "restore-replay-retire",
+        "credential-authority",
+        "credential-sweep",
+        "credential-reconcile",
+        "credential-clearance",
+        "credential-reservation",
+        "credential-acknowledgement",
+        "credential-journal-read",
+        "checkpoint-recovery",
+        "checkpoint-persistence",
+        "checkpoint-registry",
+        "checkpoint-read",
+        "checkpoint-write",
+        "checkpoint-request",
     }
 )
 MAX_EVENTS_BYTES = 8 * 1024 * 1024

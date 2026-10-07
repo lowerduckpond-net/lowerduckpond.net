@@ -31,6 +31,7 @@ from scripts.m3_11_unattended.journal_cache import MAX_CACHE_BYTES, JournalCache
 from scripts.m3_11_unattended.model import LifecycleError, digest, identity
 from scripts.m3_11_unattended.state import private_directory
 from scripts.production_qualification_inputs import revision
+from scripts.qualification_timing import measure
 
 REPOSITORY = "lowerduckpond-net/lowerduckpond.net"
 WORKFLOW = "m3-11-credential-cleanup.yml"
@@ -111,6 +112,7 @@ class GitHubArtifacts:
         self._verified_runs: set[int] = set()
         self._history: tuple[Stored, ...] = ()
 
+    @measure("checkpoint-request")
     def _api(
         self, path: str, *, binary: bool = False, body: dict[str, object] | None = None
     ) -> object:
@@ -216,6 +218,7 @@ class GitHubArtifacts:
         history = self.lineage()
         return history[-1] if history else None
 
+    @measure("checkpoint-registry")
     def lineage(self, *, deadline: float | None = None) -> tuple[Stored, ...]:
         self._until = time.monotonic() + SCAN_SECONDS
         if deadline is not None:
@@ -312,6 +315,7 @@ class GitHubArtifacts:
         stored = Stored(int(match[2]), description.removeprefix("sha256:"))
         return stored, int(match[1])
 
+    @measure("checkpoint-read")
     def read(self, stored: Stored, *, deadline: float | None = None) -> dict[str, object]:
         self._until = time.monotonic() + SCAN_SECONDS
         if deadline is not None:
@@ -436,6 +440,7 @@ class GitHubArtifacts:
             time.sleep(min(READ_POLL_SECONDS, remaining))
         raise LifecycleError("checkpoint registry publication remains unconfirmed")
 
+    @measure("checkpoint-write")
     def create(self, document: dict[str, object]) -> Stored:
         self._until = time.monotonic() + SCAN_SECONDS
         if (

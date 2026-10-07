@@ -21,6 +21,7 @@ from functools import partial
 from pathlib import Path
 from typing import cast
 
+from scripts import qualification_timing
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended import checkpoint_audit, cleanup, connect_genesis
 from scripts.m3_11_unattended.config import BOOTSTRAP_FIELDS, Connections, provider_connections
@@ -467,6 +468,7 @@ def execute(  # noqa: PLR0915 - staged cleanup keeps private authority in this b
         )
         journal: Journal = ProbeJournal(ledger)
 
+        @qualification_timing.measure("credential-authority")
         def connections() -> Connections:
             return provider_connections(
                 client,
@@ -555,6 +557,12 @@ def main() -> int:
     directory = Path(os.environ["RUNNER_TEMP"]) / "m3-11-connect"
     directory.mkdir(mode=0o700)
     output = directory / "receipt.json"
+    timing_environment = {
+        name: os.environ.get(name)
+        for name in (qualification_timing.EVENT_ENV, qualification_timing.CONTEXT_ENV)
+    }
+    os.environ[qualification_timing.EVENT_ENV] = str(directory / "timing-events.jsonl")
+    os.environ[qualification_timing.CONTEXT_ENV] = "credential-lifecycle"
     receipt: dict[str, object] = {"format": RECEIPT_FORMAT, "status": "unresolved"}
     phase = "validate-protected-execution"
 
@@ -589,6 +597,12 @@ def main() -> int:
         # No exception text, arguments, locals, arbitrary names or provider output.
         with suppress(Exception):
             receipt["failure"] = failure(error)
+    finally:
+        for name, previous in timing_environment.items():
+            if previous is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = previous
     replace_private(output, receipt)
     return 0 if receipt["status"] == "ready" else 1
 
