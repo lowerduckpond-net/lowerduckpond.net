@@ -335,6 +335,46 @@ class Lifecycle:
                 raise LifecycleError("cleanup authority differs from the original obligation")
             known = known_id(self.journal, intent)
             abort = select_abort(intent, self.journal.records())
+            prior = next(
+                (record for record in reversed(observations) if record["kind"] == "resolved"), None
+            )
+            if (
+                credential is None
+                and known is not None
+                and abort is None
+                and not pending
+                and prior is not None
+                and isinstance(prior["payload"], dict)
+                and prior["payload"].get("credential_id") == known
+                and prior["payload"].get("provider_readback") == "absent"
+                and prior["payload"].get("negative_authentication") in {"denied", "unavailable"}
+            ):
+                # Historical absence needs no preliminary candidate inventory.
+                # Preserve the durable ID, then retain the same fresh detail
+                # followed by complete ID/name inventory used after deletion.
+                # A visible ID falls through to the ordinary ownership checks.
+                created = next(
+                    (
+                        record
+                        for record in self.journal.records()
+                        if record["kind"] == "created"
+                        and record["run_id"] == intent.run_id
+                        and record["payload"]
+                        == {"intent_sha256": intent.sha256, "credential_id": known}
+                    ),
+                    None,
+                )
+                if created is None:
+                    raise LifecycleError("resolved credential creation evidence is missing")
+                self.journal.persist(created)
+                if client.inspect(known) is None:
+                    if any(
+                        item.get("id") == known or item.get("name") == intent.name
+                        for item in client.inventory()
+                    ):
+                        raise LifecycleError("resolved credential remains in inventory")
+                    self.journal.persist(prior)
+                    return CleanupResult(intent.sha256, "verified", negative)
             inventory = client.inventory()
             candidates = [
                 item
@@ -416,9 +456,6 @@ class Lifecycle:
                 raise LifecycleError("deleted credential remains in inventory")
             if credential is None and pending:
                 raise LifecycleError("a failed authentication rejection still needs its credential")
-            prior = next(
-                (record for record in reversed(observations) if record["kind"] == "resolved"), None
-            )
             if credential is not None:
                 if known != credential.identifier:
                     raise LifecycleError("retained credential identity differs from its obligation")
