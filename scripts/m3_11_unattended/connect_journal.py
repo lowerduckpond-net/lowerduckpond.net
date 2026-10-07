@@ -185,6 +185,8 @@ class ConnectJournal(_Canonical):
         while outstanding:
             self.check_cancelled()
             until = min(deadline for _, deadline in outstanding)
+            if self.wait_seconds and time.monotonic() >= until:
+                raise LifecycleError("Connect event awaits independent persistence")
             # The zero-wait double still performs one read. Ordinary polling
             # shares the original ACK deadline across all snapshot requests.
             deadline = until if self.wait_seconds else time.monotonic() + ACK_WAIT_SECONDS

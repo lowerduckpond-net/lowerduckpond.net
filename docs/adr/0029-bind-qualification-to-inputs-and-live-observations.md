@@ -232,6 +232,14 @@ remain visible independently of the qualification result. Connect avoids native
 service-account quota on this path but introduces these recovery dependencies;
 the live independent path must be demonstrated before issuing child credentials.
 
+Initial run-reservation confirmation consumes the original ten-minute creation
+window, bounded also by the controller deadline. Its fixed deadline covers
+canonicalization, staging and complete native readback; a retained run cannot
+receive a renewed window. Typed snapshot-budget expiry may retry observation
+only, retaining the sixty-second bound on each complete snapshot. Credential
+events keep their separate 120-second confirmation budgets. No acknowledgement
+extends provider submission, credential lifetime or qualification deadlines.
+
 Restart is reconciliation of one immutable attempt, not a retry of qualification.
 Changed executable inputs require a new correctly bound attempt. Complete live
 Spaces/public-CA qualification, a demonstrated credential rehearsal and verified
