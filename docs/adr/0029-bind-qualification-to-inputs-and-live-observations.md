@@ -240,6 +240,15 @@ only, retaining the sixty-second bound on each complete snapshot. Credential
 events keep their separate 120-second confirmation budgets. No acknowledgement
 extends provider submission, credential lifetime or qualification deadlines.
 
+The independent witness's initial twelve-minute wait includes controller
+preparation, so it must not substitute for the admitted creation window. After
+the exact native reservation is durable, the witness arms once from that
+reservation's immutable cutoff plus a five-minute acknowledgement drain. It
+never renews the creation cutoff or an event's confirmation budget. Creation
+witnessing is capped at 27 minutes from reconciliation entry within the existing
+30-minute job ceiling, including bootstrap; slow operations can still require
+later cleanup sweeps. Ordinary reconciliation does not gain a creation wait.
+
 Restart is reconciliation of one immutable attempt, not a retry of qualification.
 Changed executable inputs require a new correctly bound attempt. Complete live
 Spaces/public-CA qualification, a demonstrated credential rehearsal and verified
