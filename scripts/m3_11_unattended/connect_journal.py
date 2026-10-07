@@ -384,10 +384,17 @@ class IndependentJournal(_Canonical):
                 "Connect replica remains incomplete; cleanup is not ready"
             ) from None
         records = self._merge(observed)
-        if not self.cache_complete:
-            # Recoverable obligations still grow when this replica is partial.
-            # Incompleteness forbids ACKs, never retention of a newly seen ID.
+        retained = {
+            str(value["event_id"]): value for value in records if not acknowledgement(value)
+        }
+        # New obligations must survive even a malformed ACK or admission
+        # callback failure. Retain them before inspecting transport receipts.
+        stored = (
             self._retain(records)
+            if retained != self.checkpoint.records or not self.cache_complete
+            else None
+        )
+        if not self.cache_complete:
             raise LifecycleError("Connect replica remains incomplete; cleanup is not ready")
         # Decide which records already have native acknowledgements from one
         # complete snapshot. Do this before stage/_original/allow can perform
@@ -410,16 +417,14 @@ class IndependentJournal(_Canonical):
             ):
                 continue
             pending.append(record)
-        retained = {
-            str(value["event_id"]): value for value in records if not acknowledgement(value)
-        }
-        if retained == self.checkpoint.records and not any(allow(record) for record in pending):
+        if stored is None and not any(allow(record) for record in pending):
             # A cleanup progress poll can have no eligible ACKs. It emits no
             # readiness or durability claim, so unchanged obligations need no
             # registry/artifact recovery here. New obligations must still be
             # retained even when their creation ACK is currently prohibited.
             return 0
-        stored = self._retain(records)
+        if stored is None:
+            stored = self._retain(records)
         published = 0
         for record in pending:
             # Readback/checkpoint I/O or an earlier ACK may consume the original

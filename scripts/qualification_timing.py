@@ -146,9 +146,12 @@ def record_span(kind: str, start: int, outcome: str = "completed") -> None:
             os.write(descriptor, raw)
         finally:
             os.close(descriptor)
-    except Exception:  # Timing diagnostics must not replace the command result.
+    except OSError, ValueError, TypeError:
+        # Handle ordinary sink/encoding failures, not RuntimeError-based signal
+        # interruptions raised by a measured command's own handler.
         # Missing events are visible as incomplete attribution, never a test pass.
-        print("Qualification timing event unavailable.", file=sys.stderr)
+        with contextlib.suppress(OSError, ValueError, TypeError):
+            print("Qualification timing event unavailable.", file=sys.stderr)
 
 
 @contextlib.contextmanager
