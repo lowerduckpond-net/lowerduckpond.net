@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from scripts.m3_11_unattended import historical_absence
-from scripts.m3_11_unattended.creation_outcome import is_abort, select_abort
+from scripts.m3_11_unattended.creation_outcome import is_abort, select_abort, valid_resolution
 from scripts.m3_11_unattended.journal import CreationJournal, Journal, event
 from scripts.m3_11_unattended.model import (
     CREATION_SETTLE,
@@ -74,11 +74,11 @@ def identifier(value: object) -> str:
 
 
 def intents(journal: Journal) -> list[Intent]:
-    result = [
-        Intent.parse(record["payload"])
-        for record in journal.records()
-        if record["kind"] == "intent"
-    ]
+    return _intents(journal.records())
+
+
+def _intents(records: list[dict[str, object]]) -> list[Intent]:
+    result = [Intent.parse(record["payload"]) for record in records if record["kind"] == "intent"]
     keys = [(intent.run_id, intent.role) for intent in result]
     if len(set(keys)) != len(keys):
         raise LifecycleError("credential creation intents are ambiguous")
@@ -642,6 +642,39 @@ class Lifecycle:
                 historical.setdefault(item.provider, []).append((item, proof))
         return historical
 
+    def _current_result(
+        self, intent: Intent, result: CleanupResult, records: list[dict[str, object]]
+    ) -> CleanupResult:
+        """A later callback cannot leave an earlier result admitting new work."""
+        try:
+            if result.status == "not-due":
+                if not self._due(intent, records):
+                    return result
+            elif result.status == "verified":
+                known = _known_id(records, intent)
+                intent_sha256 = intent.sha256
+                observations = [
+                    record
+                    for record in records
+                    if record["kind"] in {"cleanup", "resolved"}
+                    and isinstance(record["payload"], dict)
+                    and record["payload"].get("intent_sha256") == intent_sha256
+                ]
+                if not pending_authentication(observations) and any(
+                    record["kind"] == "resolved"
+                    and isinstance(record["payload"], dict)
+                    and record["payload"].get("credential_id") == known
+                    and record["payload"].get("provider_readback") == "absent"
+                    and valid_resolution(record, intent, records)
+                    for record in observations
+                ):
+                    return result
+            else:
+                return result
+        except LifecycleError, OSError, ValueError, KeyError, TypeError:
+            pass
+        return CleanupResult(intent.sha256, "unresolved", "unavailable")
+
     def sweep(self, secrets: Mapping[str, Credential] | None = None) -> list[CleanupResult]:
         self._clearance = None
         records = self.journal.records()
@@ -662,6 +695,17 @@ class Lifecycle:
             )
             self.progress()
         observed = self.journal.records()
+        # Process one bounded frontier exposed by persistence/progress. An
+        # admitted run's new child usually is not due; inventing an unresolved
+        # result would suppress its ACK until the next periodic sweep. Ordinary
+        # reconciliation still deletes due children and rejects unknown absence.
+        present = {result.intent_sha256 for result in results}
+        for item in _intents(observed):
+            if item.sha256 not in present:
+                results.append(self.reconcile(item, available.get(item.sha256)))
+                present.add(item.sha256)
+                self.progress()
+        observed = self.journal.records()
         # Later providers and ordinary cleanup can expose changes too. Do not
         # merely withhold the cached clearance: inline callers use these results.
         for kind, selected in historical.items():
@@ -680,13 +724,17 @@ class Lifecycle:
                         else result
                         for result in results
                     ]
-        present = {result.intent_sha256 for result in results}
-        for record in observed:
-            if record["kind"] == "intent":
-                item = Intent.parse(record["payload"])
-                if item.sha256 not in present:
-                    results.append(CleanupResult(item.sha256, "unresolved", "unavailable"))
-                    present.add(item.sha256)
+        # Further arrivals cannot extend this pass indefinitely or silently
+        # fall outside its result set. They remain non-admitting until checked.
+        for item in _intents(observed):
+            if item.sha256 not in present:
+                results.append(CleanupResult(item.sha256, "unresolved", "unavailable"))
+                present.add(item.sha256)
+        by_id = {item.sha256: item for item in _intents(observed)}
+        results = [
+            self._current_result(by_id[result.intent_sha256], result, observed)
+            for result in results
+        ]
         after = _obligation_basis(observed)
         if before == after and all(
             historical_absence.admits(result.intent_sha256, result.status) for result in results
