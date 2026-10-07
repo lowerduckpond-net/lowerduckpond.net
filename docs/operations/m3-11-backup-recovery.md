@@ -335,8 +335,9 @@ Neither the Unraid endpoint nor this workspace is required to recover outstandin
 credential identities. A timeout, missing checkpoint, invalid history or failed
 provider read remains unresolved.
 
-The launcher dispatches one uniquely identified, twelve-minute witness job for
-the exact approved attempt. It waits for a fresh, natively authored and durably
+The launcher dispatches one uniquely identified witness job for the exact
+approved attempt, initially waiting up to twelve minutes for its reservation.
+It waits for a fresh, natively authored and durably
 acknowledged readiness record from that running GitHub execution before starting
 the detached controller. Run and creation-intent acknowledgements additionally
 require fresh provider authority, no unresolved credentials, sufficient checkpoint
@@ -348,6 +349,17 @@ settlement range remains available for ownership and cleanup. Lost dispatch repl
 are reconciled by the saved execution identity, never by blind resubmission.
 No GitHub token enters the detached controller or fixture.
 
+Once the exact reservation is independently durable, that execution stays
+available through the reservation's original creation cutoff plus a five-minute
+drain for returned IDs and cleanup acknowledgements. This deadline is armed once
+from the immutable run timestamp; repeated reads, delayed readiness and restarts
+cannot renew the creation window. The creation witness is capped at 27 minutes
+from reconciliation entry, and the workflow's 30-minute job ceiling includes
+bootstrap. The drain is bounded best effort: slow provider or journal operations
+can still leave cleanup unresolved for subsequent independent sweeps. It neither
+extends an event's acknowledgement budget nor permits a provider CREATE after
+the original cutoff. Ordinary cleanup runs do not acquire this creation wait.
+
 The initial run-reservation acknowledgement may use the time remaining in that
 same ten-minute window, also bounded by the controller deadline. Cleanup and
 replica delivery can consume most of a two-minute wait before any credential is
@@ -356,8 +368,8 @@ retained run timestamps cannot renew it. Only typed snapshot-read expiry can
 retry observation, with each complete snapshot still bounded to sixty seconds.
 Staging and provider calls are never replayed. A late acknowledgement leaves less
 time to provision and cannot reopen the original cutoff. The independent
-two-minute freshness gate and twelve-minute witness execution remain unchanged;
-neither guarantees that a slow attempt will finish provisioning.
+two-minute freshness gate remains unchanged. Witness availability through the
+reserved window does not guarantee that a slow attempt will finish provisioning.
 
 Each acknowledgement pass waits within the existing bounded snapshot-read budget
 and checks prior acknowledgements against one complete native-author snapshot

@@ -114,8 +114,8 @@ class Admission:
 
     def reserve(
         self, expected: str, authority: Authority, *, require_clear: Callable[[], None]
-    ) -> bool:
-        """Called only for the exact request dispatched by the authorized launcher."""
+    ) -> datetime | None:
+        """Return the original cutoff only after the exact reservation is durable."""
         if not self._policy_clear(self.now):
             raise LifecycleError("diagnostic policy restoration blocks creation admission")
         if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
@@ -128,19 +128,27 @@ class Admission:
             and run_digest(identity(record["run_id"]), record["payload"]) == expected
         ]
         if not matches:
-            return False
+            return None
         if len(matches) != 1:
             raise LifecycleError("Connect witness dispatch request is ambiguous")
         record = matches[0]
         self._run(record)
+        accepted = instant(record["recorded_at"]).replace(microsecond=0)
+        cutoff = accepted + WINDOW
         previous = self._reservation(record, durable=False)
         if previous is not None:
+            payload = previous["payload"]
+            if not isinstance(payload, dict) or (
+                payload.get("accepted_at") != stamp(accepted)
+                or payload.get("create_before") != stamp(cutoff)
+            ):
+                raise LifecycleError("retained creation reservation changed its original window")
             # A native receipt can survive a failed checkpoint upload. Persist
             # that exact decision; a merely checkpointed controller record never
             # qualifies for this recovery path.
             self.journal.persist(previous)
             self.records = self.journal.records()
-            return True  # Restart keeps the original capacity reservation and window.
+            return cutoff  # Restart keeps the original capacity reservation and window.
         if (
             not self.journal.cache_complete
             or not self.now - timedelta(minutes=2) <= instant(record["recorded_at"]) <= self.now
@@ -157,7 +165,6 @@ class Admission:
         # Anchor both timing and event identity to the immutable dispatched run.
         # Even a late POST after ephemeral-spool loss produces identical copies,
         # rather than another window or an ambiguous logical decision.
-        accepted = instant(record["recorded_at"]).replace(microsecond=0)
         receipt = event(
             "heartbeat",
             identity(record["run_id"]),
@@ -166,7 +173,7 @@ class Admission:
                 "run_sha256": expected,
                 "witness": self.journal.witness.binding(),
                 "accepted_at": stamp(accepted),
-                "create_before": stamp(accepted + WINDOW),
+                "create_before": stamp(cutoff),
                 "authority_expires_at": stamp(authority.valid_until),
                 "provider_authorities": {
                     kind: authority.provider_identity(kind)
@@ -188,7 +195,7 @@ class Admission:
             raise LifecycleError("Connect capacity reservation awaits native readback")
         self.journal.persist(receipt)
         self.records = self.journal.records()
-        return True
+        return cutoff
 
     def allow(  # noqa: PLR0911 - explicit admission gates
         self, record: dict[str, object], *, now: datetime | None = None

@@ -24,7 +24,7 @@ from typing import cast
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended import checkpoint_audit, cleanup, connect_genesis
 from scripts.m3_11_unattended.config import BOOTSTRAP_FIELDS, Connections, provider_connections
-from scripts.m3_11_unattended.connect_admission import Admission
+from scripts.m3_11_unattended.connect_admission import WINDOW, Admission
 from scripts.m3_11_unattended.connect_api import Connect
 from scripts.m3_11_unattended.connect_auth import READ, READ_WRITE, Access, authenticate, inspect
 from scripts.m3_11_unattended.connect_checkpoint import FORMAT as CHECKPOINT_FORMAT
@@ -39,6 +39,7 @@ from scripts.m3_11_unattended.github_checkpoint import REPOSITORY, WORKFLOW, Git
 from scripts.m3_11_unattended.journal import Journal, event, validate
 from scripts.m3_11_unattended.lifecycle import Lifecycle
 from scripts.m3_11_unattended.model import (
+    CREATION_SETTLE,
     LIFETIME,
     LifecycleError,
     Targets,
@@ -239,6 +240,8 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
 ) -> dict[str, object]:
     """One bounded witness execution; hourly independent sweeps continue afterward."""
     until = time.monotonic() + (WITNESS_SECONDS if request_sha256 else 0)
+    creation_limit = until + WINDOW.total_seconds() + CREATION_SETTLE.total_seconds()
+    creation_cutoff: datetime | None = None
     audit_wait_selected = False
     audit_deadline: datetime | None = None
     audit_due_checked = False
@@ -318,11 +321,25 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
             # reservation invokes the full reconciliation gate before creation.
             with journal.reconciliation():
                 admission = Admission(journal, targets=targets, now=datetime.now(UTC))
-                admission.reserve(
+                reserved_until = admission.reserve(
                     request_sha256,
                     connected.authority,
                     require_clear=partial(require_clear, lifecycle),
                 )
+                if reserved_until is not None and WITNESS_SECONDS:
+                    if creation_cutoff is None:
+                        # Readiness and controller preflight consume the initial
+                        # wait. Witness the admitted window from its immutable
+                        # run clock, with one bounded drain for returned IDs and
+                        # cleanup. This never reopens provider CREATE admission.
+                        creation_cutoff = reserved_until
+                        remaining = max(
+                            0.0,
+                            (reserved_until + CREATION_SETTLE - datetime.now(UTC)).total_seconds(),
+                        )
+                        until = max(until, min(creation_limit, time.monotonic() + remaining))
+                    elif creation_cutoff != reserved_until:
+                        raise LifecycleError("creation witness reservation cutoff changed")
             if not announced and receipt.get("status") == "ready":
                 journal.append(
                     event(
