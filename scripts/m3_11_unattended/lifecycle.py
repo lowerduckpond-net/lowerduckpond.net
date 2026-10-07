@@ -574,7 +574,10 @@ class Lifecycle:
             # Spaces has no separate key-detail read: inspect() is a complete
             # inventory plus ID lookup. Share that first ordered observation as
             # well; Cloudflare still needs its actual per-token detail endpoint.
-            first = client.inventory() if selected[0][0].provider == "spaces" else None
+            try:
+                first = client.inventory() if selected[0][0].provider == "spaces" else None
+            except LifecycleError, OSError, ValueError, KeyError, TypeError:
+                return unresolved
             visible = False
             for _, proof in selected:
                 present = (
@@ -588,7 +591,10 @@ class Lifecycle:
                 # No shared observation survives an ordinary reconciliation,
                 # which may delete an exactly owned credential.
                 return {}
-            inventory = client.inventory()
+            try:
+                inventory = client.inventory()
+            except LifecycleError, OSError, ValueError, KeyError, TypeError:
+                return unresolved
             if any(
                 item.get("id") == proof.identifier or item.get("name") == intent.name
                 for intent, proof in selected
@@ -597,7 +603,7 @@ class Lifecycle:
                 return unresolved
             observed = self.journal.records()
             if any(self._historical(intent, observed) != proof for intent, proof in selected):
-                return unresolved
+                raise LifecycleError("historical cleanup eligibility changed during readback")
             for _, proof in selected:
                 self.journal.persist(proof.resolved)
                 self.progress()
@@ -607,13 +613,16 @@ class Lifecycle:
             if self.providers[selected[0][0].provider] is not client or any(
                 self._historical(intent, observed) != proof for intent, proof in selected
             ):
-                return unresolved
+                raise LifecycleError("historical cleanup eligibility changed during persistence")
             return {
                 intent.sha256: CleanupResult(intent.sha256, "verified", "unavailable")
                 for intent, _ in selected
             }
         except LifecycleError, OSError, ValueError, KeyError, TypeError:
-            return unresolved
+            # A member-specific detail/persistence failure must not strand an
+            # owned sibling that has reappeared. Discard all shared observations;
+            # ordinary reconciliation isolates failures and verifies afresh.
+            return {}
 
     def _historical_selection(
         self,
