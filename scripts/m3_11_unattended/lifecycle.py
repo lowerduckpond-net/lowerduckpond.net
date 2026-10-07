@@ -666,8 +666,6 @@ class Lifecycle:
         # merely withhold the cached clearance: inline callers use these results.
         for kind, selected in historical.items():
             for item, proof in selected:
-                if item.sha256 not in batched:
-                    continue
                 try:
                     unchanged = (
                         self.providers[kind] is clients[kind]
