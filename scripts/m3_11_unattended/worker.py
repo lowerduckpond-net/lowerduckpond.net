@@ -66,6 +66,22 @@ SECRETS = {
 }
 
 
+def executing_group(group: int) -> bool:
+    """Observe the owned Linux group, including a supervisor orphaned by just/uv."""
+    for process in Path("/proc").iterdir():
+        if not process.name.isdecimal():
+            continue
+        try:
+            # comm may contain spaces or parentheses; fields after its final
+            # delimiter begin with state, parent PID, process group.
+            fields = (process / "stat").read_bytes().rsplit(b") ", 1)[1].split()
+        except FileNotFoundError, ProcessLookupError:
+            continue
+        if int(fields[2]) == group and fields[0] not in {b"Z", b"X"}:
+            return True
+    return False
+
+
 def safe_environment() -> dict[str, str]:
     return {
         key: os.environ[key]
@@ -595,22 +611,46 @@ class Worker:
                 stderr=stream,
                 start_new_session=True,
             )
+            self.journey_shutdown_at: float | None = None
             try:
                 return self._monitor_journey(child)
             finally:
                 # Bookkeeping errors must drain the journey before the outer
-                # finally revokes credentials. Include surviving descendants.
-                qualification_deadline._kill_group(child, signal.SIGTERM)
+                # finally revokes credentials. The supervisor needs its existing
+                # allowance to drain its separately grouped payload and report.
                 try:
-                    child.wait(timeout=qualification_deadline.GRACE_SECONDS)
-                finally:
-                    qualification_deadline._kill_group(child, signal.SIGKILL)
-                    child.wait(timeout=qualification_deadline.GRACE_SECONDS)
+                    drained = self._drain_journey(child)
+                except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
+                    self._failure(error)
+                    drained = False
+                if not drained and sys.exception() is None:
+                    raise LifecycleError("qualification process shutdown was not verified")
+
+    def _drain_journey(self, child: subprocess.Popen[bytes]) -> bool:
+        stop_at = self.journey_shutdown_at or (
+            time.monotonic()
+            + qualification_deadline.REPORT_SECONDS
+            + 4 * qualification_deadline.GRACE_SECONDS
+        )
+        qualification_deadline._kill_group(child, signal.SIGTERM)
+        while executing_group(child.pid):
+            child.poll()
+            if time.monotonic() >= stop_at:
+                break
+            time.sleep(qualification_deadline.INTERRUPT_POLL_SECONDS)
+        # A launcher exiting is not proof its supervisor stopped. Only kill the
+        # remaining group after cooperative shutdown's existing bounded window.
+        qualification_deadline._kill_group(child, signal.SIGKILL)
+        try:
+            child.wait(timeout=qualification_deadline.GRACE_SECONDS)
+        except subprocess.TimeoutExpired as error:
+            self._failure(error)
+            return False
+        return not executing_group(child.pid)
 
     def _monitor_journey(self, child: subprocess.Popen[bytes]) -> int:
         interrupted = False
         interrupted_status = 143
-        stop_at: float | None = None
         while child.poll() is None:
             expired = time.monotonic() >= self.ends_at
             if (
@@ -618,15 +658,16 @@ class Worker:
             ) and not interrupted:
                 interrupted_status = 124 if expired else 143
                 qualification_deadline._kill_group(child, signal.SIGTERM)
-                interrupted, stop_at = (
+                interrupted, self.journey_shutdown_at = (
                     True,
                     time.monotonic()
                     + qualification_deadline.REPORT_SECONDS
                     + 4 * qualification_deadline.GRACE_SECONDS,
                 )
-            if stop_at is not None and time.monotonic() >= stop_at:
-                qualification_deadline._kill_group(child, signal.SIGKILL)
-                child.wait(timeout=qualification_deadline.GRACE_SECONDS)
+            if (
+                self.journey_shutdown_at is not None
+                and time.monotonic() >= self.journey_shutdown_at
+            ):
                 break
             self.state.update("running", cleanup="pending")
             time.sleep(1)
