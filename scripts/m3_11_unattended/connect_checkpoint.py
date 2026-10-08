@@ -8,6 +8,7 @@ Only non-secret journal records enter the encrypted payload, never credentials.
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
@@ -102,9 +103,11 @@ class Checkpoint:
         self.history: tuple[Stored, ...] = ()
         self.observed_history: tuple[Stored, ...] = ()
         self.records: dict[str, dict[str, object]] = {}
+        self.verified_at: float | None = None
 
     @measure("checkpoint-recovery")
     def restore(self) -> None:
+        self.verified_at = None
         history = self.store.lineage()
         if not history:
             if not self.initialize or self.genesis is not None or self.observed_history:
@@ -150,6 +153,7 @@ class Checkpoint:
         self.head, self.sequence, self.records = latest, sequence, records
         self.history = history
         self.observed_history = history
+        self.verified_at = time.monotonic()
 
     def _require_extension(self, records: dict[str, dict[str, object]]) -> None:
         expected = {**self.initial, **{key: digest(value) for key, value in self.records.items()}}
@@ -161,10 +165,13 @@ class Checkpoint:
     @measure("checkpoint-persistence")
     def persist(self, records: list[dict[str, object]]) -> Stored:
         """Publish and verify the recoverable records before a caller may emit an ACK."""
+        self.verified_at = None
         selected = _records(records)
         self.restore()
+        verified, self.verified_at = self.verified_at, None
         self._require_extension(selected)
         if self.head is not None and selected == self.records:
+            self.verified_at = verified
             return self.head
         document: dict[str, object] = {
             "format": FORMAT,
@@ -200,6 +207,7 @@ class Checkpoint:
         self.observed_history = history
         if self.genesis is None:
             self.genesis = created
+        self.verified_at = time.monotonic()
         return created
 
     def merge(self, records: list[dict[str, object]]) -> list[dict[str, object]]:

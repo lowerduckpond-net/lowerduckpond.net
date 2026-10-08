@@ -384,7 +384,11 @@ During cleanup, the independent witness may reuse a complete Connect observation
 and verified checkpoint for five seconds when persisting an identical historical
 record. New IDs and proofs still require full persistence, and readiness and ACK
 publication always refresh the complete registry, recoverable artifact and native
-Connect observation. Writes, errors and expired observations invalidate reuse.
+Connect observation. A completed ACK publication can supply a new cleanup
+observation only when its final native snapshot exactly matches the verified
+checkpoint's non-ACK records. Its five seconds start at checkpoint verification,
+not at the end of ACK delivery. Errors, later obligations and expiry require
+ordinary recovery. Admission and readiness still perform their fresh checks.
 An ACK poll that finds no eligible unconfirmed event and exactly the already
 retained non-ACK obligations returns without rereading the registry or artifact.
 It emits no ACK or readiness claim. New obligations still take the full retention
@@ -460,6 +464,9 @@ the final admission check remain mandatory. A no-op ACK poll may preserve an
 unchanged cleanup observation only until its original expiry. Checkpoint
 publication can return its exact payload and registry verification to the caller,
 avoiding duplicate immediate reads; generic stores still require separate readback.
+Fresh admission also avoids persisting an identical checkpoint twice: it must
+first recover the complete native history and artifact, and match every non-ACK
+record in a complete Connect snapshot within the same five-second bound.
 
 When the persistent watchdog completes revocation, sanitized evidence includes
 its retained receipts and complete local intent coverage. The qualification

@@ -322,7 +322,16 @@ class IndependentJournal(_Canonical):
                 raise LifecycleError("admission needs a complete fresh obligation observation")
             # Preserve newly observed obligations even if later replica I/O
             # fails and cleanup falls back to the independently recovered set.
-            self._retain(records)
+            retained = {
+                str(value["event_id"]): value for value in records if not acknowledgement(value)
+            }
+            verified = self.checkpoint.verified_at
+            if (
+                retained != self.checkpoint.records
+                or verified is None
+                or not 0 <= time.monotonic() - verified < OBSERVATION_SECONDS
+            ):
+                self._retain(records)
             return records
 
     def _retain(self, records: list[dict[str, object]]) -> Stored:
@@ -400,6 +409,24 @@ class IndependentJournal(_Canonical):
             # cleanup observation. Keep its original expiry; never renew it or
             # reuse it after new obligations, a write, or a failed observation.
             self._observation, self._observed_until = observation, until
+        elif self._reconciling and self.cache_complete:
+            # An actual publication also verifies the complete checkpoint and
+            # reads back native ACK metadata. Reuse that completed work only
+            # while its original verification is fresh and the final native
+            # snapshot has exactly the same non-ACK records. New arrivals or
+            # a slow ACK readback must take the ordinary recovery path.
+            verified = self.checkpoint.verified_at
+            observed = self.ledger.observed_records()
+            retained = {
+                str(value["event_id"]): value for value in observed if not acknowledgement(value)
+            }
+            if (
+                verified is not None
+                and 0 <= time.monotonic() - verified < OBSERVATION_SECONDS
+                and retained == self.checkpoint.records
+            ):
+                self._observation = deepcopy(self._merge(observed))
+                self._observed_until = verified + OBSERVATION_SECONDS
         return published
 
     @measure("credential-acknowledgement")
