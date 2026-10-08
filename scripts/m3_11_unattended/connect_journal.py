@@ -409,7 +409,7 @@ class IndependentJournal(_Canonical):
             # cleanup observation. Keep its original expiry; never renew it or
             # reuse it after new obligations, a write, or a failed observation.
             self._observation, self._observed_until = observation, until
-        elif self._reconciling and self.cache_complete:
+        elif published > 0 and self._reconciling and self.cache_complete:
             # An actual publication also verifies the complete checkpoint and
             # reads back native ACK metadata. Reuse that completed work only
             # while its original verification is fresh and the final native
