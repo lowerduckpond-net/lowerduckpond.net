@@ -146,6 +146,24 @@ class GitHub:
                     or not 0 <= value["total_count"] < MAX_EXECUTIONS
                 ):
                     raise LifecycleError("cleanup execution inventory is incomplete")
+                batch = value["workflow_runs"]
+                batch_ids: set[int] = set()
+                for row in batch:
+                    if (
+                        not isinstance(row, dict)
+                        or type(row.get("id")) is not int
+                        or row["id"] < 1
+                        or row["id"] in batch_ids
+                        or row.get("workflow_id") != WORKFLOW_ID
+                        or row.get("head_branch") != "main"
+                        or (
+                            query == "event=workflow_dispatch"
+                            and row.get("event") != "workflow_dispatch"
+                        )
+                        or (query.startswith("status=") and row.get("status") != query[7:])
+                    ):
+                        raise LifecycleError("cleanup execution inventory has unexpected entries")
+                    batch_ids.add(row["id"])
                 if total is not None and total != value["total_count"]:
                     # A newly dispatched run may become visible between pages.
                     # Discard the entire observation, never combine its rows
@@ -159,21 +177,12 @@ class GitHub:
                     time.sleep(min(POLL_SECONDS, remaining))
                     continue
                 total = value["total_count"]
-                batch = value["workflow_runs"]
                 if not batch and len(rows) < total:
                     raise LifecycleError("cleanup execution pagination is incomplete")
-                for row in batch:
-                    if (
-                        not isinstance(row, dict)
-                        or type(row.get("id")) is not int
-                        or row["id"] < 1
-                        or row["id"] in identities
-                        or row.get("workflow_id") != WORKFLOW_ID
-                        or row.get("head_branch") != "main"
-                    ):
-                        raise LifecycleError("cleanup execution inventory has unexpected entries")
-                    identities.add(row["id"])
-                    rows.append(row)
+                if identities & batch_ids:
+                    raise LifecycleError("cleanup execution inventory has unexpected entries")
+                identities.update(batch_ids)
+                rows.extend(batch)
                 if len(rows) > total:
                     raise LifecycleError("cleanup execution inventory grew during pagination")
                 page += 1

@@ -493,7 +493,8 @@ Cleanup dispatch discovery and pending-execution inventory read 25 workflow runs
 per page, retaining the 1-MiB response limit. Each complete inventory has a
 90-second read budget. A changed total discards all observed rows and retries from
 page one within that same budget; duplicate identities, incomplete pagination and
-GitHub's 1,000-result search boundary remain failures. Discovery examines the whole
+GitHub's 1,000-result search boundary remain failures. Malformed page entries fail
+even when the total changes. Discovery examines the whole
 bounded inventory before accepting a unique dispatch; it never resubmits a job.
 The original readiness or drain deadline also bounds inventory reads and waits.
 Connect GETs retry hostname-resolution failures at most twice, including short
