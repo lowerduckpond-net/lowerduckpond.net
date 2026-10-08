@@ -26,6 +26,7 @@ from scripts.m3_11_unattended.docker import (
     initialize_run,
     launch,
     prepare,
+    require_current_watchdogs,
     source_volume,
 )
 from scripts.m3_11_unattended.model import LifecycleError, Targets, digest, identity
@@ -50,6 +51,7 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
         raise LifecycleError("approved revision, targets, helper or Docker host changed")
     image = str(prepared["controller_image"])
     with admission(docker, image=image):
+        require_current_watchdogs(docker, source=source, image=image)
         # One active attempt globally, including unresolved cleanup. Never silently
         # remove or replace another controller. The daemon reservation serializes starts.
         names = (

@@ -480,8 +480,16 @@ unresolved checkpoint.
 After registry publication, a complete unchanged history or a temporary failure
 before any registry entries are read may be retried within the same bounded
 publication deadline. Only the exact expected append confirms publication.
-Changed history, conflicting entries, interrupted pagination after an observed
+An identical status at an offset-page boundary restarts the complete scan within
+the original 90-second budget. Every observed status binding and relative order
+survives the retry; the completed scan must preserve all of them. Only a complete scan can supply
+checkpoint history or capacity. Duplicate IDs within a page, conflicting or
+malformed entries, lost observed entries, interrupted pagination after an observed
 entry and late readback remain failures; retries never repeat the status POST.
+Checkpoint writer selection likewise retries changed workflow totals or identical
+cross-page overlap within its original scan budget. It retains every observed run
+identity and any newer-started-run fence; queued observations cannot erase that
+fence. Run numbers determine writer order, never numeric run or artifact IDs.
 Startup may wait briefly for an otherwise valid native readiness receipt's ACK.
 It never skips a newer adverse receipt or extends the qualification deadline.
 The launcher and controller also retry a typed unstable-snapshot observation
@@ -491,10 +499,12 @@ and rechecks that the same native witness attempt is still running before
 accepting readiness. Malformed records and adverse cleanup receipts still fail.
 Cleanup dispatch discovery and pending-execution inventory read 25 workflow runs
 per page, retaining the 1-MiB response limit. Each complete inventory has a
-90-second read budget. A changed total discards all observed rows and retries from
-page one within that same budget; duplicate identities, incomplete pagination and
-GitHub's 1,000-result search boundary remain failures. Malformed page entries fail
-even when the total changes. Discovery examines the whole
+90-second read budget. A changed total or identical cross-page overlap retries
+from page one within that same budget, retaining observed immutable identities.
+Within-page duplicates, conflicting bindings, incomplete pagination and GitHub's
+1,000-result search boundary remain failures. Dispatch discovery cannot discard
+an already observed run; status-filtered runs may leave their selected status.
+Malformed page entries fail even when the total changes. Discovery examines the whole
 bounded inventory before accepting a unique dispatch; it never resubmits a job.
 The original readiness or drain deadline also bounds inventory reads and waits.
 Connect GETs retry hostname-resolution failures at most twice, including short
@@ -758,6 +768,14 @@ Local reconciliation acquires this lock without blocking. A busy controller
 records unresolved cleanup for its persistent retry path; a waiting watchdog
 continues local death and deadline checks each minute. The lock holder's network
 work remains serialized, and independent GitHub cleanup does not use this lock.
+Before allocating a run or dispatching its witness, admission rejects any running
+watchdog from another helper revision, or ambiguous watchdog state. Stopped old
+watchdogs remain retained. An upgrade requires a verified operational handoff:
+reserve daemon admission, establish terminal local attempts and independently
+verified cleanup, verify the replacement process and fresh acknowledged readiness,
+then stop only the exact superseded owned processes. Preserve containers, volumes
+and the failed journey results. Incomplete handoff keeps admission reserved;
+ordinary start never stops another cleanup actor or removes its lock file.
 
 Revocation deletes credentials only. It never removes failed-run evidence,
 containers, backups, DNS records or remote data. Existing ownership and explicit

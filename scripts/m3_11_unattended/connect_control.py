@@ -127,9 +127,10 @@ class GitHub:
             raise LifecycleError("the exact lifecycle helper has not reached main")
 
     def _execution_inventory(self, query: str) -> list[dict[str, object]]:
-        """Retry changed counts from page one within one bounded observation."""
+        """Retry moving offset pages within one bounded read-only observation."""
         rows: list[dict[str, object]] = []
         identities: set[int] = set()
+        observed: dict[int, str] = {}
         page, total = 1, None
         with self.read_budget(time.monotonic() + EXECUTION_SCAN_SECONDS):
             while total is None or len(rows) < total:
@@ -164,7 +165,26 @@ class GitHub:
                     ):
                         raise LifecycleError("cleanup execution inventory has unexpected entries")
                     batch_ids.add(row["id"])
-                if total is not None and total != value["total_count"]:
+                    binding = digest(
+                        {
+                            key: row.get(key)
+                            for key in (
+                                "id",
+                                "run_number",
+                                "workflow_id",
+                                "head_branch",
+                                "head_sha",
+                                "event",
+                                "created_at",
+                            )
+                        }
+                    )
+                    if observed.get(row["id"], binding) != binding:
+                        raise LifecycleError("cleanup execution changed an observed identity")
+                    observed[row["id"]] = binding
+                if len(observed) >= MAX_EXECUTIONS:
+                    raise LifecycleError("cleanup execution inventory exceeds its scan bound")
+                if (total is not None and total != value["total_count"]) or identities & batch_ids:
                     # A newly dispatched run may become visible between pages.
                     # Discard the entire observation, never combine its rows
                     # with a later inventory or submit the dispatch again.
@@ -179,13 +199,15 @@ class GitHub:
                 total = value["total_count"]
                 if not batch and len(rows) < total:
                     raise LifecycleError("cleanup execution pagination is incomplete")
-                if identities & batch_ids:
-                    raise LifecycleError("cleanup execution inventory has unexpected entries")
                 identities.update(batch_ids)
                 rows.extend(batch)
                 if len(rows) > total:
                     raise LifecycleError("cleanup execution inventory grew during pagination")
                 page += 1
+            if query == "event=workflow_dispatch" and not observed.keys() <= identities:
+                raise LifecycleError("cleanup execution inventory lost an observed dispatch")
+            if time.monotonic() >= cast(float, self._read_deadline):
+                raise LifecycleError("cleanup execution inventory exceeded its deadline")
         return rows
 
     def active_executions(self) -> set[int]:

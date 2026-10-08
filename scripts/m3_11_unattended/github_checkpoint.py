@@ -20,6 +20,7 @@ import uuid
 import zipfile
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
 from typing import cast
 from urllib.parse import urlencode
@@ -134,16 +135,38 @@ class GitHubArtifacts:
                 raise _UnavailableError("GitHub checkpoint operation remains unresolved")
             if len(result.stdout) > MAX_CACHE_BYTES:
                 raise LifecycleError("GitHub checkpoint response exceeds its bound")
-            return result.stdout if binary else json.loads(result.stdout)
+            value = result.stdout if binary else json.loads(result.stdout)
+            self._check_deadline()
+            return value
         except OSError, subprocess.SubprocessError, ValueError:
             raise _UnavailableError("GitHub checkpoint operation remains unresolved") from None
 
     def _runs(self, *, active_run: int | None = None) -> list[dict[str, object]]:
         if active_run is not None:
             _number(active_run)
-        observed: dict[int, dict[str, object]] = {}
-        seen: set[int] = set()
-        ordinals: set[int] = set()
+        if self._until == 0:
+            self._until = time.monotonic() + SCAN_SECONDS
+        bindings: dict[int, str] = {}
+        ordinals: dict[int, int] = {}
+        started: set[int] = set()
+        while True:
+            self._check_deadline()
+            rows = self._run_snapshot(bindings, ordinals, started)
+            if rows is not None:
+                self._check_deadline()
+                # Once a run has started, a later queued observation cannot
+                # remove its newer-writer fence within this observation.
+                return sorted(
+                    (row for row in rows if row["id"] in started or row["id"] == active_run),
+                    key=lambda row: _number(row["run_number"]),
+                    reverse=True,
+                )
+            self._retry_scan()
+
+    def _run_snapshot(
+        self, bindings: dict[int, str], ordinals: dict[int, int], started: set[int]
+    ) -> list[dict[str, object]] | None:
+        seen: dict[int, dict[str, object]] = {}
         total = None
         created = datetime.fromtimestamp(uuid.UUID(self.epoch).time // 1000, UTC).isoformat()
         for page in range(1, MAX_RUN_PAGES + 1):
@@ -164,40 +187,63 @@ class GitHubArtifacts:
                 or not isinstance(value.get("workflow_runs"), list)
                 or type(value.get("total_count")) is not int
                 or not 0 <= value["total_count"] < MAX_RUN_PAGES * PAGE_SIZE
-                or (total is not None and value["total_count"] != total)
             ):
                 raise LifecycleError("GitHub workflow inventory is unavailable")
-            total = value["total_count"]
             rows = value["workflow_runs"]
+            current: dict[int, dict[str, object]] = {}
+            if len(rows) > PAGE_SIZE:
+                raise LifecycleError("GitHub workflow page exceeds its bound")
             for row in rows:
                 if (
                     not isinstance(row, dict)
                     or row.get("head_branch") != "main"
                     or row.get("workflow_id") != WORKFLOW_ID
+                    or row.get("status")
+                    not in {"in_progress", "completed", "waiting", "queued", "pending", "requested"}
                 ):
                     raise LifecycleError("GitHub workflow inventory is invalid")
                 selected = _number(row.get("id"))
                 ordinal = _number(row.get("run_number"))
-                if selected in seen or ordinal in ordinals:
-                    raise LifecycleError("GitHub workflow inventory changed during pagination")
-                seen.add(selected)
-                ordinals.add(ordinal)
-                # A sibling job can leave the aggregate workflow waiting or
-                # queued while this protected cleanup job is already running.
-                # Only the executing caller gets this exception; later queued
-                # requests cannot displace it, and newer started runs still win.
-                if row.get("status") in {"in_progress", "completed"} or (
-                    selected == active_run
-                    and row.get("status") in {"waiting", "queued", "pending", "requested"}
+                binding = digest(
+                    {
+                        key: row.get(key)
+                        for key in (
+                            "id",
+                            "run_number",
+                            "workflow_id",
+                            "head_branch",
+                            "head_sha",
+                            "event",
+                            "created_at",
+                        )
+                    }
+                )
+                if (
+                    selected in current
+                    or ordinals.get(ordinal, selected) != selected
+                    or bindings.get(selected, binding) != binding
                 ):
-                    observed[selected] = row
+                    raise LifecycleError("GitHub workflow inventory changed during pagination")
+                bindings[selected], ordinals[ordinal] = binding, selected
+                current[selected] = row
+                if row.get("status") in {"in_progress", "completed"}:
+                    started.add(selected)
+            if len(bindings) >= MAX_RUN_PAGES * PAGE_SIZE:
+                raise LifecycleError("GitHub workflow history exceeds its checkpoint scan bound")
+            if (
+                total is not None and value["total_count"] != total
+            ) or current.keys() & seen.keys():
+                return None
+            total = value["total_count"]
+            seen.update(current)
             # The epoch bounds this inventory independently of older repository
             # history. Complete pagination avoids assuming an API sort order.
             if len(seen) == total:
-                # Only run_number is documented to increment within a workflow.
-                return sorted(
-                    observed.values(), key=lambda row: _number(row["run_number"]), reverse=True
-                )
+                if not bindings.keys() <= seen.keys():
+                    raise LifecycleError("GitHub workflow inventory lost an observed run")
+                return list(seen.values())
+            if len(seen) > total or len(rows) < PAGE_SIZE:
+                raise LifecycleError("GitHub workflow pagination is incomplete")
         raise LifecycleError("GitHub workflow history exceeds its checkpoint scan bound")
 
     def _reference(self, value: dict[str, object], *, run_id: int | None = None) -> Stored:
@@ -253,6 +299,7 @@ class GitHubArtifacts:
         ordered = tuple(reversed(history))
         if ordered[: len(self._history)] != self._history:
             raise LifecycleError("checkpoint registry moved backwards or changed retained history")
+        self._check_deadline()
         self._parents = parents
         self._published_runs = published_runs
         self._history = ordered
@@ -262,10 +309,40 @@ class GitHubArtifacts:
         """Readiness must reserve cleanup writes before it admits any new children."""
         self._until = time.monotonic() + SCAN_SECONDS
         used = sum(cast(str, row["context"]).lower() == self.context for row in self._statuses())
+        self._check_deadline()
         return max(0, STATUS_LIMIT - used)
 
     def _statuses(self) -> Iterator[dict[str, object]]:
-        seen: set[int] = set()
+        # Offset pages can overlap while a just-published status becomes visible.
+        # Keep every observed immutable binding across retries, but expose only
+        # one complete scan. Neither a prefix nor deduplication proves capacity
+        # or the current checkpoint head.
+        observed: dict[int, str] = {}
+        order: set[tuple[int, int]] = set()
+        while True:
+            self._check_deadline()
+            snapshot = self._status_snapshot(observed, order)
+            if snapshot is not None:
+                positions = {cast(int, row["id"]): index for index, row in enumerate(snapshot)}
+                if any(positions[left] >= positions[right] for left, right in order):
+                    raise LifecycleError("checkpoint registry changed observed status order")
+                self._check_deadline()
+                yield from snapshot
+                return
+            self._retry_scan()
+
+    def _check_deadline(self) -> None:
+        if time.monotonic() >= self._until:
+            raise LifecycleError("GitHub checkpoint operation exceeded its deadline")
+
+    def _retry_scan(self) -> None:
+        self._check_deadline()
+        time.sleep(min(READ_POLL_SECONDS, self._until - time.monotonic()))
+
+    def _status_snapshot(
+        self, observed: dict[int, str], order: set[tuple[int, int]]
+    ) -> list[dict[str, object]] | None:
+        seen: dict[int, dict[str, object]] = {}
         for page in range(1, MAX_STATUS_PAGES + 1):
             try:
                 rows = self._api(
@@ -273,26 +350,68 @@ class GitHubArtifacts:
                     f"?per_page={PAGE_SIZE}&page={page}"
                 )
             except _UnavailableError:
-                if seen:
+                if observed:
                     # A later retry must not forget an entry already observed
                     # during this incomplete scan, including a conflicting head.
                     raise LifecycleError(
                         "checkpoint registry became unavailable after observing entries"
                     ) from None
                 raise
-            if not isinstance(rows, list) or len(rows) > PAGE_SIZE:
-                raise LifecycleError("independent checkpoint registry is unavailable")
-            for row in rows:
-                if not isinstance(row, dict) or not isinstance(row.get("context"), str):
-                    raise LifecycleError("independent checkpoint registry is malformed")
-                selected = _number(row.get("id"))
-                if selected in seen:
-                    raise LifecycleError("checkpoint registry changed during pagination")
-                seen.add(selected)
-                yield row
-            if len(rows) < PAGE_SIZE:
-                return
+            current = self._status_page(rows, observed)
+            identities = list(current)
+            order.update(pairwise(identities))
+            if len(observed) > MAX_STATUS_PAGES * PAGE_SIZE:
+                raise LifecycleError("independent checkpoint registry exceeds its scan bound")
+            # Validate the whole page before retrying an identical boundary
+            # overlap; malformed or conflicting discarded rows remain fatal.
+            overlap = current.keys() & seen.keys()
+            if overlap:
+                # Only an identical suffix/prefix is a page-boundary overlap.
+                # A repeated interior identity or changed order is not settling.
+                if (
+                    list(seen)[-len(overlap) :] != identities[: len(overlap)]
+                    or set(identities[: len(overlap)]) != overlap
+                ):
+                    raise LifecycleError("checkpoint registry has inconsistent page overlap")
+                return None
+            if seen and identities:
+                order.add((next(reversed(seen)), identities[0]))
+            seen.update(current)
+            if len(current) < PAGE_SIZE:
+                if not observed.keys() <= seen.keys():
+                    raise LifecycleError("checkpoint registry lost an observed status")
+                return list(seen.values())
         raise LifecycleError("independent checkpoint registry exceeds its scan bound")
+
+    def _status_page(self, rows: object, observed: dict[int, str]) -> dict[int, dict[str, object]]:
+        if not isinstance(rows, list) or len(rows) > PAGE_SIZE:
+            raise LifecycleError("independent checkpoint registry is unavailable")
+        current: dict[int, dict[str, object]] = {}
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("context"), str):
+                raise LifecycleError("independent checkpoint registry is malformed")
+            selected = _number(row.get("id"))
+            if selected in current:
+                raise LifecycleError("checkpoint registry repeats an identity within a page")
+            if cast(str, row["context"]).lower() == self.context:
+                self._status_reference(row)
+            author = row.get("creator")
+            binding = digest(
+                {
+                    **{
+                        key: row.get(key)
+                        for key in ("id", "context", "state", "description", "target_url")
+                    },
+                    "author": {key: author.get(key) for key in ("id", "type")}
+                    if isinstance(author, dict)
+                    else None,
+                }
+            )
+            if selected in observed and observed[selected] != binding:
+                raise LifecycleError("checkpoint registry changed an observed status")
+            observed[selected] = binding
+            current[selected] = row
+        return current
 
     def _status_reference(self, row: dict[str, object]) -> tuple[Stored, int]:
         author, description = row.get("creator"), row.get("description")

@@ -148,6 +148,39 @@ def controller_name(run_id: str) -> str:
     return "ldp-m311-controller-" + uuid.UUID(run_id).hex
 
 
+def require_current_watchdogs(docker: Docker, *, source: str, image: str) -> None:
+    """Fail before dispatch when a superseded cleanup process still owns the spool.
+
+    Stopped containers remain evidence. Replacement is a separately reconciled
+    operational handoff; ordinary admission never stops another cleanup actor.
+    """
+    expected = "ldp-m311-watchdog-" + revision(source)[:12]
+    names = (
+        docker.command(
+            "ps", "--all", "--filter", "name=ldp-m311-watchdog-", "--format", "{{.Names}}"
+        )
+        .decode()
+        .splitlines()
+    )
+    for name in names:
+        value = docker.owned(name)
+        state, host = value.get("State"), value.get("HostConfig")
+        if (
+            re.fullmatch(r"ldp-m311-watchdog-[0-9a-f]{12}", name) is None
+            or value.get("Name") != "/" + name
+            or not isinstance(state, dict)
+            or not isinstance(host, dict)
+            or type(state.get("Running")) is not bool
+            or any(state.get(key) is not False for key in ("Paused", "Restarting", "Dead"))
+            or state.get("Status") != ("running" if state["Running"] else "exited")
+        ):
+            raise LifecycleError("credential watchdog state requires reconciliation before start")
+        if state["Running"] and (
+            name != expected or value.get("Image") != image or host.get("NetworkMode") != "host"
+        ):
+            raise LifecycleError("superseded credential watchdog requires a verified handoff")
+
+
 def build_image(docker: Docker, source: str) -> str:
     current_candidate(ROOT, source)
     # Explicit allowlist: no checkout context, .env, private config, credentials
