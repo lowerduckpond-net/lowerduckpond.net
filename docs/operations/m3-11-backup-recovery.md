@@ -423,11 +423,15 @@ blocks run and creation-intent acknowledgements; cleanup ACKs continue.
 Other clearance checks still perform a fresh sweep, including historical provider
 inventory checks that detect late creations.
 
-For an already reserved attempt, a completed sweep services eligible intent ACKs
-before publishing its informational heartbeat. Provider health, policy restoration,
-authority and recoverable checkpoint checks must all have finished successfully;
-the unfinished-sweep callback still handles only cleanup and returned-ID records.
-This earlier opportunity cannot reserve another run or extend either deadline.
+After a complete successful sweep, the witness services the dispatched run's
+reservation and eligible creation ACKs before publishing its informational
+heartbeat. Provider health, policy restoration, authority and recoverable
+checkpoint checks must all have finished successfully. A new reservation still
+checks fresh capacity, exact obligation coverage and the original two-minute
+request freshness. This ordering avoids spending that window on receipt
+publication and then repeating cleanup. The unfinished-sweep callback still
+handles only cleanup and returned-ID records; neither opportunity can admit an
+unrelated run or extend a deadline.
 Both the earlier opportunity and ordinary ACK processing revalidate completed
 cleanup coverage against the latest complete observation, including later reads
 during ACK canonicalization and staging. An incomplete read blocks creation;
