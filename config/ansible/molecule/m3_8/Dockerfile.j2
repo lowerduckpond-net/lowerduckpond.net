@@ -3,9 +3,16 @@ FROM ubuntu:26.04
 ENV container=docker
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Bootstrap the CA bundle through signed APT metadata, then use HTTPS for the
+# same archives throughout fixture setup and destination reconstruction.
 RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates \
+    && sed -i \
+        -e 's|http://archive[.]ubuntu[.]com/ubuntu/|https://archive.ubuntu.com/ubuntu/|g' \
+        -e 's|http://security[.]ubuntu[.]com/ubuntu/|https://security.ubuntu.com/ubuntu/|g' \
+        /etc/apt/sources.list.d/ubuntu.sources \
+    && apt-get update \
     && apt-get install --yes --no-install-recommends \
-        ca-certificates \
         e2fsprogs \
         git \
         golang-go \

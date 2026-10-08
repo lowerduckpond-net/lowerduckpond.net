@@ -389,6 +389,14 @@ It emits no ACK or readiness claim. New obligations still take the full retentio
 path even when their creation ACK is prohibited. Admission and actual ACK
 publication retain their fresh independent recovery checks.
 
+Historical Cloudflare token readbacks run in waves of at most four exact-ID GETs.
+Each wave finishes before journal progress, the final complete provider inventory,
+or ordinary deletion begins, including after a failed read or interruption.
+Spaces retains its two ordered complete inventory observations. Changed identities,
+new authentication markers and provider failures still prevent clearance. A cleanup
+sweep already due after acknowledgement processing starts without another poll
+sleep; this does not extend any acknowledgement or creation deadline.
+
 The independent job also exports `m3-11-cleanup-timing-RUN-attempt-N`, containing
 only the existing allowlisted monotonic timing-event format. It separates
 credential reconciliation, authority checks, reservation, ACK processing, native

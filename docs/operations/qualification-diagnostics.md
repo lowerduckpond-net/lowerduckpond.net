@@ -487,6 +487,34 @@ The main-based 18,707.6-second workstation attempt failed final backup teardown
 at the former 1,024-entry bound. That established cleanup defect and PR 192's
 inventory correction are separate from these setup delays.
 
+### Fixture archive transport
+
+On 2026-10-07, the second attempt of
+[PR 226's CI run](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/37671079661)
+again reached the existing 600-second destination-convergence limit in
+`failed-retirement` and `restore-reconstruction`. Their retained task summaries
+show unfinished monitoring and baseline APT installation respectively. The
+combined-reconstruction retry also exhausted that limit during backup
+templating. The
+preceding successful main run completed failed-retirement's destination
+convergence in 297.29 seconds. The timeout identifies unfinished work; it does
+not establish the cause of the hosted runner's delay.
+
+An isolated local reproduction on the dedicated Docker host also observed an
+APT HTTP connection retransmitting its request without receiving a response.
+Read-only probes to `archive.ubuntu.com` and `security.ubuntu.com`, using the
+same two peer addresses for each transport, produced four HTTP timeouts and
+four HTTPS 200 responses in 1.63–2.22 seconds with certificate verification
+enabled. These small probes establish a local transport difference, not a
+complete package-install benchmark or a diagnosis of every earlier CI failure.
+
+The baseline and M3.8 fixture images now bootstrap `ca-certificates` through
+the existing signed APT path, then use HTTPS for those same Ubuntu archives.
+APT signing keys, suites, package checks and qualification deadlines remain
+unchanged. The initial index and CA bootstrap still use HTTP and can still be
+delayed. Required installed CI and live qualification must establish their own
+results with the corrected images.
+
 ## Owned local fixtures
 
 `just check-ansible-m3-8` allocates a fresh local MinIO fixture for each run.

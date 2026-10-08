@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import re
+import signal
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
+from scripts import qualification_deadline
 from scripts.m3_11_unattended import historical_absence
-from scripts.m3_11_unattended.creation_outcome import is_abort, select_abort
+from scripts.m3_11_unattended.creation_outcome import is_abort, select_abort, valid_resolution
 from scripts.m3_11_unattended.journal import CreationJournal, Journal, event
 from scripts.m3_11_unattended.model import (
     CREATION_SETTLE,
@@ -32,6 +37,7 @@ from scripts.qualification_timing import measure
 
 CreationRecorder = Callable[[str, str | None], None]
 CLEARANCE_SECONDS = 30
+READBACK_WORKERS = 4
 
 
 def _obligation_basis(records: list[dict[str, object]]) -> str:
@@ -74,11 +80,11 @@ def identifier(value: object) -> str:
 
 
 def intents(journal: Journal) -> list[Intent]:
-    result = [
-        Intent.parse(record["payload"])
-        for record in journal.records()
-        if record["kind"] == "intent"
-    ]
+    return _intents(journal.records())
+
+
+def _intents(records: list[dict[str, object]]) -> list[Intent]:
+    result = [Intent.parse(record["payload"]) for record in records if record["kind"] == "intent"]
     keys = [(intent.run_id, intent.role) for intent in result]
     if len(set(keys)) != len(keys):
         raise LifecycleError("credential creation intents are ambiguous")
@@ -86,14 +92,19 @@ def intents(journal: Journal) -> list[Intent]:
 
 
 def known_id(journal: Journal, intent: Intent) -> str | None:
+    return _known_id(journal.records(), intent)
+
+
+def _known_id(records: list[dict[str, object]], intent: Intent) -> str | None:
     matches: set[str] = set()
-    for record in journal.records():
+    intent_sha256 = intent.sha256
+    for record in records:
         if record["kind"] != "created" or record["run_id"] != intent.run_id:
             continue
         payload = record["payload"]
         if not isinstance(payload, dict):
             raise LifecycleError("invalid credential identity record")
-        if payload.get("intent_sha256") == intent.sha256:
+        if payload.get("intent_sha256") == intent_sha256:
             if set(payload) != {"intent_sha256", "credential_id"}:
                 raise LifecycleError("invalid credential identity record")
             matches.add(identifier(payload["credential_id"]))
@@ -164,6 +175,40 @@ class CleanupResult:
     intent_sha256: str
     status: str
     negative_authentication: str
+
+
+@dataclass(frozen=True)
+class _Historical:
+    identifier: str
+    created: dict[str, object]
+    resolved: dict[str, object]
+
+
+def _historical_details(client: Provider, identifiers: list[str]) -> list[bool]:
+    """Join one bounded read-only wave before progress, inventory or deletion."""
+    if not 0 < len(identifiers) <= READBACK_WORKERS:
+        raise LifecycleError("historical readback wave exceeds its bound")
+    pending = qualification_deadline.Interruption()
+    guard = (
+        qualification_deadline.interrupts()
+        if threading.current_thread() is threading.main_thread()
+        else nullcontext(pending)
+    )
+    try:
+        # The provider bounds each whole exchange to 30 seconds. Record repeated
+        # signals until shutdown has joined every GET, including on submission
+        # or response failure; no fallback DELETE may race an unfinished read.
+        with guard as pending, ThreadPoolExecutor(max_workers=READBACK_WORKERS) as executor:
+            return [value is not None for value in executor.map(client.inspect, identifiers)]
+    except RuntimeError:
+        # Thread creation/submission can fail too. The executor has already
+        # drained; ordinary reconciliation must still reach reappeared siblings.
+        raise LifecycleError("historical credential readback failed") from None
+    finally:
+        # Preserve the caller's interruption behavior after restoring its handler.
+        # Worker cleanup records signals; the independent action raises on them.
+        if pending.signum is not None:
+            signal.raise_signal(pending.signum)
 
 
 class Lifecycle:
@@ -304,11 +349,55 @@ class Lifecycle:
         ):
             self.journal.append(event("revoke", run_id, {"reason": "terminal-path"}))
 
-    def _due(self, intent: Intent) -> bool:
+    def _due(self, intent: Intent, records: list[dict[str, object]] | None = None) -> bool:
         return self.clock() >= instant(intent.deadline) or any(
             record["kind"] == "revoke" and record["run_id"] == intent.run_id
-            for record in self.journal.records()
+            for record in (self.journal.records() if records is None else records)
         )
+
+    def _historical(self, intent: Intent, records: list[dict[str, object]]) -> _Historical | None:
+        """Select an unchanged, fully resolved obligation for read-only observation."""
+        intent_sha256 = intent.sha256
+        known = _known_id(records, intent)
+        observations = sorted(
+            (
+                record
+                for record in records
+                if record["kind"] in {"cleanup", "resolved"}
+                and isinstance(record["payload"], dict)
+                and record["payload"].get("intent_sha256") == intent_sha256
+            ),
+            key=lambda record: str(record["event_id"]),
+        )
+        prior = next(
+            (record for record in reversed(observations) if record["kind"] == "resolved"), None
+        )
+        if (
+            not self._due(intent, records)
+            or self.providers[intent.provider].authority_sha256 != intent.cleanup_authority_sha256
+            or known is None
+            or select_abort(intent, records) is not None
+            or pending_authentication(observations)
+            or prior is None
+            or not isinstance(prior["payload"], dict)
+            or prior["payload"].get("credential_id") != known
+            or prior["payload"].get("provider_readback") != "absent"
+            or prior["payload"].get("negative_authentication") not in {"denied", "unavailable"}
+        ):
+            return None
+        created = next(
+            (
+                record
+                for record in records
+                if record["kind"] == "created"
+                and record["run_id"] == intent.run_id
+                and record["payload"] == {"intent_sha256": intent_sha256, "credential_id": known}
+            ),
+            None,
+        )
+        if created is None:
+            raise LifecycleError("resolved credential creation evidence is missing")
+        return _Historical(known, created, prior)
 
     @measure("credential-reconcile")
     def reconcile(  # noqa: PLR0911, PLR0912, PLR0915 - independent cleanup gates
@@ -335,6 +424,26 @@ class Lifecycle:
                 raise LifecycleError("cleanup authority differs from the original obligation")
             known = known_id(self.journal, intent)
             abort = select_abort(intent, self.journal.records())
+            prior = next(
+                (record for record in reversed(observations) if record["kind"] == "resolved"), None
+            )
+            historical = (
+                self._historical(intent, self.journal.records()) if credential is None else None
+            )
+            if historical is not None:
+                # Historical absence needs no preliminary candidate inventory.
+                # Preserve the durable ID, then retain the same fresh detail
+                # followed by complete ID/name inventory used after deletion.
+                # A visible ID falls through to the ordinary ownership checks.
+                self.journal.persist(historical.created)
+                if client.inspect(historical.identifier) is None:
+                    if any(
+                        item.get("id") == historical.identifier or item.get("name") == intent.name
+                        for item in client.inventory()
+                    ):
+                        raise LifecycleError("resolved credential remains in inventory")
+                    self.journal.persist(historical.resolved)
+                    return CleanupResult(intent.sha256, "verified", negative)
             inventory = client.inventory()
             candidates = [
                 item
@@ -416,9 +525,6 @@ class Lifecycle:
                 raise LifecycleError("deleted credential remains in inventory")
             if credential is None and pending:
                 raise LifecycleError("a failed authentication rejection still needs its credential")
-            prior = next(
-                (record for record in reversed(observations) if record["kind"] == "resolved"), None
-            )
             if credential is not None:
                 if known != credential.identifier:
                     raise LifecycleError("retained credential identity differs from its obligation")
@@ -485,15 +591,189 @@ class Lifecycle:
             # Never copy provider exception payloads into status or erase intent.
             return CleanupResult(intent.sha256, "unresolved", negative)
 
+    def _historical_batch(
+        self, selected: list[tuple[Intent, _Historical]]
+    ) -> dict[str, CleanupResult]:
+        """Share only the final complete inventory after all exact-ID observations."""
+        unresolved = {
+            intent.sha256: CleanupResult(intent.sha256, "unresolved", "unavailable")
+            for intent, _ in selected
+        }
+        client = self.providers[selected[0][0].provider]
+        try:
+            for _, proof in selected:
+                self.journal.persist(proof.created)
+                self.progress()
+            # Spaces has no separate key-detail read: inspect() is a complete
+            # inventory plus ID lookup. Share that first ordered observation as
+            # well; Cloudflare still needs its actual per-token detail endpoint.
+            try:
+                first = client.inventory() if selected[0][0].provider == "spaces" else None
+            except LifecycleError, OSError, ValueError, KeyError, TypeError:
+                return unresolved
+            visible = False
+            for offset in range(0, len(selected), READBACK_WORKERS):
+                wave = selected[offset : offset + READBACK_WORKERS]
+                present = (
+                    [any(item.get("id") == proof.identifier for item in first) for _, proof in wave]
+                    if first is not None
+                    else _historical_details(client, [proof.identifier for _, proof in wave])
+                )
+                visible = any(present) or visible
+                for _ in wave:
+                    self.progress()
+            if visible:
+                # No shared observation survives an ordinary reconciliation,
+                # which may delete an exactly owned credential.
+                return {}
+            try:
+                inventory = client.inventory()
+            except LifecycleError, OSError, ValueError, KeyError, TypeError:
+                return unresolved
+            if any(
+                item.get("id") == proof.identifier or item.get("name") == intent.name
+                for intent, proof in selected
+                for item in inventory
+            ):
+                return unresolved
+            observed = self.journal.records()
+            if any(self._historical(intent, observed) != proof for intent, proof in selected):
+                raise LifecycleError("historical cleanup eligibility changed during readback")
+            for _, proof in selected:
+                self.journal.persist(proof.resolved)
+                self.progress()
+            # Persistence/progress can expose a newer marker or conflicting ID.
+            # An old resolution never discharges that newly observed obligation.
+            observed = self.journal.records()
+            if self.providers[selected[0][0].provider] is not client or any(
+                self._historical(intent, observed) != proof for intent, proof in selected
+            ):
+                raise LifecycleError("historical cleanup eligibility changed during persistence")
+            return {
+                intent.sha256: CleanupResult(intent.sha256, "verified", "unavailable")
+                for intent, _ in selected
+            }
+        except LifecycleError, OSError, ValueError, KeyError, TypeError:
+            # A member-specific detail/persistence failure must not strand an
+            # owned sibling that has reappeared. Discard all shared observations;
+            # ordinary reconciliation isolates failures and verifies afresh.
+            return {}
+
+    def _historical_selection(
+        self,
+        original: list[Intent],
+        available: Mapping[str, Credential],
+        records: list[dict[str, object]],
+    ) -> dict[ProviderKind, list[tuple[Intent, _Historical]]]:
+        historical: dict[ProviderKind, list[tuple[Intent, _Historical]]] = {}
+        for item in original:
+            if item.sha256 in available:
+                continue
+            try:
+                proof = self._historical(item, records)
+            except LifecycleError, OSError, ValueError, KeyError, TypeError:
+                continue  # Ordinary reconciliation retains the unresolved obligation.
+            if proof is not None:
+                historical.setdefault(item.provider, []).append((item, proof))
+        return historical
+
+    def _current_result(
+        self, intent: Intent, result: CleanupResult, records: list[dict[str, object]]
+    ) -> CleanupResult:
+        """A later callback cannot leave an earlier result admitting new work."""
+        try:
+            if result.status == "not-due":
+                if not self._due(intent, records):
+                    return result
+            elif result.status == historical_absence.STATUS:
+                if historical_absence.receipts(intent, records):
+                    return result
+            elif result.status == "verified":
+                known = _known_id(records, intent)
+                intent_sha256 = intent.sha256
+                observations = [
+                    record
+                    for record in records
+                    if record["kind"] in {"cleanup", "resolved"}
+                    and isinstance(record["payload"], dict)
+                    and record["payload"].get("intent_sha256") == intent_sha256
+                ]
+                if not pending_authentication(observations) and any(
+                    record["kind"] == "resolved"
+                    and isinstance(record["payload"], dict)
+                    and record["payload"].get("credential_id") == known
+                    and record["payload"].get("provider_readback") == "absent"
+                    and valid_resolution(record, intent, records)
+                    for record in observations
+                ):
+                    return result
+            else:
+                return result
+        except LifecycleError, OSError, ValueError, KeyError, TypeError:
+            pass
+        return CleanupResult(intent.sha256, "unresolved", "unavailable")
+
     def sweep(self, secrets: Mapping[str, Credential] | None = None) -> list[CleanupResult]:
         self._clearance = None
-        before = _obligation_basis(self.journal.records())
+        records = self.journal.records()
+        before = _obligation_basis(records)
         available = secrets or {}
+        original = intents(self.journal)
+        historical = self._historical_selection(original, available, records)
+        clients = {kind: self.providers[kind] for kind in historical}
+        batched: dict[str, CleanupResult] = {}
+        for selected in historical.values():
+            batched.update(self._historical_batch(selected))
         results = []
-        for item in intents(self.journal):
-            results.append(self.reconcile(item, available.get(item.sha256)))
+        for item in original:
+            results.append(
+                batched[item.sha256]
+                if item.sha256 in batched
+                else self.reconcile(item, available.get(item.sha256))
+            )
             self.progress()
-        after = _obligation_basis(self.journal.records())
+        observed = self.journal.records()
+        # Process one bounded frontier exposed by persistence/progress. An
+        # admitted run's new child usually is not due; inventing an unresolved
+        # result would suppress its ACK until the next periodic sweep. Ordinary
+        # reconciliation still deletes due children and rejects unknown absence.
+        present = {result.intent_sha256 for result in results}
+        for item in _intents(observed):
+            if item.sha256 not in present:
+                results.append(self.reconcile(item, available.get(item.sha256)))
+                present.add(item.sha256)
+                self.progress()
+        observed = self.journal.records()
+        # Later providers and ordinary cleanup can expose changes too. Do not
+        # merely withhold the cached clearance: inline callers use these results.
+        for kind, selected in historical.items():
+            for item, proof in selected:
+                try:
+                    unchanged = (
+                        self.providers[kind] is clients[kind]
+                        and self._historical(item, observed) == proof
+                    )
+                except LifecycleError, OSError, ValueError, KeyError, TypeError:
+                    unchanged = False
+                if not unchanged:
+                    results = [
+                        CleanupResult(item.sha256, "unresolved", "unavailable")
+                        if result.intent_sha256 == item.sha256
+                        else result
+                        for result in results
+                    ]
+        # Further arrivals cannot extend this pass indefinitely or silently
+        # fall outside its result set. They remain non-admitting until checked.
+        for item in _intents(observed):
+            if item.sha256 not in present:
+                results.append(CleanupResult(item.sha256, "unresolved", "unavailable"))
+                present.add(item.sha256)
+        by_id = {item.sha256: item for item in _intents(observed)}
+        results = [
+            self._current_result(by_id[result.intent_sha256], result, observed)
+            for result in results
+        ]
+        after = _obligation_basis(observed)
         if before == after and all(
             historical_absence.admits(result.intent_sha256, result.status) for result in results
         ):
