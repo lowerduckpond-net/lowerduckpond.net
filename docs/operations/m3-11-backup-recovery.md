@@ -562,7 +562,7 @@ memory. A retry compares each retained item against current native metadata and
 still requires the complete stable inventory before returning any records.
 The controller retains its cleanup reader across retries too; it must still
 refresh complete inventories and validate native metadata on every observation.
-Cold reads use at most four concurrent item-detail GETs, each within its own
+Cold reads use at most eight concurrent item-detail GETs, each within its own
 remaining process budget. Inventory reads and writes remain sequential, and
 failed or cancelled scans stop queued reads and join active exchanges before
 restoring their enclosing deadline. This avoids rereading the whole history
