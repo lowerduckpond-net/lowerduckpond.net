@@ -26,6 +26,7 @@ from scripts.m3_11_unattended.docker import (
     initialize_run,
     launch,
     prepare,
+    require_current_watchdogs,
     source_volume,
 )
 from scripts.m3_11_unattended.model import LifecycleError, Targets, digest, identity
@@ -77,6 +78,7 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
                 previous, progress, status.get("binding")
             ):
                 raise LifecycleError("an active attempt or unresolved revocation blocks new starts")
+        require_current_watchdogs(docker, source=source, image=image)
         run_id = str(uuid.uuid7())
         request = {
             "format": "lowerduckpond-m3-11-unattended-request-v1",
