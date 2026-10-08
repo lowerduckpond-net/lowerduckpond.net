@@ -34,6 +34,23 @@ named volumes. Controller and watchdog use `unless-stopped` restart policies.
 Before provisioning, the controller verifies that its mounted socket reaches
 the exact Docker-host identity recorded in the approved preparation.
 
+Preparation also initializes the owned storage-lease volume with the runner's
+required private permissions and installs the repository-pinned Ansible
+collections in a revision-specific volume. The controller mounts those
+collections read-only; qualification does not depend on a first-use Galaxy
+download. A progress-write failure drains the qualification process group before
+credential revocation, and cleanup still attempts revocation when local status
+storage fails. Such persistence failures keep local closure unresolved.
+
+The short production check retains `production-state.log` and
+`production-storage.log` privately. Sanitized diagnostics expose the bound source
+location and process exit status, never child output. Before the production and
+rehearsal storage probes write an object, they persist their unique prefix, both
+buckets, run ID and source revision in `production-storage-ownership.json` and
+`fixture-storage-ownership.json`. These ownership records survive interruption;
+they do not authorize destructive retirement. Credential revocation leaves them
+and any failed-run remote data intact.
+
 Terminal disconnection does not own these containers. A workspace-agent exit
 does not intrinsically stop a sibling daemon container. Coder stop/rebuild can
 stop/recreate that daemon: persistence depends on retaining the template's Docker

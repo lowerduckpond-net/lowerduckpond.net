@@ -9,8 +9,11 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import BinaryIO
 
 from scripts.check_m3_7_production_edge import CloudflareClient, verify_active_account_token
 from scripts.check_m3_10_provider import check_caddy_token
@@ -35,6 +38,28 @@ REFERENCES = frozenset(
 )
 MAX_INPUT_BYTES = 256 * 1024
 CHECK_SECONDS = 25 * 60
+
+
+def _output(request: dict[str, object], repository: Path) -> Path:
+    output = request["output"]
+    if not isinstance(output, str):
+        raise LifecycleError("production-check output path is invalid")
+    path = Path(output)
+    if not path.is_absolute() or path.is_relative_to(repository):
+        raise LifecycleError("production-check output must be private and outside source")
+    private_directory(path.parent)
+    return path
+
+
+@contextmanager
+def _log(request: dict[str, object], repository: Path, name: str) -> Iterator[BinaryIO]:
+    # Child output can contain durable secrets. It is retained privately and
+    # never read by the sanitized exporter; only a static failure and exit code
+    # cross that boundary.
+    path = _output(request, repository).with_name(name)
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        yield stream
 
 
 def _failure(request: object, *, stage: str, error: Exception, repository: Path) -> None:
@@ -113,22 +138,16 @@ def bootstrap(request: dict[str, object], repository: Path) -> int:
         "exec uv run --quiet --no-sync --frozen python "
         "-m scripts.m3_11_unattended.production validate"
     )
-    result = subprocess.run(  # noqa: S603 - fixed shell program, no interpolated input
-        ["/bin/bash", "--noprofile", "--norc", "-c", command],
-        input=canonical_bytes(safe),
-        env=environment,
-        cwd=repository,
-        timeout=CHECK_SECONDS,
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    if result.returncode:
-        _failure(
-            request,
-            stage="bootstrap",
-            error=LifecycleError("production state reader or validator failed"),
-            repository=repository,
+    with _log(value, repository, "production-state.log") as stream:
+        result = subprocess.run(  # noqa: S603 - fixed shell program, no interpolated input
+            ["/bin/bash", "--noprofile", "--norc", "-c", command],
+            input=canonical_bytes(safe),
+            env=environment,
+            cwd=repository,
+            timeout=CHECK_SECONDS,
+            check=True,
+            stdout=stream,
+            stderr=stream,
         )
     return result.returncode
 
@@ -136,6 +155,7 @@ def bootstrap(request: dict[str, object], repository: Path) -> int:
 def validate(request: dict[str, object], repository: Path) -> None:
     value = fields(request, {"targets", "binding", "output", "fixture_ids", "started_at"})
     targets = Targets.parse(value["targets"])
+    path = _output(value, repository)
     binding = fields(value["binding"], BINDING)
     source = revision(binding["source_revision"])
     current_candidate(repository, source)
@@ -183,41 +203,36 @@ def validate(request: dict[str, object], repository: Path) -> None:
     uv = shutil.which("uv")
     if uv is None:
         raise LifecycleError("production-check runtime is unavailable")
-    result = subprocess.run(  # noqa: S603 - fixed existing capability probe
-        [
-            uv,
-            "run",
-            "--quiet",
-            "--no-sync",
-            "--frozen",
-            "ldp-m3-archive",
-            "credential-check",
-            "--backup-bucket",
-            targets.backup_bucket,
-            "--archive-bucket",
-            targets.archive_bucket,
-            "--region",
-            targets.region,
-        ],
-        env=environment,
-        cwd=repository,
-        timeout=CHECK_SECONDS,
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    if result.returncode:
-        raise LifecycleError("actual production storage credential check failed")
-    output = value["output"]
-    if not isinstance(output, str):
-        raise LifecycleError("production-check output path is invalid")
-    path = Path(output)
-    if (
-        not path.is_absolute()
-        or path.parent.resolve(strict=True) != path.parent
-        or path.is_relative_to(repository)
-    ):
-        raise LifecycleError("production-check output must be private and outside source")
+    with _log(value, repository, "production-storage.log") as stream:
+        subprocess.run(  # noqa: S603 - fixed existing capability probe
+            [
+                uv,
+                "run",
+                "--quiet",
+                "--no-sync",
+                "--frozen",
+                "ldp-m3-archive",
+                "credential-check",
+                "--backup-bucket",
+                targets.backup_bucket,
+                "--archive-bucket",
+                targets.archive_bucket,
+                "--region",
+                targets.region,
+                "--probe-record",
+                str(path.with_name("production-storage-ownership.json")),
+                "--source-revision",
+                source,
+                "--run-id",
+                str(binding["managed_run_id"]),
+            ],
+            env=environment,
+            cwd=repository,
+            timeout=CHECK_SECONDS,
+            check=True,
+            stdout=stream,
+            stderr=stream,
+        )
     write_private(
         path,
         {

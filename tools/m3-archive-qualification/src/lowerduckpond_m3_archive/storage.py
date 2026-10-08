@@ -255,13 +255,14 @@ def purge_qualification_prefix(client: S3Client, *, bucket: str, prefix: str) ->
     assert_storage_empty(client, bucket=bucket, prefix=prefix)
 
 
-def run_acceptance(
+def run_acceptance(  # noqa: PLR0913 - explicit clients, targets and ownership recorder
     *,
     backup_client: S3Client,
     archive_client: S3Client,
     backup_bucket: str,
     archive_bucket: str,
     require_empty_archive: bool = True,
+    remember_prefix: Callable[[str], None] | None = None,
 ) -> AcceptanceEvidence:
     """Exercise isolation, exact versions, forced pagination, and complete cleanup."""
     if backup_bucket == archive_bucket:
@@ -272,6 +273,10 @@ def run_acceptance(
     assert_storage_empty(archive_client, bucket=archive_bucket, prefix=archive_boundary)
     backup_key = f"{qualification_prefix}backup-owner"
     archive_key = f"{qualification_prefix}archive-owner"
+    if remember_prefix is not None:
+        # Persist ownership before the first mutation. Process death can skip
+        # finally; revocation does not authorize retiring leftover probe data.
+        remember_prefix(qualification_prefix)
     try:
         backup_version = _put_exact(backup_client, bucket=backup_bucket, key=backup_key)
         archive_version = _put_exact(archive_client, bucket=archive_bucket, key=archive_key)
