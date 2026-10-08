@@ -489,6 +489,11 @@ when valid journal updates arrive during a read. All reads and retries share
 the original readiness deadline. The launcher preserves its dispatch identity
 and rechecks that the same native witness attempt is still running before
 accepting readiness. Malformed records and adverse cleanup receipts still fail.
+Cleanup dispatch discovery and pending-execution inventory read 25 workflow runs
+per page, retaining the 1-MiB response limit. Each complete inventory has a
+90-second read budget and rejects changed totals, duplicate identities, incomplete
+pagination and GitHub's 1,000-result search boundary. Discovery examines the whole
+bounded inventory before accepting a unique dispatch; it never resubmits a job.
 Connect GETs retry hostname-resolution failures at most twice, including short
 backoff within the original request deadline. HTTP errors, invalid responses and
 POSTs are not retried. Exhausted resolution failures retain a distinct sanitized

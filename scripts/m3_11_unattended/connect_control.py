@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
@@ -43,6 +44,8 @@ TIMEOUT_SECONDS = 20 * 60
 POLL_SECONDS = 10
 MAX_BYTES = 1024 * 1024
 MAX_EXECUTIONS = 1000
+EXECUTION_PAGE_SIZE = 25
+EXECUTION_SCAN_SECONDS = 90
 
 
 class GitHub:
@@ -123,43 +126,56 @@ class GitHub:
         ):
             raise LifecycleError("the exact lifecycle helper has not reached main")
 
-    def active_executions(self) -> set[int]:
-        """Complete bounded inventories, including executions waiting in concurrency queues."""
-        found: set[int] = set()
-        for status in ("requested", "waiting", "pending", "queued", "in_progress"):
-            page, seen, total = 1, 0, None
-            while total is None or seen < total:
+    def _execution_inventory(self, query: str) -> list[dict[str, object]]:
+        """Read complete small pages without relaxing the per-response byte bound."""
+        rows: list[dict[str, object]] = []
+        identities: set[int] = set()
+        page, total = 1, None
+        with self.read_budget(time.monotonic() + EXECUTION_SCAN_SECONDS):
+            while total is None or len(rows) < total:
                 value = self.api(
                     f"{PREFIX}/actions/workflows/{WORKFLOW}/runs?branch=main"
-                    f"&status={status}&per_page=100&page={page}"
+                    f"&{query}&per_page={EXECUTION_PAGE_SIZE}&page={page}"
                 )
                 if (
                     not isinstance(value, dict)
                     or not isinstance(value.get("workflow_runs"), list)
                     or type(value.get("total_count")) is not int
-                    or not 0 <= value["total_count"] <= MAX_EXECUTIONS
+                    # Filtered GitHub inventories cap their results at 1,000.
+                    # At that boundary, completeness cannot be established.
+                    or not 0 <= value["total_count"] < MAX_EXECUTIONS
                     or (total is not None and total != value["total_count"])
                 ):
                     raise LifecycleError("cleanup execution inventory changed or is incomplete")
                 total = value["total_count"]
-                rows = value["workflow_runs"]
-                if not rows and seen < total:
+                batch = value["workflow_runs"]
+                if not batch and len(rows) < total:
                     raise LifecycleError("cleanup execution pagination is incomplete")
-                for row in rows:
+                for row in batch:
                     if (
                         not isinstance(row, dict)
                         or type(row.get("id")) is not int
                         or row["id"] < 1
+                        or row["id"] in identities
                         or row.get("workflow_id") != WORKFLOW_ID
                         or row.get("head_branch") != "main"
-                        or row.get("status") != status
                     ):
                         raise LifecycleError("cleanup execution inventory has unexpected entries")
-                    found.add(row["id"])
-                seen += len(rows)
-                if seen > total:
+                    identities.add(row["id"])
+                    rows.append(row)
+                if len(rows) > total:
                     raise LifecycleError("cleanup execution inventory grew during pagination")
                 page += 1
+        return rows
+
+    def active_executions(self) -> set[int]:
+        """Complete bounded inventories, including executions waiting in concurrency queues."""
+        found: set[int] = set()
+        for status in ("requested", "waiting", "pending", "queued", "in_progress"):
+            for row in self._execution_inventory(f"status={status}"):
+                if row.get("status") != status:
+                    raise LifecycleError("cleanup execution inventory has unexpected entries")
+                found.add(cast(int, row["id"]))
         return found
 
     def drain(self) -> None:
@@ -328,17 +344,11 @@ class GitHub:
         return artifact
 
     def find_run(self, dispatch: dict[str, object]) -> int | None:
-        value = self.api(
-            f"{PREFIX}/actions/workflows/{WORKFLOW}/runs?branch=main&event=workflow_dispatch&per_page=100"
-        )
-        if not isinstance(value, dict) or not isinstance(value.get("workflow_runs"), list):
-            raise LifecycleError("cleanup execution inventory is unavailable")
+        rows = self._execution_inventory("event=workflow_dispatch")
+        if any(row.get("event") != "workflow_dispatch" for row in rows):
+            raise LifecycleError("cleanup execution inventory has unexpected entries")
         title = "M3.11 cleanup " + str(dispatch["operation"]) + " " + str(dispatch["dispatch_id"])
-        matches = [
-            row
-            for row in value["workflow_runs"]
-            if isinstance(row, dict) and row.get("display_title") == title
-        ]
+        matches = [row for row in rows if row.get("display_title") == title]
         if len(matches) > 1:
             raise LifecycleError("cleanup dispatch has ambiguous execution identities")
         if not matches:
