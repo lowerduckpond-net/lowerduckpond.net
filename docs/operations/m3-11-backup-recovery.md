@@ -410,6 +410,12 @@ may consume the just-completed clearance once, within thirty seconds, only when
 every obligation was verified and a fresh complete observation after capacity
 checks proves all relevant journal records remain identical. Failed or incomplete
 admission observations cannot fall back to checkpoint-only history.
+Reservation freshness uses a clock sampled after the journal observation, so a
+run arriving during that read is not compared with an earlier timestamp. Capacity
+and clearance checks consume the same budget: freshness and authority are checked
+again after those operations. The two-minute initial freshness limit and the
+original ten-minute creation cutoff remain unchanged. Sanitized source locations
+distinguish incomplete recovery, timestamp refusal and insufficient capacity.
 An unresolved final cleanup receipt, including a later provider health failure,
 blocks run and creation-intent acknowledgements; cleanup ACKs continue.
 Other clearance checks still perform a fresh sweep, including historical provider

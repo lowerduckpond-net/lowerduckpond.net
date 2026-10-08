@@ -378,6 +378,7 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
                     request_sha256,
                     connected.authority,
                     require_clear=partial(require_clear, lifecycle),
+                    clock=lambda: datetime.now(UTC),
                 )
                 if reserved_until is not None and WITNESS_SECONDS:
                     if creation_cutoff is None:
