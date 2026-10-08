@@ -267,7 +267,7 @@ class Lifecycle:
             # Backends without retained-write idempotence keep serial persistence.
             self.journal.persist(marker)
 
-    def provision(  # noqa: PLR0913 - all approval and authority bindings are explicit
+    def provision(  # noqa: PLR0912, PLR0913 - explicit authority and pre/post-I/O deadline gates
         self,
         *,
         run_id: str,
@@ -314,6 +314,10 @@ class Lifecycle:
             targets=targets,
         )
         intent_record = event("intent", run_id, intent.document())
+        if provisioning_deadline is not None and self.clock() >= provisioning_deadline:
+            raise LifecycleError(
+                "credential creation window elapsed before retaining another intent"
+            )
         try:
             if self.remember_intent is not None:
                 self.remember_intent(intent)
