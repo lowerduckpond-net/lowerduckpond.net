@@ -27,7 +27,7 @@ from urllib.parse import urlencode
 
 from scripts.m3_11_private_inputs import read_private_bytes, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes
-from scripts.m3_11_unattended.connect_checkpoint import FORMAT, Stored
+from scripts.m3_11_unattended.connect_checkpoint import FORMAT, Publication, Stored
 from scripts.m3_11_unattended.journal_cache import MAX_CACHE_BYTES, JournalCache
 from scripts.m3_11_unattended.model import LifecycleError, digest, identity
 from scripts.m3_11_unattended.state import private_directory
@@ -559,8 +559,11 @@ class GitHubArtifacts:
             time.sleep(min(READ_POLL_SECONDS, remaining))
         raise LifecycleError("checkpoint registry publication remains unconfirmed")
 
-    @measure("checkpoint-write")
     def create(self, document: dict[str, object]) -> Stored:
+        return self.publish(document).stored
+
+    @measure("checkpoint-write")
+    def publish(self, document: dict[str, object]) -> Publication:
         self._until = time.monotonic() + SCAN_SECONDS
         if (
             os.environ.get("GITHUB_ACTIONS") != "true"
@@ -656,4 +659,7 @@ class GitHubArtifacts:
             },
         )
         self._confirm_publication(history, created, deadline=deadline)
-        return created
+        # Checkpoint.persist consumes these same-call readbacks directly. It
+        # still validates the digest, new identity and exact complete history;
+        # generic stores retain their separate read/lineage verification.
+        return Publication(created, (*history, created))

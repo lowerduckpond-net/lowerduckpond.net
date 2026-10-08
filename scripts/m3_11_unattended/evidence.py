@@ -14,9 +14,57 @@ from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended import historical_absence
 from scripts.m3_11_unattended.connect_diagnostics import verified_failure
 from scripts.m3_11_unattended.inputs import BINDING
-from scripts.m3_11_unattended.model import LifecycleError, identity, instant, stamp
+from scripts.m3_11_unattended.model import Intent, LifecycleError, identity, instant, stamp
 from scripts.m3_11_unattended.state import PHASES, RunState
 from scripts.production_qualification_inputs import revision
+
+
+def watchdog_receipts(directory: Path, binding: dict[str, object]) -> list[dict[str, object]]:
+    """Project retained watchdog closure with the same complete local intent coverage."""
+    paths = sorted(directory.glob("watchdog-revocation-*.json"))
+    if not paths:
+        return []
+    owned = set()
+    for path in (directory / "credential-intents").glob("*.json"):
+        intent = Intent.parse(read_private(path))
+        if (
+            path.stem != intent.sha256
+            or intent.run_id != binding["managed_run_id"]
+            or intent.source_revision != binding["source_revision"]
+            or intent.helper_revision != binding["helper_revision"]
+            or intent.targets.storage_digest != binding["storage_target_sha256"]
+        ):
+            raise LifecycleError("watchdog evidence has a misbound local intent")
+        owned.add(intent.sha256)
+    receipts: list[dict[str, object]] = []
+    for path in paths:
+        value = fields(
+            read_private(path), {"format", "binding", "helper_revision", "observed_at", "results"}
+        )
+        if (
+            value["format"] != "lowerduckpond-m3-11-watchdog-revocation-v1"
+            or value["binding"] != binding
+            or not isinstance(value["results"], list)
+        ):
+            raise LifecycleError("watchdog revocation receipt differs from this attempt")
+        # A newer trusted watchdog may finish cleanup of an older pinned run.
+        helper = revision(value["helper_revision"])
+        observed_at = stamp(instant(value["observed_at"]))
+        results = []
+        for entry in value["results"]:
+            row = fields(entry, {"intent_sha256", "status", "negative_authentication"})
+            sha256(row["intent_sha256"])
+            if row["status"] != "verified" or row["negative_authentication"] not in {
+                "denied",
+                "unavailable",
+                "not-tested",
+            }:
+                raise LifecycleError("watchdog revocation result is invalid")
+            results.append(row)
+        if len(results) != len(owned) or {row["intent_sha256"] for row in results} != owned:
+            raise LifecycleError("watchdog revocation evidence lacks complete local coverage")
+        receipts.append({"helper_revision": helper, "observed_at": observed_at, "results": results})
+    return receipts
 
 
 def export(  # noqa: PLR0912 - each evidence family has its own closed validation
@@ -93,6 +141,9 @@ def export(  # noqa: PLR0912 - each evidence family has its own closed validatio
             "observed_at": stamp(instant(value["observed_at"])),
             "results": public,
         }
+    watchdog = watchdog_receipts(directory, binding)
+    if watchdog:
+        result["watchdog_revocations"] = watchdog
     if include_report and state.status()["qualification"] == "passed":
         paths = list((directory / "qualification").glob("*/qualification.json"))
         if len(paths) != 1:

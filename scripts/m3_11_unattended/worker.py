@@ -53,6 +53,7 @@ from scripts.m3_11_unattended.state import (
     private_directory,
 )
 from scripts.production_qualification_inputs import current_candidate, fingerprint, revision
+from scripts.qualification_timing import measure
 
 SECRETS = {
     "archive": ("SPACES_ARCHIVE_ACCESS_KEY_ID", "SPACES_ARCHIVE_SECRET_ACCESS_KEY"),
@@ -427,17 +428,18 @@ class Worker:
                 if not isinstance(client, Cloudflare):
                     raise LifecycleError("fixture token provisioning authority is invalid")
                 scope = client.scope(role, self.config.targets)
-            intent, credential = lifecycle.provision(
-                run_id=self.run_id,
-                role=role,
-                source=self.revision,
-                helper=self.helper,
-                targets=self.config.targets,
-                provider=provider,
-                scope=scope,
-                authority=separate.authority,
-                provisioning_deadline=provisioning_deadline,
-            )
+            with measure("credential-provision-" + role):
+                intent, credential = lifecycle.provision(
+                    run_id=self.run_id,
+                    role=role,
+                    source=self.revision,
+                    helper=self.helper,
+                    targets=self.config.targets,
+                    provider=provider,
+                    scope=scope,
+                    authority=separate.authority,
+                    provisioning_deadline=provisioning_deadline,
+                )
             if separate.providers[provider].inspect(credential.identifier) is None:
                 raise LifecycleError("independent cleanup cannot observe the created credential")
             credentials[role] = credential

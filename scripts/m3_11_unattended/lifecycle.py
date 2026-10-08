@@ -233,6 +233,7 @@ class Lifecycle:
         self._clearance: tuple[float, str] | None = None
         self._sweep_results: tuple[CleanupResult, ...] | None = None
 
+    @measure("credential-created-persistence")
     def _record_creation(self, intent: Intent, selected: str, secret: str | None) -> None:
         record = event(
             "created",
@@ -279,6 +280,8 @@ class Lifecycle:
         authority: Authority,
         provisioning_deadline: datetime | None = None,
     ) -> tuple[Intent, Credential]:
+        if provisioning_deadline is not None and self.clock() >= provisioning_deadline:
+            raise LifecycleError("credential creation window elapsed before starting another role")
         if any(item.run_id == run_id and item.role == role for item in intents(self.journal)):
             raise LifecycleError(
                 "credential creation cannot be replayed; reconcile the original intent"
@@ -288,7 +291,8 @@ class Lifecycle:
         deadline = now + LIFETIME
         authority.require(deadline)
         client = self.providers[provider]
-        inventory = client.inventory()
+        with measure("credential-provider-inventory"):
+            inventory = client.inventory()
         name = f"ldp-m311-{uuid.UUID(run_id).hex}-{role}"
         if any(item.get("name") == name for item in inventory):
             raise LifecycleError(
@@ -313,7 +317,8 @@ class Lifecycle:
         try:
             if self.remember_intent is not None:
                 self.remember_intent(intent)
-            intent_record = self.journal.persist(intent_record)
+            with measure("credential-intent-persistence"):
+                intent_record = self.journal.persist(intent_record)
             before = instant(intent.create_before)
             if provisioning_deadline is not None:
                 before = min(before, provisioning_deadline)
@@ -328,10 +333,11 @@ class Lifecycle:
             raise
         # Exactly one mutation. A timeout or lost response is an outstanding
         # obligation; no handler may call create again for this run and role.
-        credential = client.create(
-            intent,
-            record=lambda selected, secret: self._record_creation(intent, selected, secret),
-        )
+        with measure("credential-provider-create"):
+            credential = client.create(
+                intent,
+                record=lambda selected, secret: self._record_creation(intent, selected, secret),
+            )
         if known_id(self.journal, intent) != credential.identifier:
             raise LifecycleError("creation response differs from its recorded identity")
         metadata = client.inspect(credential.identifier)

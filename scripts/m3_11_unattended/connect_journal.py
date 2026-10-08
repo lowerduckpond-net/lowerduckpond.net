@@ -76,6 +76,15 @@ class _Canonical:
     def records(self) -> list[dict[str, object]]:
         return self.ledger.records()
 
+    def _stage(
+        self, record: dict[str, object], *, admit: Callable[[], bool] | None = None
+    ) -> tuple[dict[str, object], bool]:
+        with self.ledger.staging_observation():
+            original = self._original(record)
+            if admit is not None and not admit():
+                return original, False
+            return original, self.ledger.stage(original, admit=admit)
+
     def _original(self, record: dict[str, object]) -> dict[str, object]:
         """A retry keeps its original event ID even when its first POST is unseen."""
         key = logical_key(record)
@@ -127,7 +136,7 @@ class ConnectJournal(_Canonical):
         return self.ledger.stable_records()
 
     def append(self, record: dict[str, object]) -> None:
-        self.ledger.stage(self._original(record))
+        self._stage(record)
 
     def confirmed(
         self, record: dict[str, object], *, observed: list[dict[str, object]] | None = None
@@ -145,8 +154,7 @@ class ConnectJournal(_Canonical):
         )
 
     def persist(self, record: dict[str, object]) -> dict[str, object]:
-        original = self._original(record)
-        self.ledger.stage(original)
+        original, _ = self._stage(record)
         return self._wait_for(original, until=time.monotonic() + self.wait_seconds)
 
     def persist_creation(self, created: dict[str, object], marker: dict[str, object]) -> None:
@@ -157,16 +165,14 @@ class ConnectJournal(_Canonical):
         self, created: dict[str, object], marker: dict[str, object]
     ) -> tuple[dict[str, object], dict[str, object], float]:
         """Retain both canonical writes immediately; never defer a returned identity."""
-        original = self._original(created)
-        self.ledger.stage(original)
+        original, _ = self._stage(created)
         # Start the first record's ACK clock at the same boundary as persist().
         # Marker staging and both confirmations share that original deadline.
         until = time.monotonic() + self.wait_seconds
         deadline = until if self.wait_seconds else time.monotonic() + ACK_WAIT_SECONDS
         try:
             with self.ledger.read_budget(deadline=deadline, check_cancelled=lambda: None):
-                related = self._original(marker)
-                self.ledger.stage(related)
+                related, _ = self._stage(marker)
         except Exception as primary:
             # Even a failed marker write must still try to confirm the returned ID.
             # Retained stage intents ensure uncertainty never repeats either POST.
@@ -377,8 +383,24 @@ class IndependentJournal(_Canonical):
     def acknowledge(
         self, *, run_id: int, attempt: int, allow: Callable[[dict[str, object]], bool]
     ) -> int:
+        observation, until = self._observation, self._observed_until
+        history = self.checkpoint.history
         with self._fresh():
-            return self._acknowledge(run_id=run_id, attempt=attempt, allow=allow)
+            published = self._acknowledge(run_id=run_id, attempt=attempt, allow=allow)
+        if (
+            published == 0
+            and self._reconciling
+            and observation is not None
+            and time.monotonic() < until
+            and self.cache_complete
+            and self.checkpoint.history == history
+            and self._merge(self.ledger.observed_records()) == observation
+        ):
+            # A no-op progress poll cannot invalidate an unchanged complete
+            # cleanup observation. Keep its original expiry; never renew it or
+            # reuse it after new obligations, a write, or a failed observation.
+            self._observation, self._observed_until = observation, until
+        return published
 
     @measure("credential-acknowledgement")
     def _acknowledge(
@@ -456,9 +478,7 @@ class IndependentJournal(_Canonical):
                 },
             )
             # ACKs are transport receipts, not new obligations to ACK recursively.
-            original = self._original(proof)
-            if not allow(record):
-                continue
-            if self.ledger.stage(original, admit=partial(allow, record)):
+            _, submitted = self._stage(proof, admit=partial(allow, record))
+            if submitted:
                 published += 1
         return published

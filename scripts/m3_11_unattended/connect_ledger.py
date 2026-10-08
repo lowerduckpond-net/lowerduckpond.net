@@ -13,6 +13,7 @@ from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import Context, copy_context
+from copy import deepcopy
 from http import HTTPStatus
 from itertools import chain
 from pathlib import Path
@@ -38,6 +39,7 @@ ACK_FORMAT = "lowerduckpond-m3-11-connect-ack-v1"
 READBACK_SECONDS = 60
 READBACK_POLL_SECONDS = 1
 ITEM_READ_WORKERS = 4
+STAGING_OBSERVATION_SECONDS = 5
 type Item = tuple[dict[str, object], dict[str, object]]
 TITLE = re.compile(r"m3-11-([0-9a-f-]{36})-([0-9a-f]{64})")
 ACK_FIELDS = {
@@ -110,6 +112,19 @@ class ConnectLedger:
         self._items: dict[str, str] = {}
         self._cached_items: dict[str, Item] = {}
         self._observed_records: list[dict[str, object]] | None = None
+        self._staging = False
+        self._stage_records: list[dict[str, object]] | None = None
+        self._stage_until = 0.0
+
+    @contextmanager
+    def staging_observation(self) -> Iterator[None]:
+        """Consume a canonicalization read once, before any further ledger I/O."""
+        previous = self._staging
+        self._staging, self._stage_records = True, None
+        try:
+            yield
+        finally:
+            self._staging, self._stage_records = previous, None
 
     @contextmanager
     def read_budget(
@@ -131,6 +146,7 @@ class ConnectLedger:
 
     @contextmanager
     def _reading(self) -> Iterator[None]:
+        self._stage_records = None
         if self._read_deadline is None:
             yield
             return
@@ -315,6 +331,9 @@ class ConnectLedger:
         # copies share one logical event; conflicting copies still fail closed.
         self._cached_items = {key: self._cached_items[key] for key in inventory}
         self._observed_records = sorted(records.values(), key=lambda row: str(row["event_id"]))
+        if self._staging:
+            self._stage_records = deepcopy(self._observed_records)
+            self._stage_until = time.monotonic() + STAGING_OBSERVATION_SECONDS
         return list(self._observed_records)
 
     def observed_records(self) -> list[dict[str, object]]:
@@ -450,6 +469,7 @@ class ConnectLedger:
     ) -> bool:
         """Submit once and retain uncertainty; this never claims external persistence."""
         validate(record)
+        observed, self._stage_records = self._stage_records, None
         event_id = identity(record["event_id"])
         intent = self.spool / (event_id + ".json")
         if intent.exists():
@@ -457,7 +477,17 @@ class ConnectLedger:
                 raise LifecycleError("Connect stage intent changed")
             self._readback(record)
             return True
-        existing = [value for value in self.stable_records() if value["event_id"] == event_id]
+        self.check_cancelled()
+        if (
+            not self._staging
+            or observed is None
+            or time.monotonic() >= self._stage_until
+            or (self._read_deadline is not None and time.monotonic() >= self._read_deadline)
+        ):
+            observed = self.stable_records()
+        # A pre-read is single-use even if it required an ordinary fresh scan.
+        self._stage_records = None
+        existing = [value for value in observed if value["event_id"] == event_id]
         if existing:
             if existing != [record]:
                 raise LifecycleError("Connect staged event differs from its original contents")

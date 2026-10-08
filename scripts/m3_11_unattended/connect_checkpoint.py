@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended.journal import MAX_EVENTS, validate
@@ -47,6 +47,21 @@ class Store(Protocol):
 
     def create(self, document: dict[str, object]) -> Stored:
         """Retain uncertain writes; do not overwrite or delete earlier checkpoints."""
+        ...
+
+
+@dataclass(frozen=True)
+class Publication:
+    """Exact plaintext and complete registry readback performed during publication."""
+
+    stored: Stored
+    history: tuple[Stored, ...]
+
+
+@runtime_checkable
+class VerifiedStore(Store, Protocol):
+    def publish(self, document: dict[str, object]) -> Publication:
+        """Return only after verifying this payload and its exact registry append."""
         ...
 
 
@@ -165,13 +180,20 @@ class Checkpoint:
         }
         # If the reply is lost, a later restore must find this immutable write.
         # Do not advance the in-memory head or acknowledge on a timeout.
-        created = self.store.create(document)
+        publication = (
+            self.store.publish(document) if isinstance(self.store, VerifiedStore) else None
+        )
+        created = publication.stored if publication is not None else self.store.create(document)
         if created.sha256 != digest(document) or any(
             created.identity == item.identity for item in self.history
         ):
             raise LifecycleError("independent checkpoint creation is unverified")
         history = (*self.history, created)
-        if self.store.read(created) != document or self.store.lineage() != history:
+        if publication is not None:
+            verified = publication.history == history
+        else:
+            verified = self.store.read(created) == document and self.store.lineage() == history
+        if not verified:
             raise LifecycleError("independent checkpoint creation has no exact registry readback")
         self.head, self.sequence, self.records = created, self.sequence + 1, selected
         self.history = history

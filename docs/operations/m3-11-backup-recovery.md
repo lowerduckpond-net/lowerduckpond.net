@@ -444,6 +444,23 @@ An individual event's 120-second ACK margin does not establish remaining time to
 create every credential. Provider doubles and timing profiles remain diagnostic;
 successful live rehearsal and full qualification are separate required outcomes.
 
+Credential timing records distinguish each role and the inventory, intent
+persistence, provider creation and returned-ID persistence stages. They contain
+only fixed labels and monotonic durations. An elapsed creation window rejects a
+new role before another intent is opened; an intent already awaiting persistence
+still retains its original pre-provider abort for independent reconciliation.
+
+Canonicalization and staging may consume the same complete Connect observation
+once, within five seconds and before further ledger I/O. Post-write readback and
+the final admission check remain mandatory. A no-op ACK poll may preserve an
+unchanged cleanup observation only until its original expiry. Checkpoint
+publication can return its exact payload and registry verification to the caller,
+avoiding duplicate immediate reads; generic stores still require separate readback.
+
+When the persistent watchdog completes revocation, sanitized evidence includes
+its retained receipts and complete local intent coverage. The qualification
+outcome remains separate from successful credential cleanup.
+
 Each provider HTTP exchange has a thirty-second total process deadline, including
 DNS, TLS, response headers and a slowly arriving body. Credentials cross private
 pipes; error bodies and child diagnostics are discarded. A timeout retains an
