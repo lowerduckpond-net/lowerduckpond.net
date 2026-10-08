@@ -415,6 +415,27 @@ blocks run and creation-intent acknowledgements; cleanup ACKs continue.
 Other clearance checks still perform a fresh sweep, including historical provider
 inventory checks that detect late creations.
 
+For an already reserved attempt, a completed sweep services eligible intent ACKs
+before publishing its informational heartbeat. Provider health, policy restoration,
+authority and recoverable checkpoint checks must all have finished successfully;
+the unfinished-sweep callback still handles only cleanup and returned-ID records.
+This earlier opportunity cannot reserve another run or extend either deadline.
+Both the earlier opportunity and ordinary ACK processing revalidate completed
+cleanup coverage against the latest complete observation, including later reads
+during ACK canonicalization and staging. An incomplete read blocks creation;
+the guard cannot substitute an older checkpoint. Staging repeats the guard after
+its own preflight read and immediately before POST, and samples the admission
+clock after all history, policy, reservation and intent validation. New
+revocations, conflicting IDs, invalidated historical proofs and uncovered foreign
+intents block creation. Only the exact active run's new, unexpired intent may use
+the existing not-due path, subject to its original binding and reservation checks.
+
+Local readiness evidence must account for the whole ten-minute creation window,
+including reservation, scope discovery, activity probes and concurrent cleanup.
+An individual event's 120-second ACK margin does not establish remaining time to
+create every credential. Provider doubles and timing profiles remain diagnostic;
+successful live rehearsal and full qualification are separate required outcomes.
+
 Each provider HTTP exchange has a thirty-second total process deadline, including
 DNS, TLS, response headers and a slowly arriving body. Credentials cross private
 pipes; error bodies and child diagnostics are discarded. A timeout retains an

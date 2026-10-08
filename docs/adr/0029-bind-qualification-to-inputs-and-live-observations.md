@@ -240,6 +240,15 @@ only, retaining the sixty-second bound on each complete snapshot. Credential
 events keep their separate 120-second confirmation budgets. No acknowledgement
 extends provider submission, credential lifetime or qualification deadlines.
 
+A completed cleanup sweep may service an already reserved attempt before publishing
+its informational heartbeat. This ordering preserves all provider, authority,
+restoration and checkpoint checks. ACK publication revalidates completed cleanup
+coverage against its newly retained snapshot; earlier readiness cannot override
+new adverse obligations. The exact active run's unexpired intent may enter the
+not-due frontier, while foreign or invalidated obligations remain blocking. This
+does not create a reservation, renew a deadline or turn local timing evidence into
+a successful live lifecycle.
+
 The independent witness's initial twelve-minute wait includes controller
 preparation, so it must not substitute for the admitted creation window. After
 the exact native reservation is durable, the witness arms once from that

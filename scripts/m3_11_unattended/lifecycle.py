@@ -231,6 +231,7 @@ class Lifecycle:
         self.remember_aborted = remember_aborted
         self.progress = progress
         self._clearance: tuple[float, str] | None = None
+        self._sweep_results: tuple[CleanupResult, ...] | None = None
 
     def _record_creation(self, intent: Intent, selected: str, secret: str | None) -> None:
         record = event(
@@ -715,6 +716,7 @@ class Lifecycle:
 
     def sweep(self, secrets: Mapping[str, Credential] | None = None) -> list[CleanupResult]:
         self._clearance = None
+        self._sweep_results = None
         records = self.journal.records()
         before = _obligation_basis(records)
         available = secrets or {}
@@ -778,7 +780,43 @@ class Lifecycle:
             historical_absence.admits(result.intent_sha256, result.status) for result in results
         ):
             self._clearance = time.monotonic(), after
+        self._sweep_results = tuple(results)
         return results
+
+    def creation_clear(  # noqa: PLR0911 - each adverse fresh observation blocks creation
+        self, observed: list[dict[str, object]], *, run_id: str
+    ) -> bool:
+        """Revalidate completed coverage against the exact fresh ACK snapshot."""
+        if self._sweep_results is None or any(
+            row["kind"] == "revoke" and row["run_id"] == run_id for row in observed
+        ):
+            return False
+        try:
+            current = _intents(observed)  # Reject duplicate run/role identities.
+            proven = {value.intent_sha256: value for value in self._sweep_results}
+            if not proven.keys() <= {item.sha256 for item in current}:
+                return False
+            for item in current:
+                _known_id(observed, item)  # Reject conflicting returned IDs, even before due.
+                if self.providers[item.provider].authority_sha256 != item.cleanup_authority_sha256:
+                    return False
+                proof = proven.get(item.sha256)
+                if proof is None:
+                    # The serial controller can stage its next child after this
+                    # sweep. Only this exact active run may expose a not-due
+                    # frontier; its binding/reservation is checked by Admission.
+                    if item.run_id != run_id or select_abort(item, observed) is not None:
+                        return False
+                    proof = CleanupResult(item.sha256, "not-due", "not-tested")
+                result = self._current_result(item, proof, observed)
+                if result.status == "not-due":
+                    if item.run_id != run_id or select_abort(item, observed) is not None:
+                        return False
+                elif not historical_absence.admits(result.intent_sha256, result.status):
+                    return False
+            return True
+        except LifecycleError, OSError, ValueError, KeyError, TypeError:
+            return False
 
     @measure("credential-clearance")
     def require_clear(self, *, observed: list[dict[str, object]] | None = None) -> None:

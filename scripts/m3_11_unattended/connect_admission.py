@@ -200,12 +200,25 @@ class Admission:
         return cutoff
 
     def allow(  # noqa: PLR0911 - explicit admission gates
-        self, record: dict[str, object], *, now: datetime | None = None
+        self,
+        record: dict[str, object],
+        *,
+        now: datetime | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> bool:
         """Cleanup/proof ACKs continue after admission closes; creation ACKs cannot."""
-        observed_at = self.now if now is None else now
+        observed_at = clock() if clock is not None else self.now if now is None else now
         if record["kind"] not in {"run", "intent"}:
             return True
+        # Canonicalization and stage can observe newer records after checkpoint
+        # retention. Include them in run/reservation and policy checks; a late
+        # duplicate run cannot borrow the earlier unambiguous admission.
+        observed = {str(row["event_id"]): row for row in self.records}
+        try:
+            observed.update((str(row["event_id"]), row) for row in self.journal.admission_records())
+        except LifecycleError:
+            return False
+        self.records = list(observed.values())
         if not self._policy_clear(observed_at):
             return False
         candidates = [
@@ -244,16 +257,21 @@ class Admission:
         accepted, before = instant(receipt["accepted_at"]), instant(receipt["create_before"])
         if before - accepted != WINDOW or not accepted <= observed_at < before:
             return False
-        if record["kind"] == "run":
-            return True
-        intent = Intent.parse(record["payload"])
-        authorities = strings(receipt["provider_authorities"])
-        return (
-            intent.run_id == run["run_id"]
-            and intent.source_revision == binding["source_revision"]
-            and intent.helper_revision == binding["helper_revision"]
-            and intent.targets == self.targets
-            and intent.cleanup_authority_sha256 == authorities.get(intent.provider)
-            and accepted <= instant(intent.requested_at) < before
-            and observed_at < instant(intent.create_before)
-        )
+        intent_before = before
+        if record["kind"] == "intent":
+            intent = Intent.parse(record["payload"])
+            authorities = strings(receipt["provider_authorities"])
+            if not (
+                intent.run_id == run["run_id"]
+                and intent.source_revision == binding["source_revision"]
+                and intent.helper_revision == binding["helper_revision"]
+                and intent.targets == self.targets
+                and intent.cleanup_authority_sha256 == authorities.get(intent.provider)
+                and accepted <= instant(intent.requested_at) < before
+            ):
+                return False
+            intent_before = instant(intent.create_before)
+        # Merging history and validating policy/reservation/intent can consume
+        # the final margin too. No validation or I/O follows this clock sample.
+        checked_at = observed_at if clock is None else clock()
+        return accepted <= checked_at < min(before, intent_before)

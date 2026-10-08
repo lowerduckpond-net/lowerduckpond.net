@@ -25,7 +25,7 @@ from scripts import qualification_timing
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended import checkpoint_audit, cleanup, connect_genesis
 from scripts.m3_11_unattended.config import BOOTSTRAP_FIELDS, Connections, provider_connections
-from scripts.m3_11_unattended.connect_admission import WINDOW, Admission
+from scripts.m3_11_unattended.connect_admission import WINDOW, Admission, run_digest
 from scripts.m3_11_unattended.connect_api import Connect
 from scripts.m3_11_unattended.connect_auth import READ, READ_WRITE, Access, authenticate, inspect
 from scripts.m3_11_unattended.connect_checkpoint import FORMAT as CHECKPOINT_FORMAT
@@ -285,6 +285,57 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
         # admission snapshot. Never compare clearance against that cached view.
         selected.require_clear(observed=journal.fresh_records())
 
+    def allow_after_sweep(
+        record: dict[str, object], decision: Admission, checked: Lifecycle | None, *, ready: bool
+    ) -> bool:
+        if record["kind"] not in {"run", "intent"}:
+            return True
+        if not ready or checked is None:
+            return False
+        try:
+            observed = journal.admission_records()
+        except LifecycleError:
+            return False
+        # Historical and admission validation can consume time. Admission samples
+        # this clock last, also when stage repeats the guard after its own read.
+        return checked.creation_clear(
+            observed, run_id=identity(record["run_id"])
+        ) and decision.allow(record, clock=lambda: datetime.now(UTC))
+
+    def completed_sweep(completed: dict[str, object]) -> None:
+        if (
+            not request_sha256
+            or creation_cutoff is None
+            or datetime.now(UTC) >= creation_cutoff
+            or connected is None
+            or completed.get("status") != "ready"
+        ):
+            return
+        # This path cannot reserve capacity or ACK a new run. All safety checks
+        # of this sweep, including checkpoint readiness, have finished. Keep
+        # ordinary receipt publication/cleanup alive if ACK delivery fails.
+        with suppress(LifecycleError, OSError, ValueError):
+            connected.authority.require(datetime.now(UTC) + LIFETIME)
+            decision = Admission(journal, targets=targets, now=datetime.now(UTC))
+            selected = [
+                row
+                for row in decision.records
+                if row["kind"] == "run"
+                and isinstance(row["payload"], dict)
+                and run_digest(identity(row["run_id"]), row["payload"]) == request_sha256
+            ]
+            if len(selected) != 1:
+                return
+
+            def allow_reserved(record: dict[str, object]) -> bool:
+                return (
+                    record["kind"] != "run"
+                    and (record["kind"] != "intent" or record["run_id"] == selected[0]["run_id"])
+                    and allow_after_sweep(record, decision, lifecycle, ready=True)
+                )
+
+            journal.acknowledge(run_id=run_id, attempt=attempt, allow=allow_reserved)
+
     while True:
         now = datetime.now(UTC)
         if time.monotonic() >= next_sweep:
@@ -308,6 +359,7 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
                     authority_verified=connected is not None,
                     arm_policy_restore=arm_policy_restore,
                     force_policy_restore=final_policy_pass,
+                    before_receipt=completed_sweep,
                 )
             if audit_deadline is not None and policy_pass_started >= audit_deadline:
                 audit_due_checked = True
@@ -366,10 +418,9 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
             record: dict[str, object],
             decision: Admission = admission,
             ready: bool = connected is not None and receipt.get("status") == "ready",
+            checked: Lifecycle | None = lifecycle,
         ) -> bool:
-            return decision.allow(record, now=datetime.now(UTC)) and (
-                ready or record["kind"] not in {"run", "intent"}
-            )
+            return allow_after_sweep(record, decision, checked, ready=ready)
 
         journal.acknowledge(
             run_id=run_id,

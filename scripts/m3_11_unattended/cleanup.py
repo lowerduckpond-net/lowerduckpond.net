@@ -129,6 +129,7 @@ def sweep(  # noqa: PLR0912, PLR0913 - independent restoration never suppresses 
     quiet_empty: bool = False,
     arm_policy_restore: Callable[[datetime], None] | None = None,
     force_policy_restore: bool = False,
+    before_receipt: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
     if actor not in {"controller", "watchdog", "github"}:
         raise LifecycleError("unknown cleanup actor")
@@ -215,6 +216,11 @@ def sweep(  # noqa: PLR0912, PLR0913 - independent restoration never suppresses 
         receipt["connect"] = lifecycle.journal.readiness()
         if not lifecycle.journal.cache_complete:
             receipt["status"] = "unresolved"
+    if before_receipt is not None:
+        # Provider, restoration, authority and independent checkpoint checks are
+        # complete. Publishing their informational heartbeat can be slow; let
+        # the witness service an existing reservation first, never mid-sweep.
+        before_receipt(receipt)
     prior = [
         record["payload"]
         for record in lifecycle.journal.records()
