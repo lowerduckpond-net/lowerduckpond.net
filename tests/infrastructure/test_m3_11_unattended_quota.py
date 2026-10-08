@@ -670,6 +670,7 @@ def test_dead_controller_leaves_retry_set_only_after_verified_revocation(
     cli = CountedCli()
     case = Case(tmp_path / "case")
     case.now = datetime.now(UTC)
+    case.authority = dataclasses.replace(case.authority, valid_until=case.now + timedelta(days=7))
     case.lifecycle = Lifecycle(
         OpJournal(cast(OnePassword, cli), "a" * 26),
         {"spaces": case.provider},
@@ -858,10 +859,10 @@ def test_local_cleanup_serializes_refresh_probe_and_secret_disposal(  # noqa: PL
         )
 
     @contextmanager
-    def locking(path: Path) -> Iterator[None]:
+    def locking(path: Path, *, blocking: bool = True) -> Iterator[None]:
         if current_thread().name == "follower":
             waiting.set()
-        with cleanup_lock(path):
+        with cleanup_lock(path, blocking=blocking):
             yield
 
     monkeypatch.setattr(case.provider, "inventory", pause_inventory)
@@ -904,12 +905,13 @@ def test_local_cleanup_serializes_refresh_probe_and_secret_disposal(  # noqa: PL
             other = "watchdog" if first == "controller" else "controller"
             follower = pool.submit(execute, other, "follower")
             assert waiting.wait(10)
+            assert follower.result(timeout=10) is False
             assert not follower_connected.is_set()
             assert worker.retained_credentials(directory)
         finally:
             release.set()
         assert leader.result(timeout=10) is False
-        assert follower.result(timeout=10) is True
+        assert pool.submit(execute, other, "follower").result(timeout=10) is True
     assert follower_connected.is_set()
     assert not worker.retained_credentials(directory)
     assert selected.revoke()

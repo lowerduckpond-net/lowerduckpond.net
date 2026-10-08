@@ -172,7 +172,11 @@ def test_continuously_changing_snapshot_expires_without_dispatch_replay(
     assert not (directory / "witness-ready.json").exists()
     diagnostic = control.launch_evidence(directory, run_id=directory.name, helper=HELPER)
     assert CANARY not in json.dumps(diagnostic)
-    detail = fields(diagnostic["diagnostic"], {"binding", "stage", "failure"})
+    detail = fields(diagnostic["diagnostic"], {"binding", "stage", "failure", "related_failures"})
+    related = detail["related_failures"]
+    assert isinstance(related, list) and len(related) == 1
+    related_failure = fields(related[0], {"category", "origin"})
+    assert fields(related_failure["origin"], {"path", "line", "function"})["function"] == "records"
     failure = fields(detail["failure"], {"category", "origin"})
     assert fields(failure["origin"], {"path", "line", "function"})["function"] == "stable_records"
     original = (directory / "launcher-failure.json").read_bytes()
