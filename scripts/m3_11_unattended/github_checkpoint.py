@@ -49,6 +49,7 @@ MINIMUM_START_CAPACITY = 384  # 128 witness writes plus 256 reserved cleanup wri
 MAX_STATUS_PAGES = 30
 READ_POLL_SECONDS = 2
 UPLOAD_OUTPUT_LINES = 9
+RECOVERED_HISTORY_SECONDS = 5
 
 
 class _UnavailableError(LifecycleError):
@@ -112,6 +113,8 @@ class GitHubArtifacts:
         self._parents: dict[int, Stored | None] = {}
         self._verified_runs: set[int] = set()
         self._history: tuple[Stored, ...] = ()
+        self._recovered_basis: tuple[tuple[Stored, ...], float] | None = None
+        self._history_observed_at: float | None = None
 
     @measure("checkpoint-request")
     def _api(
@@ -266,6 +269,8 @@ class GitHubArtifacts:
 
     @measure("checkpoint-registry")
     def lineage(self, *, deadline: float | None = None) -> tuple[Stored, ...]:
+        self._recovered_basis = None
+        self._history_observed_at = None
         self._until = time.monotonic() + SCAN_SECONDS
         if deadline is not None:
             self._until = min(self._until, deadline)
@@ -303,10 +308,13 @@ class GitHubArtifacts:
         self._parents = parents
         self._published_runs = published_runs
         self._history = ordered
+        self._history_observed_at = time.monotonic()
         return ordered
 
     def remaining_capacity(self) -> int:
         """Readiness must reserve cleanup writes before it admits any new children."""
+        self._recovered_basis = None
+        self._history_observed_at = None
         self._until = time.monotonic() + SCAN_SECONDS
         used = sum(cast(str, row["context"]).lower() == self.context for row in self._statuses())
         self._check_deadline()
@@ -436,11 +444,16 @@ class GitHubArtifacts:
 
     @measure("checkpoint-read")
     def read(self, stored: Stored, *, deadline: float | None = None) -> dict[str, object]:
+        observed_at, self._history_observed_at = self._history_observed_at, None
+        self._recovered_basis = None
         self._until = time.monotonic() + SCAN_SECONDS
         if deadline is not None:
             self._until = min(self._until, deadline)
         metadata = self._api(f"repos/{REPOSITORY}/actions/artifacts/{stored.identity}")
-        return self._read(stored, metadata)
+        value = self._read(stored, metadata)
+        if observed_at is not None and self._history and stored == self._history[-1]:
+            self._recovered_basis = self._history, observed_at
+        return value
 
     def _read(self, stored: Stored, metadata: object) -> dict[str, object]:
         # The caller owns the deadline, including upload visibility retries.
@@ -562,8 +575,40 @@ class GitHubArtifacts:
     def create(self, document: dict[str, object]) -> Stored:
         return self.publish(document).stored
 
+    def discard_recovered(self) -> None:
+        self._recovered_basis = None
+        self._history_observed_at = None
+
     @measure("checkpoint-write")
     def publish(self, document: dict[str, object]) -> Publication:
+        self._recovered_basis = None
+        self._history_observed_at = None
+        try:
+            return self._publish(document)
+        finally:
+            self._recovered_basis = None
+            self._history_observed_at = None
+
+    @measure("checkpoint-write")
+    def publish_recovered(
+        self, document: dict[str, object], *, history: tuple[Stored, ...]
+    ) -> Publication:
+        basis, self._recovered_basis = self._recovered_basis, None
+        self._history_observed_at = None
+        if basis is None or not history or basis[0] != history or history != self._history:
+            raise LifecycleError("checkpoint publication lacks its exact recovered history")
+        try:
+            return self._publish(document, recovered=basis)
+        finally:
+            self._recovered_basis = None
+            self._history_observed_at = None
+
+    def _publish(
+        self,
+        document: dict[str, object],
+        *,
+        recovered: tuple[tuple[Stored, ...], float] | None = None,
+    ) -> Publication:
         self._until = time.monotonic() + SCAN_SECONDS
         if (
             os.environ.get("GITHUB_ACTIONS") != "true"
@@ -577,7 +622,16 @@ class GitHubArtifacts:
         runs = self._runs(active_run=run_id)
         if not runs or runs[0].get("id") != run_id:
             raise LifecycleError("an older cleanup run cannot publish over a newer checkpoint")
-        history = self.lineage()
+        # Recovery has just read this complete registry and its latest payload.
+        # Consume that observation once, without renewing its clock. A slow
+        # workflow fence takes the ordinary scan. Both later registry checks
+        # remain fresh, so a concurrent append cannot be registered or ACKed.
+        history = (
+            recovered[0]
+            if recovered is not None
+            and 0 <= time.monotonic() - recovered[1] < RECOVERED_HISTORY_SECONDS
+            else self.lineage()
+        )
         previous = history[-1] if history else None
         if document.get("format") == FORMAT and (
             document.get("previous") != self._parent(previous)

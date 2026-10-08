@@ -395,6 +395,15 @@ It emits no ACK or readiness claim. New obligations still take the full retentio
 path even when their creation ACK is prohibited. Admission and actual ACK
 publication retain their fresh independent recovery checks.
 
+Immediately after recovering the latest encrypted checkpoint, publication may
+consume that exact complete registry observation once within five seconds of the
+registry read. Payload recovery and workflow checks consume the same window. This
+removes only the duplicate scan before upload. A slow workflow-authority check
+uses the ordinary scan; failed recovery cannot supply the observation. The fresh
+workflow fence, parent binding, uploaded plaintext verification, complete registry
+comparison after upload and exact append confirmation after registration remain
+required. Standalone publication and genesis use the ordinary scans.
+
 Historical Cloudflare token readbacks run in waves of at most four exact-ID GETs.
 Each wave finishes before journal progress, the final complete provider inventory,
 or ordinary deletion begins, including after a failed read or interruption.

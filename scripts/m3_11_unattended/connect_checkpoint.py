@@ -66,6 +66,19 @@ class VerifiedStore(Store, Protocol):
         ...
 
 
+@runtime_checkable
+class RecoveredStore(VerifiedStore, Protocol):
+    def discard_recovered(self) -> None:
+        """Discard the observation on every persistence exit, including no-op/error."""
+        ...
+
+    def publish_recovered(
+        self, document: dict[str, object], *, history: tuple[Stored, ...]
+    ) -> Publication:
+        """Consume this call's recovered history; verify the full append after upload."""
+        ...
+
+
 def _records(value: object) -> dict[str, dict[str, object]]:
     if not isinstance(value, list) or not 1 <= len(value) <= MAX_EVENTS:
         raise LifecycleError("independent checkpoint records are unavailable")
@@ -165,6 +178,13 @@ class Checkpoint:
     @measure("checkpoint-persistence")
     def persist(self, records: list[dict[str, object]]) -> Stored:
         """Publish and verify the recoverable records before a caller may emit an ACK."""
+        try:
+            return self._persist(records)
+        finally:
+            if isinstance(self.store, RecoveredStore):
+                self.store.discard_recovered()
+
+    def _persist(self, records: list[dict[str, object]]) -> Stored:
         self.verified_at = None
         selected = _records(records)
         self.restore()
@@ -187,9 +207,13 @@ class Checkpoint:
         }
         # If the reply is lost, a later restore must find this immutable write.
         # Do not advance the in-memory head or acknowledge on a timeout.
-        publication = (
-            self.store.publish(document) if isinstance(self.store, VerifiedStore) else None
-        )
+        publication: Publication | None
+        if self.history and isinstance(self.store, RecoveredStore):
+            publication = self.store.publish_recovered(document, history=self.history)
+        else:
+            publication = (
+                self.store.publish(document) if isinstance(self.store, VerifiedStore) else None
+            )
         created = publication.stored if publication is not None else self.store.create(document)
         if created.sha256 != digest(document) or any(
             created.identity == item.identity for item in self.history
