@@ -285,6 +285,23 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
         # admission snapshot. Never compare clearance against that cached view.
         selected.require_clear(observed=journal.fresh_records())
 
+    def allow_after_sweep(
+        record: dict[str, object], decision: Admission, checked: Lifecycle | None, *, ready: bool
+    ) -> bool:
+        if record["kind"] not in {"run", "intent"}:
+            return True
+        if not ready or checked is None:
+            return False
+        try:
+            observed = journal.admission_records()
+        except LifecycleError:
+            return False
+        # Historical validation can consume time. Sample the admission clock
+        # last, including when stage repeats this predicate after its own read.
+        return checked.creation_clear(
+            observed, run_id=identity(record["run_id"])
+        ) and decision.allow(record, now=datetime.now(UTC))
+
     def completed_sweep(completed: dict[str, object]) -> None:
         if (
             not request_sha256
@@ -314,17 +331,7 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
                 return (
                     record["kind"] != "run"
                     and (record["kind"] != "intent" or record["run_id"] == selected[0]["run_id"])
-                    and decision.allow(record, now=datetime.now(UTC))
-                    and (
-                        record["kind"] != "intent"
-                        or (
-                            lifecycle is not None
-                            and lifecycle.creation_clear(
-                                list(journal.checkpoint.records.values()),
-                                run_id=identity(selected[0]["run_id"]),
-                            )
-                        )
-                    )
+                    and allow_after_sweep(record, decision, lifecycle, ready=True)
                 )
 
             journal.acknowledge(run_id=run_id, attempt=attempt, allow=allow_reserved)
@@ -413,16 +420,7 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
             ready: bool = connected is not None and receipt.get("status") == "ready",
             checked: Lifecycle | None = lifecycle,
         ) -> bool:
-            return decision.allow(record, now=datetime.now(UTC)) and (
-                record["kind"] not in {"run", "intent"}
-                or (
-                    ready
-                    and checked is not None
-                    and checked.creation_clear(
-                        list(journal.checkpoint.records.values()), run_id=identity(record["run_id"])
-                    )
-                )
-            )
+            return allow_after_sweep(record, decision, checked, ready=ready)
 
         journal.acknowledge(
             run_id=run_id,

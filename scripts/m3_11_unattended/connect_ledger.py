@@ -103,6 +103,7 @@ class ConnectLedger:
         self._known: dict[str, str] = dict(minimum)
         self._items: dict[str, str] = {}
         self._cached_items: dict[str, Item] = {}
+        self._observed_records: list[dict[str, object]] | None = None
 
     @contextmanager
     def read_budget(
@@ -254,6 +255,7 @@ class ConnectLedger:
     @measure("credential-journal-read")
     def records(self) -> list[dict[str, object]]:
         """A complete, stable cache snapshot; still not an independent-write receipt."""
+        self._observed_records = None
         before = self._vault_state()
         inventory = self._inventory()
         self._remember_inventory(inventory)
@@ -302,7 +304,14 @@ class ConnectLedger:
         # after losing a POST reply and its ephemeral spool. Exact immutable
         # copies share one logical event; conflicting copies still fail closed.
         self._cached_items = {key: self._cached_items[key] for key in inventory}
-        return sorted(records.values(), key=lambda row: str(row["event_id"]))
+        self._observed_records = sorted(records.values(), key=lambda row: str(row["event_id"]))
+        return list(self._observed_records)
+
+    def observed_records(self) -> list[dict[str, object]]:
+        """The latest completed read, including stage's pre-publication check."""
+        if self._observed_records is None:
+            raise LifecycleError("Connect has no complete current journal observation")
+        return list(self._observed_records)
 
     def _readback(self, record: dict[str, object]) -> None:
         """Poll only reads after a retained POST; never resend or weaken the snapshot."""
@@ -365,7 +374,13 @@ class ConnectLedger:
             "Connect creation remains uncertain after readback; no duplicate submitted"
         )
 
-    def stage(self, record: dict[str, object], *, claimed_author: str | None = None) -> None:
+    def stage(
+        self,
+        record: dict[str, object],
+        *,
+        claimed_author: str | None = None,
+        admit: Callable[[], bool] | None = None,
+    ) -> bool:
         """Submit once and retain uncertainty; this never claims external persistence."""
         validate(record)
         event_id = identity(record["event_id"])
@@ -374,12 +389,14 @@ class ConnectLedger:
             if read_private(intent) != record:
                 raise LifecycleError("Connect stage intent changed")
             self._readback(record)
-            return
+            return True
         existing = [value for value in self.stable_records() if value["event_id"] == event_id]
         if existing:
             if existing != [record]:
                 raise LifecycleError("Connect staged event differs from its original contents")
-            return
+            return True
+        if admit is not None and not admit():
+            return False
         write_private(intent, record)
         item: dict[str, object] = {
             "title": OpJournal._title(record),
@@ -404,6 +421,12 @@ class ConnectLedger:
             # A grouped creation write may share an earlier record's deadline.
             # Retain uncertainty if this bounded POST times out; never resubmit.
             with self._reading():
+                # The predicate performs no I/O. It includes the complete read
+                # above and samples admission time after local preparation.
+                # A cutoff crossed after intent persistence never submits this
+                # ACK; its original transport evidence remains retained.
+                if admit is not None and not admit():
+                    return False
                 response = self.client.request("POST", "/v1/vaults/" + self.vault + "/items", item)
         except LifecycleError:
             response = None
@@ -416,6 +439,7 @@ class ConnectLedger:
             # A returned ID is retained immediately even when later inspection fails.
             write_private(self.spool / (event_id + ".returned.json"), {"item_id": returned})
         self._readback(record)
+        return True
 
     def confirmed(  # noqa: PLR0913 - native identities, lineage and observation remain explicit
         self,

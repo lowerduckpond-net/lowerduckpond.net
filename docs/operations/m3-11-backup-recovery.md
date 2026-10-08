@@ -421,7 +421,11 @@ authority and recoverable checkpoint checks must all have finished successfully;
 the unfinished-sweep callback still handles only cleanup and returned-ID records.
 This earlier opportunity cannot reserve another run or extend either deadline.
 Both the earlier opportunity and ordinary ACK processing revalidate completed
-cleanup coverage against the fresh snapshot retained by the ACK operation. New
+cleanup coverage against the latest complete observation, including later reads
+during ACK canonicalization and staging. An incomplete read blocks creation;
+the guard cannot substitute an older checkpoint. Staging repeats the guard after
+its own preflight read and immediately before POST, and samples the admission
+clock after historical validation. New
 revocations, conflicting IDs, invalidated historical proofs and uncovered foreign
 intents block creation. Only the exact active run's new, unexpired intent may use
 the existing not-due path, subject to its original binding and reservation checks.

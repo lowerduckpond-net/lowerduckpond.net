@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
+from functools import partial
 
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_unattended.connect_auth import identity as account_identity
@@ -296,6 +297,15 @@ class IndependentJournal(_Canonical):
         }
         return self.checkpoint.merge(observed)
 
+    def admission_records(self) -> list[dict[str, object]]:
+        """Include later canonicalization/stage reads without another exchange."""
+        if not self.cache_complete:
+            raise LifecycleError("creation admission requires complete independent recovery")
+        observed = self._merge(self.ledger.observed_records())
+        if not self.cache_complete:
+            raise LifecycleError("creation admission requires a complete current observation")
+        return observed
+
     def fresh_records(self) -> list[dict[str, object]]:
         """Admission cannot use a cleanup observation or recovered-only fallback."""
         with self._fresh():
@@ -449,6 +459,6 @@ class IndependentJournal(_Canonical):
             original = self._original(proof)
             if not allow(record):
                 continue
-            self.ledger.stage(original)
-            published += 1
+            if self.ledger.stage(original, admit=partial(allow, record)):
+                published += 1
         return published
