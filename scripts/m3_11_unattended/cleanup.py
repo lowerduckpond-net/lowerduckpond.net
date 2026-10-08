@@ -49,7 +49,7 @@ from scripts.m3_11_unattended.model import (
     stamp,
 )
 from scripts.m3_11_unattended.spaces import Spaces
-from scripts.m3_11_unattended.state import cleanup_lock
+from scripts.m3_11_unattended.state import CleanupLockBusyError, cleanup_lock
 from scripts.production_qualification_inputs import git, revision
 from scripts.qualification_timing import measure
 
@@ -542,7 +542,9 @@ def main() -> int:  # noqa: PLR0912, PLR0915 - remote cadence and explicit backe
             retry_seconds = RETRY_SECONDS if newly_due else retry_seconds
             next_remote, next_retry = now + REMOTE_SECONDS, now + retry_seconds
             last_due = due
-            with cleanup_lock(args.runs) if args.runs is not None else nullcontext():
+            with (
+                cleanup_lock(args.runs, blocking=False) if args.runs is not None else nullcontext()
+            ):
                 targets, vault, bootstrap = cleanup_configuration(args.config)
                 if bootstrap.connect_settings is not None and args.actor == "github":
                     raise LifecycleError(
@@ -595,6 +597,15 @@ def main() -> int:  # noqa: PLR0912, PLR0915 - remote cadence and explicit backe
                 or (args.quiet_empty and receipt["status"] == "initializing-empty")
                 else 1
             )
+        except CleanupLockBusyError:
+            # Lock contention is neither successful revocation nor a provider
+            # failure. Keep observing local death/deadlines every minute rather
+            # than sleeping inside flock behind another actor's network work.
+            if not args.watch:
+                return 1
+            next_remote = next_retry = time.monotonic() + POLL_SECONDS
+            time.sleep(POLL_SECONDS)
+            continue
         except RuntimeError, OSError, ValueError, KeyError, TypeError:
             print(
                 "Credential cleanup unresolved; retained obligations need another reconciliation.",

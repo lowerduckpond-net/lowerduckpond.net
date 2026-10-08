@@ -32,33 +32,45 @@ def persist_run(
             raise LifecycleError("original creation reservation window is unavailable")
         return expires, min(deadline, time.monotonic() + (expires - now).total_seconds())
 
-    _, until = cutoff(record)
-    with journal.ledger.read_budget(deadline=until, check_cancelled=lambda: None):
-        original = journal._original(record)
-        # A retained canonical record can be older than the proposed event.
-        # Neither canonicalization nor a clock correction can renew this budget.
-        expires, original_until = cutoff(original)
-        until = min(until, original_until)
-        with journal.ledger.read_budget(deadline=until, check_cancelled=lambda: None):
-            journal.ledger.stage(original)
-            while True:
-                journal.check_cancelled()
-                if time.monotonic() >= until or datetime.now(UTC) >= expires:
-                    raise LifecycleError("original creation reservation window elapsed")
-                try:
+    expires, until = cutoff(record)
+    original: dict[str, object] | None = None
+    staged = False
+    last_observation: ReadbackExpiredError | None = None
+    while True:
+        journal.check_cancelled()
+        if time.monotonic() >= until or datetime.now(UTC) >= expires:
+            raise LifecycleError(
+                "original creation reservation window elapsed"
+            ) from last_observation
+        try:
+            with journal.ledger.read_budget(deadline=until, check_cancelled=lambda: None):
+                if original is None:
+                    original = journal._original(record)
+                    # A retained canonical record can be older than the proposal.
+                    # Observation retries never renew either original deadline.
+                    expires, original_until = cutoff(original)
+                    until = min(until, original_until)
+                with journal.ledger.read_budget(deadline=until, check_cancelled=lambda: None):
+                    if not staged:
+                        # stage's retained intent permits only readback after an
+                        # uncertain POST; this loop never resubmits that POST.
+                        journal.ledger.stage(original)
+                        staged = True
                     result = journal._wait_for(
                         original, until=until if journal.wait_seconds else time.monotonic()
                     )
-                except ReadbackExpiredError:
-                    if not journal.wait_seconds:
-                        raise  # Explicit single-observation mode for local doubles.
-                    # Retry observations only. Each still needs a complete,
-                    # stable native snapshot within its own 60-second cap.
-                    continue
-                journal.check_cancelled()
-                if time.monotonic() >= until or datetime.now(UTC) >= expires:
-                    raise LifecycleError("original creation reservation window elapsed")
-                return result
+        except ReadbackExpiredError as error:
+            if not journal.wait_seconds:
+                raise  # Explicit single-observation mode for local doubles.
+            last_observation = error
+            # Each complete read still has its original 60-second cap. This
+            # includes canonicalization and the first write's readback, not just
+            # the subsequent independent ACK observation.
+            continue
+        journal.check_cancelled()
+        if time.monotonic() >= until or datetime.now(UTC) >= expires:
+            raise LifecycleError("original creation reservation window elapsed")
+        return result
 
 
 class ProvisioningJournal:

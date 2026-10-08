@@ -46,7 +46,12 @@ from scripts.m3_11_unattended.model import (
     stamp,
     strings,
 )
-from scripts.m3_11_unattended.state import RunState, cleanup_lock, private_directory
+from scripts.m3_11_unattended.state import (
+    CleanupLockBusyError,
+    RunState,
+    cleanup_lock,
+    private_directory,
+)
 from scripts.production_qualification_inputs import current_candidate, fingerprint, revision
 
 SECRETS = {
@@ -169,7 +174,7 @@ class Worker:
         self.directory = directory
         self.pending = qualification_deadline.Interruption()
         self.ends_at = time.monotonic() + qualification_deadline.LIVE_SECONDS
-        self.cleanup_journal: OpJournal | None = None
+        self.cleanup_journal: OpJournal | ConnectJournal | None = None
         self.cleanup_cache = directory.parent.parent / "cleanup-journal-cache.json"
 
     def check_cancelled(self) -> None:
@@ -308,6 +313,7 @@ class Worker:
         )
         if isinstance(separate.journal, OpJournal):
             separate.journal.use_cache(self.cleanup_cache)
+        if isinstance(separate.journal, OpJournal | ConnectJournal):
             self.cleanup_journal = separate.journal
         separate.authority.require(now + timedelta(hours=14))
         cleanup.wait_independent_ready(
@@ -616,11 +622,18 @@ class Worker:
             )
 
     def revoke(self) -> bool:
-        with cleanup_lock(self.directory.parent):
-            return self._revoke_locked()
+        try:
+            with cleanup_lock(self.directory.parent, blocking=False):
+                return self._revoke_locked()
+        except CleanupLockBusyError as error:
+            # Another local reconciler owns the critical section. Retain this
+            # attempt as unresolved and let the persistent retry/watchdogs act.
+            self._failure(error, cleanup_failed=True)
+            self.state.update("finished", cleanup="unresolved", preserve_verified=True)
+            return False
 
-    def _revoke_locked(self) -> bool:
-        self.state.update("revoking", cleanup="pending")
+    def _revoke_locked(self) -> bool:  # noqa: PLR0912 - cache types and cleanup proofs remain explicit
+        self.state.update("revoking", cleanup="pending", preserve_verified=True)
         try:
             lifecycle = cleanup.connect_cleanup(
                 self.config.cleanup,
@@ -631,9 +644,13 @@ class Worker:
             if self.cleanup_journal is None:
                 if isinstance(lifecycle.journal, OpJournal):
                     lifecycle.journal.use_cache(self.cleanup_cache)
+                if isinstance(lifecycle.journal, OpJournal | ConnectJournal):
                     self.cleanup_journal = lifecycle.journal
             else:
-                self.cleanup_journal.refresh()
+                if isinstance(self.cleanup_journal, OpJournal):
+                    self.cleanup_journal.refresh()
+                # Connect keeps only validated immutable item details; every
+                # read still validates fresh inventories and native metadata.
                 lifecycle.journal = self.cleanup_journal
             lifecycle.request_revocation(self.run_id)
             recovered = True
