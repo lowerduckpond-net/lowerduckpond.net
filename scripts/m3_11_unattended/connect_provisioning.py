@@ -106,8 +106,7 @@ class ProvisioningJournal:
             if until is not None
             else nullcontext()
         ):
-            original = self.journal._original(record)
-            self.journal.ledger.stage(original)
+            original, _ = self.journal._stage(record)
         self.pending.append((original, time.monotonic() + self.journal.wait_seconds))
         self.flush()
         return original
