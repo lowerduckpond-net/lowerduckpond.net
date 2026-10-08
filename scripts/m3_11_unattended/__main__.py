@@ -51,7 +51,6 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
         raise LifecycleError("approved revision, targets, helper or Docker host changed")
     image = str(prepared["controller_image"])
     with admission(docker, image=image):
-        require_current_watchdogs(docker, source=source, image=image)
         # One active attempt globally, including unresolved cleanup. Never silently
         # remove or replace another controller. The daemon reservation serializes starts.
         names = (
@@ -79,6 +78,7 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
                 previous, progress, status.get("binding")
             ):
                 raise LifecycleError("an active attempt or unresolved revocation blocks new starts")
+        require_current_watchdogs(docker, source=source, image=image)
         run_id = str(uuid.uuid7())
         request = {
             "format": "lowerduckpond-m3-11-unattended-request-v1",
