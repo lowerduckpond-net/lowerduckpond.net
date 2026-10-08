@@ -127,7 +127,7 @@ class GitHub:
             raise LifecycleError("the exact lifecycle helper has not reached main")
 
     def _execution_inventory(self, query: str) -> list[dict[str, object]]:
-        """Read complete small pages without relaxing the per-response byte bound."""
+        """Retry changed counts from page one within one bounded observation."""
         rows: list[dict[str, object]] = []
         identities: set[int] = set()
         page, total = 1, None
@@ -144,9 +144,20 @@ class GitHub:
                     # Filtered GitHub inventories cap their results at 1,000.
                     # At that boundary, completeness cannot be established.
                     or not 0 <= value["total_count"] < MAX_EXECUTIONS
-                    or (total is not None and total != value["total_count"])
                 ):
-                    raise LifecycleError("cleanup execution inventory changed or is incomplete")
+                    raise LifecycleError("cleanup execution inventory is incomplete")
+                if total is not None and total != value["total_count"]:
+                    # A newly dispatched run may become visible between pages.
+                    # Discard the entire observation, never combine its rows
+                    # with a later inventory or submit the dispatch again.
+                    rows.clear()
+                    identities.clear()
+                    page, total = 1, None
+                    remaining = cast(float, self._read_deadline) - time.monotonic()
+                    if remaining <= 0:
+                        raise LifecycleError("cleanup execution inventory did not stabilize")
+                    time.sleep(min(POLL_SECONDS, remaining))
+                    continue
                 total = value["total_count"]
                 batch = value["workflow_runs"]
                 if not batch and len(rows) < total:
@@ -182,11 +193,12 @@ class GitHub:
         until = time.monotonic() + TIMEOUT_SECONDS
         empty = False
         while time.monotonic() < until:
-            current = self.active_executions()
+            with self.read_budget(until):
+                current = self.active_executions()
             if not current and empty:
                 return
             empty = not current
-            time.sleep(POLL_SECONDS)
+            time.sleep(min(POLL_SECONDS, max(0, until - time.monotonic())))
         raise LifecycleError("older cleanup executions remain pending; no inventory frozen")
 
     def variables(self) -> dict[str, str]:
@@ -484,9 +496,12 @@ class GitHub:
     ) -> dict[str, object]:
         until = time.monotonic() + TIMEOUT_SECONDS
         while time.monotonic() < until:
-            run_id = self.find_run(dispatch)
-            if run_id is not None and self.run(run_id).get("status") == "completed":
-                value = self.receipt(run_id)
+            value = None
+            with self.read_budget(until):
+                run_id = self.find_run(dispatch)
+                if run_id is not None and self.run(run_id).get("status") == "completed":
+                    value = self.receipt(run_id)
+            if value is not None:
                 if (
                     value["format"] != connect_action.RECEIPT_FORMAT
                     or value["status"] != "ready"
@@ -516,7 +531,7 @@ class GitHub:
                 else:
                     write_private(path, value)
                 return value
-            time.sleep(POLL_SECONDS)
+            time.sleep(min(POLL_SECONDS, max(0, until - time.monotonic())))
         raise LifecycleError("cleanup dispatch remains pending; retain its identity and evidence")
 
 
