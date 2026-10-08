@@ -206,6 +206,12 @@ class Admission:
         observed_at = self.now if now is None else now
         if record["kind"] not in {"run", "intent"}:
             return True
+        # ACK processing retains a newer complete snapshot before each decision.
+        # Include it in run/reservation selection as well as policy checks; a
+        # late duplicate run must not borrow the earlier unambiguous admission.
+        observed = {str(row["event_id"]): row for row in self.records}
+        observed.update(self.journal.checkpoint.records)
+        self.records = list(observed.values())
         if not self._policy_clear(observed_at):
             return False
         candidates = [
