@@ -22,6 +22,10 @@ PHASES = frozenset(
 OUTCOMES = frozenset({"passed", "failed", "interrupted", "rehearsal-interrupted"})
 
 
+class CleanupLockBusyError(LifecycleError):
+    """Another local actor owns credential reconciliation."""
+
+
 def private_directory(path: Path) -> None:
     metadata = path.lstat()
     if (
@@ -54,7 +58,7 @@ def replace_private(path: Path, value: dict[str, object]) -> None:
 
 
 @contextmanager
-def cleanup_lock(root: Path) -> Iterator[None]:
+def cleanup_lock(root: Path, *, blocking: bool = True) -> Iterator[None]:
     """Serialize local reconciliation and secret disposal across the shared run spool."""
     private_directory(root)
     private_directory(root.parent)
@@ -73,7 +77,10 @@ def cleanup_lock(root: Path) -> Iterator[None]:
             raise LifecycleError("cleanup lock has unsafe metadata")
         # Separate from the journey lock: the watchdog must be able to revoke
         # after a deadline while a controller is still finishing diagnostics.
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        except BlockingIOError:
+            raise CleanupLockBusyError("credential reconciliation is already running") from None
         yield
     finally:
         os.close(descriptor)

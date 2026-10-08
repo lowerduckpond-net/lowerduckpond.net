@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import ast
 import subprocess
+from contextlib import suppress
 from pathlib import Path
 
 from scripts.m3_11_private_inputs import write_private
 from scripts.m3_11_qualification_evidence import fields
+from scripts.m3_11_unattended.connect_api import ConnectExchangeError, exchange_diagnostic
 from scripts.m3_11_unattended.model import LifecycleError
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -45,6 +47,7 @@ SOURCES = (
             "model",
             "cleanup",
             "worker",
+            "state",
             "production",
             "inputs",
         )
@@ -64,6 +67,9 @@ def failure(error: Exception) -> dict[str, object]:
             category = label
             break
     value: dict[str, object] = {"category": category, "origin": None}
+    if isinstance(error, ConnectExchangeError):
+        with suppress(RuntimeError, ValueError, TypeError, KeyError):
+            value["exchange"] = exchange_diagnostic(error.exchange)
     try:
         paths = {str((ROOT / name).resolve()): name for name in SOURCES}
         frame = error.__traceback__
@@ -141,7 +147,12 @@ def verified_failure(
         or value["stage"] not in stages
     ):
         raise LifecycleError("failure diagnostic differs from its bound attempt")
-    detail = fields(value["failure"], {"category", "origin"})
+    detail_fields = {"category", "origin"}
+    if isinstance(value["failure"], dict) and "exchange" in value["failure"]:
+        detail_fields.add("exchange")
+    detail = fields(value["failure"], detail_fields)
+    if "exchange" in detail:
+        exchange_diagnostic(detail["exchange"])
     if not isinstance(detail["category"], str) or detail["category"] not in {
         "lifecycle",
         "input",

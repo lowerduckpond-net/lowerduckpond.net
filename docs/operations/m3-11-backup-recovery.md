@@ -364,9 +364,11 @@ The initial run-reservation acknowledgement may use the time remaining in that
 same ten-minute window, also bounded by the controller deadline. Cleanup and
 replica delivery can consume most of a two-minute wait before any credential is
 issued. Canonicalization, staging and observation consume one fixed budget;
-retained run timestamps cannot renew it. Only typed snapshot-read expiry can
-retry observation, with each complete snapshot still bounded to sixty seconds.
-Staging and provider calls are never replayed. A late acknowledgement leaves less
+retained run timestamps cannot renew it. Typed snapshot-read expiry can retry
+observation during initial canonicalization, the first write's readback, and
+subsequent acknowledgement polling. A timed-out GET can repeat within that same
+sixty-second observation cap; it cannot reset the cap. Journal POSTs and provider
+calls are never replayed. A late acknowledgement leaves less
 time to provision and cannot reopen the original cutoff. The independent
 two-minute freshness gate remains unchanged. Witness availability through the
 reserved window does not guarantee that a slow attempt will finish provisioning.
@@ -490,7 +492,12 @@ accepting readiness. Malformed records and adverse cleanup receipts still fail.
 Connect GETs retry hostname-resolution failures at most twice, including short
 backoff within the original request deadline. HTTP errors, invalid responses and
 POSTs are not retried. Exhausted resolution failures retain a distinct sanitized
-source location without exporting hostnames, credentials or exception text.
+transport outcome without exporting hostnames, credentials or exception text.
+Transport diagnostics include only the method, route category, outcome, HTTP
+status when available, elapsed time and effective time budget. A failed initial
+journal POST retains its first diagnostic beside its immutable stage intent, so
+later readback failure cannot erase the difference between a rejected request and
+a lost response. That diagnostic never proves whether an uncertain POST committed.
 Controller journal reads and acknowledgement polling use the same bounded
 snapshot stabilization, including reads before a write. Retries never repeat a
 write or provider creation. Both inventory passes validate immutable metadata,
@@ -498,6 +505,8 @@ and an event already read cannot disappear from the next accepted snapshot.
 Validated item details survive an interrupted or unstable scan in that reader's
 memory. A retry compares each retained item against current native metadata and
 still requires the complete stable inventory before returning any records.
+The controller retains its cleanup reader across retries too; it must still
+refresh complete inventories and validate native metadata on every observation.
 Cold reads use at most four concurrent item-detail GETs, each within its own
 remaining process budget. Inventory reads and writes remain sequential, and
 failed or cancelled scans stop queued reads and join active exchanges before
@@ -737,6 +746,10 @@ death releases the lock. An authentication failure also records an explicit
 obligation whose event ID must be covered by a denied-authentication proof;
 a concurrent independent readback without the secret cannot clear it. New proof
 coverage does not depend on the actors' clock ordering.
+Local reconciliation acquires this lock without blocking. A busy controller
+records unresolved cleanup for its persistent retry path; a waiting watchdog
+continues local death and deadline checks each minute. The lock holder's network
+work remains serialized, and independent GitHub cleanup does not use this lock.
 
 Revocation deletes credentials only. It never removes failed-run evidence,
 containers, backups, DNS records or remote data. Existing ownership and explicit

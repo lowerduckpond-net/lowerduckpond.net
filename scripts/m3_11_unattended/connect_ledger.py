@@ -20,7 +20,13 @@ from typing import cast
 
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
-from scripts.m3_11_unattended.connect_api import TIMEOUT_SECONDS, Connect
+from scripts.m3_11_unattended.connect_api import (
+    TIMEOUT_SECONDS,
+    Connect,
+    ConnectExchangeError,
+    ConnectTimeoutError,
+    exchange_diagnostic,
+)
 from scripts.m3_11_unattended.connect_auth import identity as account_identity
 from scripts.m3_11_unattended.connect_checkpoint import Stored
 from scripts.m3_11_unattended.journal import MAX_EVENTS, TAG, OpJournal, _note_content, validate
@@ -133,7 +139,11 @@ class ConnectLedger:
         if remaining <= 0:
             raise ReadbackExpiredError("Connect journal readback deadline elapsed")
         with self.client.timeout_budget(min(TIMEOUT_SECONDS, remaining)):
-            yield
+            try:
+                yield
+            except ConnectTimeoutError as error:
+                error.exchange["caller_deadline_expired"] = time.monotonic() >= self._read_deadline
+                raise
         self.check_cancelled()
         if time.monotonic() > self._read_deadline:
             raise ReadbackExpiredError("Connect journal readback deadline elapsed")
@@ -313,7 +323,9 @@ class ConnectLedger:
             raise LifecycleError("Connect has no complete current journal observation")
         return list(self._observed_records)
 
-    def _readback(self, record: dict[str, object]) -> None:
+    def _readback(
+        self, record: dict[str, object], *, publication_error: LifecycleError | None = None
+    ) -> None:
         """Poll only reads after a retained POST; never resend or weaken the snapshot."""
         until = time.monotonic() + self.readback_seconds
         previous = self._read_deadline
@@ -322,9 +334,56 @@ class ConnectLedger:
         # A zero wait is the explicit single-read mode used by provider doubles.
         self._read_deadline = until if self.readback_seconds else previous
         try:
-            self._await_readback(record, until=until)
+            try:
+                self._await_readback(record, until=until)
+            except LifecycleError as error:
+                publication = (
+                    publication_error.exchange
+                    if isinstance(publication_error, ConnectExchangeError)
+                    else self._publication(record)
+                )
+                if publication is not None:
+                    # Keep both the first POST outcome and the readback's own
+                    # cause. A sanitized proxy avoids overwriting the original
+                    # transport exception or retaining response contents.
+                    detail = ConnectExchangeError(publication)
+                    detail.__cause__ = error.__cause__ or error.__context__
+                    raise error from detail
+                if (
+                    publication_error is not None
+                    and error.__cause__ is None
+                    and error.__context__ is None
+                ):
+                    raise error from publication_error
+                raise
         finally:
             self._read_deadline = previous
+
+    def _publication(
+        self, record: dict[str, object], diagnostic: dict[str, object] | None = None
+    ) -> dict[str, object] | None:
+        """Retain the first POST outcome without changing the journal protocol."""
+        path = self.spool / (identity(record["event_id"]) + ".exchange.json")
+        try:
+            if diagnostic is not None and not path.exists():
+                write_private(
+                    path,
+                    {
+                        "format": "lowerduckpond-connect-publication-v1",
+                        "event_sha256": digest(record),
+                        "exchange": exchange_diagnostic(diagnostic),
+                    },
+                )
+            if path.exists():
+                value = fields(read_private(path), {"format", "event_sha256", "exchange"})
+                if value["format"] != "lowerduckpond-connect-publication-v1" or value[
+                    "event_sha256"
+                ] != digest(record):
+                    return None
+                return exchange_diagnostic(value["exchange"])
+        except OSError, ValueError, TypeError, LifecycleError:
+            pass  # Diagnostic failure cannot suppress readback or credential cleanup.
+        return None
 
     def stable_records(self) -> list[dict[str, object]]:
         """Wait only for snapshot stability; preserve strict records() for recovery."""
@@ -333,17 +392,23 @@ class ConnectLedger:
         until = time.monotonic() + self.readback_seconds
         if self._read_deadline is not None:
             until = min(until, self._read_deadline)
+        last_observation: LifecycleError | None = None
         with self.read_budget(deadline=until, check_cancelled=lambda: None):
             while True:
                 self.check_cancelled()
                 if time.monotonic() >= until:
-                    raise ReadbackExpiredError("Connect snapshot observation deadline elapsed")
+                    raise ReadbackExpiredError(
+                        "Connect snapshot observation deadline elapsed"
+                    ) from last_observation
                 try:
                     observed = self.records()
-                except SnapshotChangedError:
+                except (SnapshotChangedError, ConnectTimeoutError) as error:
+                    last_observation = error
                     remaining = until - time.monotonic()
                     if remaining <= 0:
-                        raise
+                        raise ReadbackExpiredError(
+                            "Connect snapshot observation deadline elapsed"
+                        ) from error
                     time.sleep(min(READBACK_POLL_SECONDS, remaining))
                     continue
                 self.check_cancelled()
@@ -353,12 +418,14 @@ class ConnectLedger:
 
     def _await_readback(self, record: dict[str, object], *, until: float) -> None:
         first = True
+        last_observation: LifecycleError | None = None
         while first or time.monotonic() < until:
             first = False
             self.check_cancelled()
             try:
                 matches = [row for row in self.records() if row["event_id"] == record["event_id"]]
-            except SnapshotChangedError:
+            except (SnapshotChangedError, ConnectTimeoutError) as error:
+                last_observation = error
                 matches = []
             if matches:
                 if matches != [record]:
@@ -370,9 +437,9 @@ class ConnectLedger:
             if remaining <= 0:
                 break
             time.sleep(min(READBACK_POLL_SECONDS, remaining))
-        raise LifecycleError(
+        raise ReadbackExpiredError(
             "Connect creation remains uncertain after readback; no duplicate submitted"
-        )
+        ) from last_observation
 
     def stage(
         self,
@@ -417,6 +484,7 @@ class ConnectLedger:
             # Used only by the explicit provenance ceremony. Admission remains
             # disabled unless native readback proves this forged field was ignored.
             item["lastEditedBy"] = account_identity(claimed_author)
+        publication_error: LifecycleError | None = None
         try:
             # A grouped creation write may share an earlier record's deadline.
             # Retain uncertainty if this bounded POST times out; never resubmit.
@@ -428,7 +496,8 @@ class ConnectLedger:
                 if admit is not None and not admit():
                     return False
                 response = self.client.request("POST", "/v1/vaults/" + self.vault + "/items", item)
-        except LifecycleError:
+        except LifecycleError as error:
+            publication_error = error
             response = None
         if (
             response is not None
@@ -438,7 +507,11 @@ class ConnectLedger:
             returned = _item_identity(response.body.get("id"))
             # A returned ID is retained immediately even when later inspection fails.
             write_private(self.spool / (event_id + ".returned.json"), {"item_id": returned})
-        self._readback(record)
+        if response is not None and response.exchange is not None:
+            self._publication(record, response.exchange)
+        elif isinstance(publication_error, ConnectExchangeError):
+            self._publication(record, publication_error.exchange)
+        self._readback(record, publication_error=publication_error)
         return True
 
     def confirmed(  # noqa: PLR0913 - native identities, lineage and observation remain explicit

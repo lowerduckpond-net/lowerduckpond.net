@@ -188,6 +188,11 @@ snapshot, or treats cache visibility as independent persistence.
 A Connect GET may repeat hostname resolution twice within its original process
 deadline; the retry does not apply to HTTP errors, invalid responses or POSTs.
 This preserves the single-submission boundary during intermittent resolver failures.
+Typed transport timeouts may repeat GET observations within the same sixty-second
+snapshot/readback cap. Run-reservation recovery includes initial canonicalization
+and post-publication readback, while keeping the original ten-minute deadline.
+The first POST's allowlisted transport diagnostic survives later readback failures;
+it never establishes publication, permits replay, or substitutes for an independent ACK.
 A reviewed pre-discovery helper correction preserves the original initializing marker's
 bindings, probe identities, spool and inventory in an immutable private upgrade
 record; any started discovery or credential intent prevents that migration.
@@ -239,6 +244,10 @@ receive a renewed window. Typed snapshot-budget expiry may retry observation
 only, retaining the sixty-second bound on each complete snapshot. Credential
 events keep their separate 120-second confirmation budgets. No acknowledgement
 extends provider submission, credential lifetime or qualification deadlines.
+Local cleanup actors use nonblocking lock acquisition so waiting watchdogs can
+continue process/deadline checks. Contention remains unresolved until the owner or
+a later actor verifies cleanup. Retaining a controller's validated Connect item
+details across cleanup retries does not remove fresh inventory and metadata checks.
 
 A completed cleanup sweep may service an already reserved attempt before publishing
 its informational heartbeat. This ordering preserves all provider, authority,

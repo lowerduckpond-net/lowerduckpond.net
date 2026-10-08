@@ -14,12 +14,13 @@ import urllib.request
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.client import HTTPException
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended.http import NoRedirect
 from scripts.m3_11_unattended.journal import _note_content
 from scripts.m3_11_unattended.model import LifecycleError
@@ -27,7 +28,72 @@ from scripts.m3_11_unattended.model import LifecycleError
 MAX_BYTES = 16 * 1024 * 1024
 TIMEOUT_SECONDS = 30
 DNS_READ_ATTEMPTS = 3
+MIN_HTTP_STATUS = 100
+MAX_HTTP_STATUS = 599
 IDENTITY = re.compile(r"[a-z0-9]{26}")
+
+
+def exchange_diagnostic(raw: object) -> dict[str, object]:
+    """Closed transport metadata; no URL, identifier, body or exception text."""
+    value = fields(
+        raw,
+        {
+            "method",
+            "operation",
+            "outcome",
+            "timeout_ms",
+            "elapsed_ms",
+            "status",
+            "caller_limited",
+            "caller_deadline_expired",
+        },
+    )
+    if (
+        value["method"] not in {"GET", "POST"}
+        or value["operation"] not in {"vault-list", "vault-read", "item-list", "item-read"}
+        or value["outcome"]
+        not in {
+            "timeout",
+            "process",
+            "bound",
+            "response",
+            "dns",
+            "operation",
+            "http-response",
+        }
+        or type(value["timeout_ms"]) is not int
+        or not 1 <= value["timeout_ms"] <= TIMEOUT_SECONDS * 1000
+        or type(value["elapsed_ms"]) is not int
+        or not 0 <= value["elapsed_ms"] <= 2**53 - 1
+        or type(value["caller_limited"]) is not bool
+        or type(value["caller_deadline_expired"]) is not bool
+        or (
+            value["status"] is not None
+            and (
+                type(value["status"]) is not int
+                or not MIN_HTTP_STATUS <= value["status"] <= MAX_HTTP_STATUS
+            )
+        )
+        or (value["outcome"] == "http-response") != (value["status"] is not None)
+    ):
+        raise LifecycleError("Connect transport diagnostic is invalid")
+    return value
+
+
+class ConnectExchangeError(LifecycleError):
+    """An exchange failed with only allowlisted diagnostics retained."""
+
+    def __init__(self, diagnostic: dict[str, object]) -> None:
+        self.exchange = exchange_diagnostic(diagnostic)
+        message = {
+            "bound": "Connect response exceeds its bound",
+            "dns": "Connect DNS lookup failed; outcome remains unresolved",
+        }.get(str(self.exchange["outcome"]), "Connect operation failed; outcome remains unresolved")
+        super().__init__(message)
+
+
+class ConnectTimeoutError(ConnectExchangeError):
+    """A bounded exchange timed out; a POST may already have committed."""
 
 
 def origin(value: str, *, local_cleanup: bool = False) -> str:
@@ -70,6 +136,7 @@ def _object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 class Response:
     status: int
     body: object
+    exchange: dict[str, object] | None = field(default=None, compare=False, repr=False)
 
 
 class Connect:
@@ -109,6 +176,29 @@ class Connect:
         payload = None if body is None else json.dumps(body).encode()
         if payload is not None and len(payload) > MAX_BYTES:
             raise LifecycleError("Connect request exceeds its bound")
+        started = time.monotonic()
+        timeout = self._request_timeout
+
+        def diagnostic(outcome: str, status: int | None = None) -> dict[str, object]:
+            return exchange_diagnostic(
+                {
+                    "method": method,
+                    "operation": "vault-list"
+                    if path == "/v1/vaults"
+                    else "item-list"
+                    if path.endswith("/items")
+                    else "item-read"
+                    if "/items/" in path
+                    else "vault-read",
+                    "outcome": outcome,
+                    "timeout_ms": max(1, round(timeout * 1000)),
+                    "elapsed_ms": max(0, round((time.monotonic() - started) * 1000)),
+                    "status": status,
+                    "caller_limited": timeout < TIMEOUT_SECONDS,
+                    "caller_deadline_expired": False,
+                }
+            )
+
         try:
             # A socket timeout only bounds inactivity. A separate process puts
             # one deadline around DNS, TLS, headers, trickling bodies and JSON.
@@ -129,26 +219,40 @@ class Connect:
                 stderr=subprocess.DEVNULL,
                 env={"PYTHONDONTWRITEBYTECODE": "1"},
                 cwd=Path(__file__).resolve().parents[2],
-                timeout=self._request_timeout,
+                timeout=timeout,
                 check=False,
             )
+        except subprocess.TimeoutExpired:
+            raise ConnectTimeoutError(diagnostic("timeout")) from None
         except OSError, subprocess.SubprocessError:
-            raise LifecycleError("Connect operation failed; outcome remains unresolved") from None
+            raise ConnectExchangeError(diagnostic("process")) from None
         if result.returncode or len(result.stdout) > MAX_BYTES + 1024:
-            raise LifecycleError("Connect operation failed; outcome remains unresolved") from None
+            raise ConnectExchangeError(diagnostic("process")) from None
         try:
             value = json.loads(result.stdout, object_pairs_hook=_object)
         except ValueError, UnicodeError:
-            raise LifecycleError("Connect operation failed; outcome remains unresolved") from None
+            raise ConnectExchangeError(diagnostic("response")) from None
         if not isinstance(value, dict):
-            raise LifecycleError("Connect operation failed; outcome remains unresolved")
-        if value.get("error") == "bound":
-            raise LifecycleError("Connect response exceeds its bound")
-        if value == {"error": "dns"}:
-            raise LifecycleError("Connect DNS lookup failed; outcome remains unresolved")
-        if set(value) != {"status", "body"} or type(value["status"]) is not int:
-            raise LifecycleError("Connect operation failed; outcome remains unresolved")
-        return Response(value["status"], value["body"])
+            raise ConnectExchangeError(diagnostic("response"))
+        if set(value) == {"error"} and value["error"] in {"bound", "dns", "operation", "response"}:
+            raise ConnectExchangeError(diagnostic(value["error"]))
+        if (
+            set(value) != {"status", "body"}
+            or type(value["status"]) is not int
+            or not MIN_HTTP_STATUS <= value["status"] <= MAX_HTTP_STATUS
+        ):
+            raise ConnectExchangeError(diagnostic("response"))
+        if value["status"] not in {
+            HTTPStatus.OK,
+            HTTPStatus.CREATED,
+            HTTPStatus.UNAUTHORIZED,
+            HTTPStatus.FORBIDDEN,
+            HTTPStatus.NOT_FOUND,
+        }:
+            raise ConnectExchangeError(diagnostic("http-response", value["status"]))
+        return Response(
+            value["status"], value["body"], diagnostic("http-response", value["status"])
+        )
 
     @staticmethod
     def _identity(value: str) -> str:
@@ -257,9 +361,9 @@ def _exchange(value: dict[str, object]) -> dict[str, object]:  # noqa: PLR0911 -
         except urllib.error.HTTPError as error:
             status = error.code
             error.close()
-            if status in {HTTPStatus.UNAUTHORIZED, HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND}:
-                return {"status": status, "body": None}
-            return {"error": "operation"}
+            # Status is useful diagnostic evidence; response bodies and headers
+            # are never needed for a rejected exchange and may contain secrets.
+            return {"status": status, "body": None}
         except urllib.error.URLError as error:
             if not isinstance(error.reason, socket.gaierror):
                 return {"error": "operation"}
