@@ -114,11 +114,19 @@ class Admission:
         return matches[0] if matches else None
 
     @measure("credential-reservation")
-    def reserve(
-        self, expected: str, authority: Authority, *, require_clear: Callable[[], None]
+    def reserve(  # noqa: PLR0912 - retain distinct recovery, clock and capacity gates
+        self,
+        expected: str,
+        authority: Authority,
+        *,
+        require_clear: Callable[[], None],
+        clock: Callable[[], datetime] | None = None,
     ) -> datetime | None:
         """Return the original cutoff only after the exact reservation is durable."""
-        if not self._policy_clear(self.now):
+        # Construction reads the journal. A run can arrive during that read;
+        # compare it with the observation time, not the pre-read timestamp.
+        observed_at = self.now if clock is None else clock()
+        if not self._policy_clear(observed_at):
             raise LifecycleError("diagnostic policy restoration blocks creation admission")
         if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
             raise LifecycleError("Connect witness dispatch needs an exact request digest")
@@ -151,19 +159,27 @@ class Admission:
             self.journal.persist(previous)
             self.records = self.journal.records()
             return cutoff  # Restart keeps the original capacity reservation and window.
-        if (
-            not self.journal.cache_complete
-            or not self.now - timedelta(minutes=2) <= instant(record["recorded_at"]) <= self.now
-            or self.journal.capacity() < MINIMUM_START_CAPACITY
-        ):
+        if not self.journal.cache_complete:
             raise LifecycleError("Connect attempt lacks fresh independent capacity")
-        authority.require(self.now + WINDOW + LIFETIME)
+        if not observed_at - timedelta(minutes=2) <= instant(record["recorded_at"]) <= observed_at:
+            raise LifecycleError("Connect attempt lacks fresh independent capacity")
+        if self.journal.capacity() < MINIMUM_START_CAPACITY:
+            raise LifecycleError("Connect attempt lacks fresh independent capacity")
+        authority.require(observed_at + WINDOW + LIFETIME)
         require_clear()
         # The clearance callback refreshes independent state; a diagnostic
         # obligation may have arrived after this Admission object was built.
         self.records = self.journal.records()
-        if not self._policy_clear(self.now):
+        if not self.journal.cache_complete:
+            raise LifecycleError("Connect reservation lost complete independent recovery")
+        if not self._policy_clear(self.now if clock is None else clock()):
             raise LifecycleError("diagnostic policy changed during creation admission")
+        # Capacity and clearance perform I/O too. They consume the original
+        # freshness/window budget; never issue a fresh timestamp for this run.
+        checked_at = observed_at if clock is None else clock()
+        if not checked_at - timedelta(minutes=2) <= instant(record["recorded_at"]) <= checked_at:
+            raise LifecycleError("Connect reservation request expired during validation")
+        authority.require(checked_at + WINDOW + LIFETIME)
         # Anchor both timing and event identity to the immutable dispatched run.
         # Even a late POST after ephemeral-spool loss produces identical copies,
         # rather than another window or an ambiguous logical decision.
