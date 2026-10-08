@@ -296,11 +296,11 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
             observed = journal.admission_records()
         except LifecycleError:
             return False
-        # Historical validation can consume time. Sample the admission clock
-        # last, including when stage repeats this predicate after its own read.
+        # Historical and admission validation can consume time. Admission samples
+        # this clock last, also when stage repeats the guard after its own read.
         return checked.creation_clear(
             observed, run_id=identity(record["run_id"])
-        ) and decision.allow(record, now=datetime.now(UTC))
+        ) and decision.allow(record, clock=lambda: datetime.now(UTC))
 
     def completed_sweep(completed: dict[str, object]) -> None:
         if (
