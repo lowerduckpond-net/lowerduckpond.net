@@ -302,21 +302,48 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
             observed, run_id=identity(record["run_id"])
         ) and decision.allow(record, clock=lambda: datetime.now(UTC))
 
+    def reserve_pending(decision: Admission) -> datetime | None:
+        nonlocal until, creation_cutoff
+        if connected is None or lifecycle is None:
+            raise LifecycleError("creation reservation needs verified cleanup authority")
+        reserved_until = decision.reserve(
+            request_sha256,
+            connected.authority,
+            require_clear=partial(require_clear, lifecycle),
+            clock=lambda: datetime.now(UTC),
+        )
+        if reserved_until is not None and WITNESS_SECONDS:
+            if creation_cutoff is None:
+                # Readiness and preflight consume the initial wait. Keep the
+                # admitted run's immutable clock and the original bounded drain.
+                creation_cutoff = reserved_until
+                remaining = max(
+                    0.0,
+                    (reserved_until + CREATION_SETTLE - datetime.now(UTC)).total_seconds(),
+                )
+                until = max(until, min(creation_limit, time.monotonic() + remaining))
+            elif creation_cutoff != reserved_until:
+                raise LifecycleError("creation witness reservation cutoff changed")
+        return reserved_until
+
     def completed_sweep(completed: dict[str, object]) -> None:
         if (
             not request_sha256
-            or creation_cutoff is None
-            or datetime.now(UTC) >= creation_cutoff
+            or (creation_cutoff is not None and datetime.now(UTC) >= creation_cutoff)
             or connected is None
+            or lifecycle is None
             or completed.get("status") != "ready"
         ):
             return
-        # This path cannot reserve capacity or ACK a new run. All safety checks
-        # of this sweep, including checkpoint readiness, have finished. Keep
-        # ordinary receipt publication/cleanup alive if ACK delivery fails.
+        # All sweep gates, including checkpoint readiness, have finished. Run
+        # the full reservation checks before the informational heartbeat can
+        # consume the request's freshness window. Failures still permit cleanup
+        # and receipt publication; no partial sweep can admit creation.
         with suppress(LifecycleError, OSError, ValueError):
             connected.authority.require(datetime.now(UTC) + LIFETIME)
             decision = Admission(journal, targets=targets, now=datetime.now(UTC))
+            if reserve_pending(decision) is None:
+                return
             selected = [
                 row
                 for row in decision.records
@@ -329,10 +356,9 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
 
             def allow_reserved(record: dict[str, object]) -> bool:
                 return (
-                    record["kind"] != "run"
-                    and (record["kind"] != "intent" or record["run_id"] == selected[0]["run_id"])
-                    and allow_after_sweep(record, decision, lifecycle, ready=True)
-                )
+                    record["kind"] not in {"run", "intent"}
+                    or record["run_id"] == selected[0]["run_id"]
+                ) and allow_after_sweep(record, decision, lifecycle, ready=True)
 
             journal.acknowledge(run_id=run_id, attempt=attempt, allow=allow_reserved)
 
@@ -374,26 +400,7 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
             # reservation invokes the full reconciliation gate before creation.
             with journal.reconciliation():
                 admission = Admission(journal, targets=targets, now=datetime.now(UTC))
-                reserved_until = admission.reserve(
-                    request_sha256,
-                    connected.authority,
-                    require_clear=partial(require_clear, lifecycle),
-                    clock=lambda: datetime.now(UTC),
-                )
-                if reserved_until is not None and WITNESS_SECONDS:
-                    if creation_cutoff is None:
-                        # Readiness and controller preflight consume the initial
-                        # wait. Witness the admitted window from its immutable
-                        # run clock, with one bounded drain for returned IDs and
-                        # cleanup. This never reopens provider CREATE admission.
-                        creation_cutoff = reserved_until
-                        remaining = max(
-                            0.0,
-                            (reserved_until + CREATION_SETTLE - datetime.now(UTC)).total_seconds(),
-                        )
-                        until = max(until, min(creation_limit, time.monotonic() + remaining))
-                    elif creation_cutoff != reserved_until:
-                        raise LifecycleError("creation witness reservation cutoff changed")
+                reserve_pending(admission)
             if not announced and receipt.get("status") == "ready":
                 journal.append(
                     event(

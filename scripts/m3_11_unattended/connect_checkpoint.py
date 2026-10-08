@@ -8,9 +8,10 @@ Only non-secret journal records enter the encrypted payload, never credentials.
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended.journal import MAX_EVENTS, validate
@@ -47,6 +48,34 @@ class Store(Protocol):
 
     def create(self, document: dict[str, object]) -> Stored:
         """Retain uncertain writes; do not overwrite or delete earlier checkpoints."""
+        ...
+
+
+@dataclass(frozen=True)
+class Publication:
+    """Exact plaintext and complete registry readback performed during publication."""
+
+    stored: Stored
+    history: tuple[Stored, ...]
+
+
+@runtime_checkable
+class VerifiedStore(Store, Protocol):
+    def publish(self, document: dict[str, object]) -> Publication:
+        """Return only after verifying this payload and its exact registry append."""
+        ...
+
+
+@runtime_checkable
+class RecoveredStore(VerifiedStore, Protocol):
+    def discard_recovered(self) -> None:
+        """Discard the observation on every persistence exit, including no-op/error."""
+        ...
+
+    def publish_recovered(
+        self, document: dict[str, object], *, history: tuple[Stored, ...]
+    ) -> Publication:
+        """Consume this call's recovered history; verify the full append after upload."""
         ...
 
 
@@ -87,9 +116,11 @@ class Checkpoint:
         self.history: tuple[Stored, ...] = ()
         self.observed_history: tuple[Stored, ...] = ()
         self.records: dict[str, dict[str, object]] = {}
+        self.verified_at: float | None = None
 
     @measure("checkpoint-recovery")
     def restore(self) -> None:
+        self.verified_at = None
         history = self.store.lineage()
         if not history:
             if not self.initialize or self.genesis is not None or self.observed_history:
@@ -135,6 +166,7 @@ class Checkpoint:
         self.head, self.sequence, self.records = latest, sequence, records
         self.history = history
         self.observed_history = history
+        self.verified_at = time.monotonic()
 
     def _require_extension(self, records: dict[str, dict[str, object]]) -> None:
         expected = {**self.initial, **{key: digest(value) for key, value in self.records.items()}}
@@ -146,10 +178,20 @@ class Checkpoint:
     @measure("checkpoint-persistence")
     def persist(self, records: list[dict[str, object]]) -> Stored:
         """Publish and verify the recoverable records before a caller may emit an ACK."""
+        try:
+            return self._persist(records)
+        finally:
+            if isinstance(self.store, RecoveredStore):
+                self.store.discard_recovered()
+
+    def _persist(self, records: list[dict[str, object]]) -> Stored:
+        self.verified_at = None
         selected = _records(records)
         self.restore()
+        verified, self.verified_at = self.verified_at, None
         self._require_extension(selected)
         if self.head is not None and selected == self.records:
+            self.verified_at = verified
             return self.head
         document: dict[str, object] = {
             "format": FORMAT,
@@ -165,19 +207,31 @@ class Checkpoint:
         }
         # If the reply is lost, a later restore must find this immutable write.
         # Do not advance the in-memory head or acknowledge on a timeout.
-        created = self.store.create(document)
+        publication: Publication | None
+        if self.history and isinstance(self.store, RecoveredStore):
+            publication = self.store.publish_recovered(document, history=self.history)
+        else:
+            publication = (
+                self.store.publish(document) if isinstance(self.store, VerifiedStore) else None
+            )
+        created = publication.stored if publication is not None else self.store.create(document)
         if created.sha256 != digest(document) or any(
             created.identity == item.identity for item in self.history
         ):
             raise LifecycleError("independent checkpoint creation is unverified")
         history = (*self.history, created)
-        if self.store.read(created) != document or self.store.lineage() != history:
+        if publication is not None:
+            verified = publication.history == history
+        else:
+            verified = self.store.read(created) == document and self.store.lineage() == history
+        if not verified:
             raise LifecycleError("independent checkpoint creation has no exact registry readback")
         self.head, self.sequence, self.records = created, self.sequence + 1, selected
         self.history = history
         self.observed_history = history
         if self.genesis is None:
             self.genesis = created
+        self.verified_at = time.monotonic()
         return created
 
     def merge(self, records: list[dict[str, object]]) -> list[dict[str, object]]:

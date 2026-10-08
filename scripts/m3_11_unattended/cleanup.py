@@ -219,7 +219,8 @@ def sweep(  # noqa: PLR0912, PLR0913 - independent restoration never suppresses 
     if before_receipt is not None:
         # Provider, restoration, authority and independent checkpoint checks are
         # complete. Publishing their informational heartbeat can be slow; let
-        # the witness service an existing reservation first, never mid-sweep.
+        # the witness service admission first, never mid-sweep. A new reservation
+        # still performs its full fresh capacity, authority and clearance checks.
         before_receipt(receipt)
     prior = [
         record["payload"]

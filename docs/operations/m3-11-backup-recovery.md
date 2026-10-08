@@ -384,12 +384,25 @@ During cleanup, the independent witness may reuse a complete Connect observation
 and verified checkpoint for five seconds when persisting an identical historical
 record. New IDs and proofs still require full persistence, and readiness and ACK
 publication always refresh the complete registry, recoverable artifact and native
-Connect observation. Writes, errors and expired observations invalidate reuse.
+Connect observation. A completed ACK publication can supply a new cleanup
+observation only when its final native snapshot exactly matches the verified
+checkpoint's non-ACK records. Its five seconds start at checkpoint verification,
+not at the end of ACK delivery. Errors, later obligations and expiry require
+ordinary recovery. Admission and readiness still perform their fresh checks.
 An ACK poll that finds no eligible unconfirmed event and exactly the already
 retained non-ACK obligations returns without rereading the registry or artifact.
 It emits no ACK or readiness claim. New obligations still take the full retention
 path even when their creation ACK is prohibited. Admission and actual ACK
 publication retain their fresh independent recovery checks.
+
+Immediately after recovering the latest encrypted checkpoint, publication may
+consume that exact complete registry observation once within five seconds of the
+registry read. Payload recovery and workflow checks consume the same window. This
+removes only the duplicate scan before upload. A slow workflow-authority check
+uses the ordinary scan; failed recovery cannot supply the observation. The fresh
+workflow fence, parent binding, uploaded plaintext verification, complete registry
+comparison after upload and exact append confirmation after registration remain
+required. Standalone publication and genesis use the ordinary scans.
 
 Historical Cloudflare token readbacks run in waves of at most four exact-ID GETs.
 Each wave finishes before journal progress, the final complete provider inventory,
@@ -423,11 +436,15 @@ blocks run and creation-intent acknowledgements; cleanup ACKs continue.
 Other clearance checks still perform a fresh sweep, including historical provider
 inventory checks that detect late creations.
 
-For an already reserved attempt, a completed sweep services eligible intent ACKs
-before publishing its informational heartbeat. Provider health, policy restoration,
-authority and recoverable checkpoint checks must all have finished successfully;
-the unfinished-sweep callback still handles only cleanup and returned-ID records.
-This earlier opportunity cannot reserve another run or extend either deadline.
+After a complete successful sweep, the witness services the dispatched run's
+reservation and eligible creation ACKs before publishing its informational
+heartbeat. Provider health, policy restoration, authority and recoverable
+checkpoint checks must all have finished successfully. A new reservation still
+checks fresh capacity, exact obligation coverage and the original two-minute
+request freshness. This ordering avoids spending that window on receipt
+publication and then repeating cleanup. The unfinished-sweep callback still
+handles only cleanup and returned-ID records; neither opportunity can admit an
+unrelated run or extend a deadline.
 Both the earlier opportunity and ordinary ACK processing revalidate completed
 cleanup coverage against the latest complete observation, including later reads
 during ACK canonicalization and staging. An incomplete read blocks creation;
@@ -443,6 +460,26 @@ including reservation, scope discovery, activity probes and concurrent cleanup.
 An individual event's 120-second ACK margin does not establish remaining time to
 create every credential. Provider doubles and timing profiles remain diagnostic;
 successful live rehearsal and full qualification are separate required outcomes.
+
+Credential timing records distinguish each role and the inventory, intent
+persistence, provider creation and returned-ID persistence stages. They contain
+only fixed labels and monotonic durations. An elapsed creation window rejects a
+new role before another intent is opened; an intent already awaiting persistence
+still retains its original pre-provider abort for independent reconciliation.
+
+Canonicalization and staging may consume the same complete Connect observation
+once, within five seconds and before further ledger I/O. Post-write readback and
+the final admission check remain mandatory. A no-op ACK poll may preserve an
+unchanged cleanup observation only until its original expiry. Checkpoint
+publication can return its exact payload and registry verification to the caller,
+avoiding duplicate immediate reads; generic stores still require separate readback.
+Fresh admission also avoids persisting an identical checkpoint twice: it must
+first recover the complete native history and artifact, and match every non-ACK
+record in a complete Connect snapshot within the same five-second bound.
+
+When the persistent watchdog completes revocation, sanitized evidence includes
+its retained receipts and complete local intent coverage. The qualification
+outcome remains separate from successful credential cleanup.
 
 Each provider HTTP exchange has a thirty-second total process deadline, including
 DNS, TLS, response headers and a slowly arriving body. Credentials cross private
