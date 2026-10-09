@@ -647,6 +647,52 @@ and native acknowledgement are required first. Actual independent Connect startu
 the live credential rehearsal, complete M3.11 and verified revocation still need
 operational evidence; local doubles do not establish those outcomes.
 
+### Authenticated public image downloads
+
+GitHub runners do not inherit a workstation's Docker Hub login. CI's five
+Docker-using job definitions and independent Connect cleanup support an optional
+`DOCKERHUB_USERNAME` variable and `DOCKERHUB_PUBLIC_READ_TOKEN` secret. Use a
+dedicated Docker Hub token with **Repo Public Read-only** permission and an
+explicit native expiry that covers the approved operation. This grants no private
+image access or push/delete permission. Additional credential delivery requires
+operator authorization; it does not extend the approved qualification start window.
+
+Save that token in a dedicated 1Password item. On the **secure workstation**, in
+normal Bash outside the production shell, use the reviewed clean checkout and
+normal `op` and `gh` logins:
+
+```console
+mise exec --locked -- uv run --no-sync --frozen python -m scripts.m3_11_unattended.registry_setup \
+  --revision FULL_REVIEWED_COMMIT_SHA --username DOCKER_ID \
+  --token-reference op://VAULT/ITEM/FIELD --expires-at NATIVE_UTC_EXPIRY \
+  --confirm-public-read-only
+```
+
+Add `--apply` after reviewing the destination. The helper reads the token through
+the operator's normal 1Password login, verifies Docker Hub authentication using
+an automatically removed private configuration, and pipes the token to GitHub.
+It installs repository access for CI and an explicit copy in the existing protected
+`m3-11-credential-cleanup` environment. Repository secrets are available to trusted
+repository workflows, not just these jobs. Fork and Dependabot PRs receive no
+token and retain public anonymous pulls. No new Connect grants are required.
+Setup never prints the token or places it in command arguments. If delivery is
+interrupted, repeat with the same item to finish both destinations.
+
+The operator confirms policy and expiry in Docker Hub; a successful login alone
+does not audit them. `DOCKERHUB_EXPIRES_AT` records that attestation for operators,
+while Docker Hub enforces expiry. Native CI and cleanup still need successful
+executions after installation. Each job uses its own registry configuration under
+the runner's temporary directory and logs out at job completion. The configuration
+is not mounted in fixtures, copied into controller images or exported as evidence.
+Production and live qualification retain their isolated empty Docker configurations.
+
+An expired or unavailable registry login must not suppress revocation: independent
+cleanup visibly records login failure and still attempts public pulls and normal
+reconciliation. It cannot claim readiness unless reconciliation succeeds. Registry
+authentication addresses anonymous pull allowances; it does not establish recovery
+from authentication-endpoint outages. Revoke this dedicated token and remove both
+GitHub secret copies when it is no longer needed; delivery removal is not revocation.
+
 ### Renewing cleanup access within the existing epoch
 
 Cleanup readiness can become unresolved even after every issued credential has
