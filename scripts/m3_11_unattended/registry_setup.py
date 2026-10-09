@@ -56,6 +56,10 @@ def install(*, username: str, reference: str, expires_at: str) -> None:
     if re.fullmatch(rb"[\x21-\x7e]{1,4096}", token) is None:
         raise LifecycleError("The selected 1Password field is not a single token")
     environment = {**operator.environment, "GH_HOST": "github.com"}
+    # These override stored gh credentials, including an inherited automation
+    # identity. Delivery must use the operator's normal workstation login.
+    for key in ("GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN"):
+        environment.pop(key, None)
     # Do not alter the workstation's Docker login or retain another bearer copy.
     with tempfile.TemporaryDirectory(prefix="ldp-registry-login-") as temporary:
         command(
