@@ -12,6 +12,7 @@ from pathlib import Path
 
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
+from scripts.m3_11_unattended import connect_renewal
 from scripts.m3_11_unattended.model import LifecycleError
 
 REPOSITORY = "lowerduckpond-net/lowerduckpond.net"
@@ -43,6 +44,8 @@ def receive():
         raise ValueError()
     value = json.loads(raw)
     fields = {"format", "manifest", "url", "tokens", "provider_metadata"}
+    if isinstance(value, dict) and "renewal" in value:
+        fields.add("renewal")
     if not isinstance(value, dict) or set(value) != fields:
         raise ValueError()
     if value["format"] != "lowerduckpond-m3-11-connect-bootstrap-v1":
@@ -88,18 +91,21 @@ except (OSError, ValueError, TypeError):
 
 
 def bundles(output: Path) -> tuple[bytes, bytes]:
+    raw_controller = read_private(output / "controller-connect.json")
+    raw_cleanup = read_private(output / "github-connect.json")
     controller = fields(
-        read_private(output / "controller-connect.json"),
+        raw_controller,
         {
             "format",
             "manifest",
             "url",
             "tokens",
             "provider_metadata",
-        },
+        }
+        | ({"renewal"} if "renewal" in raw_controller else set()),
     )
     cleanup = fields(
-        read_private(output / "github-connect.json"),
+        raw_cleanup,
         {
             "format",
             "targets",
@@ -108,7 +114,8 @@ def bundles(output: Path) -> tuple[bytes, bytes]:
             "token",
             "server_credentials",
             "provider_metadata",
-        },
+        }
+        | ({"checkpoint_token"} if "checkpoint_token" in raw_cleanup else set()),
     )
     value = controller["manifest"]
     if (
@@ -120,6 +127,16 @@ def bundles(output: Path) -> tuple[bytes, bytes]:
         or set(controller["tokens"]) != {"provision", "cleanup", "production"}
     ):
         raise LifecycleError("Connect delivery bundles have mismatched roles or targets")
+    if ("renewal" in controller) != ("checkpoint_token" in cleanup):
+        raise LifecycleError("cleanup renewal must preserve the original checkpoint key")
+    if "renewal" in controller:
+        receipt = connect_renewal.receipt(controller["renewal"])
+        key = cleanup["checkpoint_token"]
+        if (
+            not isinstance(key, str)
+            or hashlib.sha256(key.encode()).hexdigest() != receipt["checkpoint_token_sha256"]
+        ):
+            raise LifecycleError("cleanup delivery checkpoint key differs from its renewal")
     return canonical_bytes(controller), canonical_bytes(cleanup)
 
 
@@ -222,8 +239,24 @@ class Delivery:
         self.workspace_identity()
         self.github_protection()
 
-    def install(self, output: Path) -> None:
+    def install(self, output: Path, *, renewal_id: str | None = None) -> None:
         controller, cleanup = bundles(output)
+        destination = DESTINATION
+        renewal = json.loads(controller).get("renewal")
+        if (renewal_id is None) != (renewal is None):
+            raise LifecycleError("cleanup renewal must use its separate staging destination")
+        if renewal_id is not None:
+            from scripts.m3_11_unattended.model import identity as run_identity  # noqa: PLC0415
+
+            destination = (
+                DESTINATION.removesuffix("connect-bootstrap.json")
+                + "connect-renewal-"
+                + run_identity(renewal_id)
+                + ".json"
+            )
+            request = connect_renewal.request(connect_renewal.receipt(renewal)["request"])
+            if request["renewal_id"] != renewal_id:
+                raise LifecycleError("cleanup renewal delivery identity differs")
         if len(cleanup) > MAX_SECRET_BYTES:
             raise LifecycleError("independent Connect bootstrap exceeds GitHub's secret limit")
         identity = self.workspace_identity()
@@ -244,7 +277,7 @@ class Delivery:
                 "python3",
                 "-c",
                 RECEIVER,
-                DESTINATION,
+                destination,
                 expected,
             ],
             stdin=controller,

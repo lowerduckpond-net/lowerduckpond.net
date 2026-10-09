@@ -67,6 +67,12 @@ def failure(error: Exception) -> dict[str, object]:
             category = label
             break
     value: dict[str, object] = {"category": category, "origin": None}
+    if (
+        isinstance(error, subprocess.CalledProcessError)
+        and type(error.returncode) is int
+        and -128 <= error.returncode <= 255  # noqa: PLR2004 - bounded process status
+    ):
+        value["exit_status"] = error.returncode
     if isinstance(error, ConnectExchangeError):
         with suppress(RuntimeError, ValueError, TypeError, KeyError):
             value["exchange"] = exchange_diagnostic(error.exchange)
@@ -124,7 +130,7 @@ def retain_failure(path: Path, *, binding: dict[str, object], stage: str, error:
         return  # Exception text can contain secrets; failure never blocks cleanup.
 
 
-def verified_failure(
+def verified_failure(  # noqa: PLR0912 - closed optional diagnostic fields
     raw: object, *, binding: dict[str, object], stages: frozenset[str]
 ) -> dict[str, object]:
     names = {"binding", "stage", "failure"}
@@ -150,7 +156,15 @@ def verified_failure(
     detail_fields = {"category", "origin"}
     if isinstance(value["failure"], dict) and "exchange" in value["failure"]:
         detail_fields.add("exchange")
+    if isinstance(value["failure"], dict) and "exit_status" in value["failure"]:
+        detail_fields.add("exit_status")
     detail = fields(value["failure"], detail_fields)
+    if "exit_status" in detail and (
+        detail["category"] != "subprocess"
+        or type(detail["exit_status"]) is not int
+        or not -128 <= detail["exit_status"] <= 255  # noqa: PLR2004 - bounded process status
+    ):
+        raise LifecycleError("failure diagnostic process status is invalid")
     if "exchange" in detail:
         exchange_diagnostic(detail["exchange"])
     if not isinstance(detail["category"], str) or detail["category"] not in {

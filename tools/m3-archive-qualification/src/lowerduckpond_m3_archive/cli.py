@@ -6,10 +6,12 @@ import argparse
 import os
 import sys
 from collections.abc import Sequence
+from functools import partial
 from pathlib import Path
 
 from botocore.exceptions import BotoCoreError, ClientError  # type: ignore[import-untyped]
 
+from lowerduckpond_m3_archive.probe import remember_probe
 from lowerduckpond_m3_archive.report import (
     ArchiveQualificationReport,
     UnsafeArchiveReportError,
@@ -47,6 +49,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     credentials.add_argument("--backup-bucket", required=True)
     credentials.add_argument("--archive-bucket", required=True)
+    credentials.add_argument("--probe-record", type=Path)
+    credentials.add_argument("--source-revision")
+    credentials.add_argument("--run-id")
     _add_endpoint_arguments(credentials)
 
     verify = subparsers.add_parser("verify-report", help="validate a sanitized report")
@@ -86,12 +91,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             region=arguments.region,
             endpoint_url=endpoint_url,
         )
+        remember = None
+        if arguments.command == "credential-check":
+            selected = (arguments.probe_record, arguments.source_revision, arguments.run_id)
+            if any(item is not None for item in selected):
+                if not all(item is not None for item in selected):
+                    raise ArchiveQualificationError("probe ownership binding is incomplete")
+                remember = partial(
+                    remember_probe,
+                    path=arguments.probe_record,
+                    source_revision=arguments.source_revision,
+                    run_id=arguments.run_id,
+                    region=arguments.region,
+                    archive_bucket=arguments.archive_bucket,
+                    backup_bucket=arguments.backup_bucket,
+                )
         evidence = run_acceptance(
             backup_client=backup_client,
             archive_client=archive_client,
             backup_bucket=arguments.backup_bucket,
             archive_bucket=arguments.archive_bucket,
             require_empty_archive=arguments.command == "acceptance",
+            remember_prefix=remember,
         )
         if arguments.command == "credential-check":
             print("Current runtime keys passed scoped version and mutual-denial checks.")

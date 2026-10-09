@@ -38,7 +38,7 @@ from scripts.qualification_timing import measure
 ACK_FORMAT = "lowerduckpond-m3-11-connect-ack-v1"
 READBACK_SECONDS = 60
 READBACK_POLL_SECONDS = 1
-ITEM_READ_WORKERS = 4
+ITEM_READ_WORKERS = 8
 STAGING_OBSERVATION_SECONDS = 5
 type Item = tuple[dict[str, object], dict[str, object]]
 TITLE = re.compile(r"m3-11-([0-9a-f-]{36})-([0-9a-f]{64})")

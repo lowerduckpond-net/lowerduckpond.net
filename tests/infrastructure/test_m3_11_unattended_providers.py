@@ -511,7 +511,9 @@ def test_production_bootstrap_and_state_passphrase_stay_in_the_short_check_proce
             for key in ("audit", "observer", "archive_id", "backup_id", "caddy_id")
         },
     }
-    assert isolated.bootstrap(request, tmp_path) == 0
+    repository = tmp_path / "source"
+    repository.mkdir()
+    assert isolated.bootstrap(request, repository) == 0
     environment = observed["env"]
     assert isinstance(environment, dict)
     assert "OP_SERVICE_ACCOUNT_TOKEN" not in environment

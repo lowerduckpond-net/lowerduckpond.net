@@ -498,7 +498,10 @@ def test_failure_diagnostics_export_only_closed_categories(error: Exception, cat
         raise error
     except Exception as caught:
         value = diagnostics.failure(caught)
-    assert value == {"category": category, "origin": None}
+    expected: dict[str, object] = {"category": category, "origin": None}
+    if isinstance(error, subprocess.CalledProcessError):
+        expected["exit_status"] = error.returncode
+    assert value == expected
     assert CANARY not in json.dumps(value)
     assert "PRIVATE_DYNAMIC_CLASS_CANARY" not in json.dumps(value)
 

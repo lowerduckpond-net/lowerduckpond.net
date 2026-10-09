@@ -7,6 +7,7 @@ authority only; neither provisioning authority nor production inputs are present
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -30,6 +31,7 @@ from scripts.m3_11_unattended.connect_api import Connect
 from scripts.m3_11_unattended.connect_auth import READ, READ_WRITE, Access, authenticate, inspect
 from scripts.m3_11_unattended.connect_checkpoint import FORMAT as CHECKPOINT_FORMAT
 from scripts.m3_11_unattended.connect_checkpoint import Checkpoint, Stored
+from scripts.m3_11_unattended.connect_checkpoint_key import credential as checkpoint_credential
 from scripts.m3_11_unattended.connect_configuration import PROVIDER_REFERENCES, _references
 from scripts.m3_11_unattended.connect_diagnostics import failure
 from scripts.m3_11_unattended.connect_host import independent_server
@@ -42,6 +44,7 @@ from scripts.m3_11_unattended.lifecycle import Lifecycle
 from scripts.m3_11_unattended.model import (
     CREATION_SETTLE,
     LIFETIME,
+    Authority,
     LifecycleError,
     Targets,
     digest,
@@ -144,6 +147,9 @@ def witness(receipt: dict[str, object], *, active_helper: str | None = None) -> 
 def bootstrap(
     value: object, approved: dict[str, object]
 ) -> tuple[dict[str, object], Access, Targets, dict[str, str]]:
+    optional = (
+        {"checkpoint_token"} if isinstance(value, dict) and "checkpoint_token" in value else set()
+    )
     selected = fields(
         value,
         {
@@ -154,7 +160,8 @@ def bootstrap(
             "token",
             "server_credentials",
             "provider_metadata",
-        },
+        }
+        | optional,
     )
     vaults = strings(approved["vaults"])
     targets = Targets.parse(selected["targets"])
@@ -181,6 +188,7 @@ def bootstrap(
     )
     if access.server_id == approved["shared_server"]:
         raise LifecycleError("independent Connect needs a distinct server")
+    checkpoint_credential(selected, access)
     return selected, access, targets, references
 
 
@@ -492,6 +500,8 @@ def execute(  # noqa: PLR0915 - staged cleanup keeps private authority in this b
     approved = cast(dict[str, object], selected["request"])
     progress("validate-cleanup-bootstrap")
     private, access, targets, references = bootstrap(value["bootstrap"], approved)
+    checkpoint_token = checkpoint_credential(private, access)
+    verified_authority: Authority | None = None
     vaults = strings(approved["vaults"])
     progress("start-independent-connect")
     audit = None
@@ -525,14 +535,16 @@ def execute(  # noqa: PLR0915 - staged cleanup keeps private authority in this b
         store = GitHubArtifacts(
             epoch=str(approved["epoch"]),
             registry_revision=str(approved["registry_revision"]),
-            token=access.token,
+            token=checkpoint_token,
             directory=directory / "checkpoints",
         )
         journal: Journal = ProbeJournal(ledger)
 
         @qualification_timing.measure("credential-authority")
         def connections() -> Connections:
-            return provider_connections(
+            nonlocal verified_authority
+            verified_authority = None
+            connected = provider_connections(
                 client,
                 references,
                 journal=journal,
@@ -541,6 +553,8 @@ def execute(  # noqa: PLR0915 - staged cleanup keeps private authority in this b
                 vault=vaults["journal"],
                 now=datetime.now(UTC),
             )
+            verified_authority = connected.authority
+            return connected
 
         if operation == "discovery":
             progress("verify-cleanup-policy-and-provenance")
@@ -605,6 +619,13 @@ def execute(  # noqa: PLR0915 - staged cleanup keeps private authority in this b
             "status": "ready" if operation in {"discovery", "genesis"} else proof["status"],
             "proof": proof,
         }
+        if verified_authority is not None:
+            receipt["authority"] = {
+                "identity_sha256": verified_authority.identity_sha256,
+                "valid_until": stamp(verified_authority.valid_until),
+                "connect_access": {**access.receipt(), "authenticated": True},
+                "checkpoint_token_sha256": hashlib.sha256(checkpoint_token.encode()).hexdigest(),
+            }
     # Optional diagnostics start only after ephemeral teardown and durable
     # retention of the completed cleanup result. Even SIGKILL during an audit
     # must leave the sweep's original receipt available to the artifact step.

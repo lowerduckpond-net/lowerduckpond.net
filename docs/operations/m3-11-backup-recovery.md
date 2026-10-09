@@ -34,6 +34,23 @@ named volumes. Controller and watchdog use `unless-stopped` restart policies.
 Before provisioning, the controller verifies that its mounted socket reaches
 the exact Docker-host identity recorded in the approved preparation.
 
+Preparation also initializes the owned storage-lease volume with the runner's
+required private permissions and installs the repository-pinned Ansible
+collections in a revision-specific volume. The controller mounts those
+collections read-only; qualification does not depend on a first-use Galaxy
+download. A progress-write failure drains the qualification process group before
+credential revocation, and cleanup still attempts revocation when local status
+storage fails. Such persistence failures keep local closure unresolved.
+
+The short production check retains `production-state.log` and
+`production-storage.log` privately. Sanitized diagnostics expose the bound source
+location and process exit status, never child output. Before the production and
+rehearsal storage probes write an object, they persist their unique prefix, both
+buckets, run ID and source revision in `production-storage-ownership.json` and
+`fixture-storage-ownership.json`. These ownership records survive interruption;
+they do not authorize destructive retirement. Credential revocation leaves them
+and any failed-run remote data intact.
+
 Terminal disconnection does not own these containers. A workspace-agent exit
 does not intrinsically stop a sibling daemon container. Coder stop/rebuild can
 stop/recreate that daemon: persistence depends on retaining the template's Docker
@@ -562,7 +579,7 @@ memory. A retry compares each retained item against current native metadata and
 still requires the complete stable inventory before returning any records.
 The controller retains its cleanup reader across retries too; it must still
 refresh complete inventories and validate native metadata on every observation.
-Cold reads use at most four concurrent item-detail GETs, each within its own
+Cold reads use at most eight concurrent item-detail GETs, each within its own
 remaining process budget. Inventory reads and writes remain sequential, and
 failed or cancelled scans stop queued reads and join active exchanges before
 restoring their enclosing deadline. This avoids rereading the whole history
@@ -629,6 +646,80 @@ alone never authorizes credential creation: an independent encrypted checkpoint
 and native acknowledgement are required first. Actual independent Connect startup,
 the live credential rehearsal, complete M3.11 and verified revocation still need
 operational evidence; local doubles do not establish those outcomes.
+
+### Renewing cleanup access within the existing epoch
+
+Cleanup readiness can become unresolved even after every issued credential has
+been revoked: new issuance requires cleanup authority to outlive a fourteen-hour
+child by two days. Do not shorten that margin or reset the journal to regain
+readiness. Renewing bootstrap access requires explicit operator authorization;
+it does not renew an old attempt's approval, submission window or result.
+
+For a bounded new attempt while provisioning and production readers remain
+valid, renew only the shared and independent **cleanup** Connect clients and
+the two dedicated Cloudflare cleanup bootstraps. Existing production credentials
+are outside this operation. Verify all other runtime and provisioning lifetimes
+again before starting. This helper must run while the original role clients
+remain valid; it is not recovery from entirely expired bootstrap access.
+
+In the **Coder workspace**, `scripts.m3_11_unattended.cleanup_expiry` prepares a
+read-only proposal binding the actual Cloudflare token IDs, current policy,
+secret hashes, target and explicit new expiry. Review its digest and deadline
+with the operator before adding `--apply --plan-sha256 DIGEST --directory PRIVATE_DIR`.
+The preview uses `--revision FULL_COMMIT_SHA --config PRIVATE_CONTROLLER_JSON
+--plan PRIVATE_PLAN_JSON --expires-at UTC_DEADLINE`; the apply operation omits
+`--expires-at`. Application records its intent before changing either token,
+changes only `expires_on`, and verifies activity, exact policy and expiry through
+provider readback. A lost response or partial update is reconciled against the
+same IDs on retry. Token values, provisioning authority and production credentials
+are unchanged. Native provider metadata is authoritative; a manually maintained
+1Password date field is not proof of the extension.
+
+Prepare a separate non-secret renewal request using
+`scripts.m3_11_unattended.connect_renewal.REQUEST_FIELDS`. It binds the previous
+bootstrap and installed controller digests, both existing server IDs, approved
+cleanup expiry, approval reference and an application window of at most one day.
+Retain it as a private file and give the operator its exact digest. Publish the
+reviewed, merged helper in the existing active GitHub selection **before** replacing
+its bootstrap secret; the earlier action does not understand retained checkpoint
+key material. Preserve the original genesis and all selection bindings.
+
+On the **secure workstation**, with normal `op` and `gh` logins and the original
+private bootstrap files retained, preview:
+
+```console
+mise exec -- uv run --no-sync --frozen python -m scripts.m3_11_unattended.connect_renewal_setup \
+  --revision FULL_MERGED_COMMIT_SHA \
+  --request PRIVATE_RENEWAL_REQUEST_JSON \
+  --request-sha256 APPROVED_REQUEST_SHA256 \
+  --original "$HOME/.config/lowerduckpond/m3-11-connect-bootstrap" \
+  --output "$HOME/.config/lowerduckpond/m3-11-connect-renewal-RENEWAL_UUID"
+```
+
+Add `--apply --unraid root@UNRAID_HOST --workspace CODER_CONTAINER_NAME
+--workspace-id APPROVED_WORKSPACE_UUID` to issue and deliver. The helper first
+proves that the retained key decrypts the pinned original GitHub genesis. It
+then creates two seven-day cleanup clients with unchanged server identities and
+exact vault grants. Original bundles remain intact. Creation intents and returned
+secrets are retained privately; interrupted issuance never blindly creates a
+replacement. Repeating a completed step reuses its saved result.
+
+The independent bundle retains the original client value solely as checkpoint
+encryption material. Only the new client authenticates to Connect. That retained
+key and the independent server credentials go only to protected GitHub cleanup
+storage. The controller receives public identity hashes and the shared client in
+`/home/coder/.config/lowerduckpond/m3-11/connect-renewal-RENEWAL_UUID.json`;
+its original staging bundle is not overwritten.
+
+Finally, in the **Coder workspace**, run the existing activation command with
+that new staging bundle and a separate private activation directory. Activation
+requires a fresh native independent receipt proving the same provider authority,
+new client, extended usable lifetime and original checkpoint key. It retains the
+previous controller configuration and permits only the approved cleanup changes.
+Targets, production references, epoch and original genesis remain fixed. Finish
+the existing watchdog handoff and verify independent readiness before admitting
+a new source-bound attempt. Renewal never resolves an outstanding revocation or
+turns a failed qualification into a pass.
 
 ### Diagnostic audit recovery requiring additional approval
 

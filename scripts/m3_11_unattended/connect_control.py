@@ -28,6 +28,7 @@ from scripts.m3_11_unattended.connect_admission import run_digest
 from scripts.m3_11_unattended.connect_diagnostics import retain_failure, verified_failure
 from scripts.m3_11_unattended.connect_journal import ConnectJournal
 from scripts.m3_11_unattended.connect_ledger import SnapshotChangedError
+from scripts.m3_11_unattended.connect_renewal import authority_receipt
 from scripts.m3_11_unattended.github_checkpoint import REPOSITORY, WORKFLOW, WORKFLOW_ID
 from scripts.m3_11_unattended.inputs import BINDING
 from scripts.m3_11_unattended.model import LifecycleError, digest, identity, instant, stamp
@@ -476,8 +477,14 @@ class GitHub:
                     or entries[0].file_size > MAX_BYTES
                 ):
                     raise LifecycleError("cleanup receipt has unexpected archive contents")
+                raw_receipt = json.loads(archive.read(entries[0]))
+                optional = (
+                    {"authority"}
+                    if isinstance(raw_receipt, dict) and "authority" in raw_receipt
+                    else set()
+                )
                 receipt = fields(
-                    json.loads(archive.read(entries[0])),
+                    raw_receipt,
                     {
                         "format",
                         "operation",
@@ -487,8 +494,11 @@ class GitHub:
                         "observed_at",
                         "status",
                         "proof",
-                    },
+                    }
+                    | optional,
                 )
+                if optional:
+                    authority_receipt(receipt["authority"])
         except ValueError, zipfile.BadZipFile:
             raise LifecycleError("cleanup receipt cannot be verified") from None
         if (

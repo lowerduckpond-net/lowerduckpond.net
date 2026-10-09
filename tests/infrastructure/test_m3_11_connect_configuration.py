@@ -222,7 +222,9 @@ def test_connect_production_reader_and_bootstrap_are_confined_to_short_process(
             for key in ("audit", "observer", "archive_id", "backup_id", "caddy_id")
         },
     }
-    assert production.bootstrap(request, tmp_path) == 0
+    repository = tmp_path / "source"
+    repository.mkdir()
+    assert production.bootstrap(request, repository) == 0
     environment = mapping(observed["env"])
     assert (
         environment["OPENTOFU_ENCRYPTION_PASSPHRASE"] == CANARY + "OPENTOFU_ENCRYPTION_PASSPHRASE"

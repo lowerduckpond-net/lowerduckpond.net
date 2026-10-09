@@ -66,6 +66,22 @@ SECRETS = {
 }
 
 
+def executing_group(group: int) -> bool:
+    """Observe the owned Linux group, including a supervisor orphaned by just/uv."""
+    for process in Path("/proc").iterdir():
+        if not process.name.isdecimal():
+            continue
+        try:
+            # comm may contain spaces or parentheses; fields after its final
+            # delimiter begin with state, parent PID, process group.
+            fields = (process / "stat").read_bytes().rsplit(b") ", 1)[1].split()
+        except FileNotFoundError, ProcessLookupError:
+            continue
+        if int(fields[2]) == group and fields[0] not in {b"Z", b"X"}:
+            return True
+    return False
+
+
 def safe_environment() -> dict[str, str]:
     return {
         key: os.environ[key]
@@ -595,33 +611,71 @@ class Worker:
                 stderr=stream,
                 start_new_session=True,
             )
-            interrupted = False
-            interrupted_status = 143
-            stop_at: float | None = None
-            while child.poll() is None:
-                expired = time.monotonic() >= self.ends_at
-                if (
-                    self.state.cancelled or self.pending.signum is not None or expired
-                ) and not interrupted:
-                    interrupted_status = 124 if expired else 143
-                    os.killpg(child.pid, signal.SIGTERM)
-                    interrupted, stop_at = (
-                        True,
-                        time.monotonic()
-                        + qualification_deadline.REPORT_SECONDS
-                        + 4 * qualification_deadline.GRACE_SECONDS,
-                    )
-                if stop_at is not None and time.monotonic() >= stop_at:
-                    os.killpg(child.pid, signal.SIGKILL)
-                    child.wait(timeout=qualification_deadline.GRACE_SECONDS)
-                    break
-                self.state.update("running", cleanup="pending")
-                time.sleep(1)
-            return (
-                interrupted_status
-                if interrupted
-                else (128 - child.returncode if child.returncode < 0 else child.returncode)
-            )
+            self.journey_shutdown_at: float | None = None
+            try:
+                return self._monitor_journey(child)
+            finally:
+                # Bookkeeping errors must drain the journey before the outer
+                # finally revokes credentials. The supervisor needs its existing
+                # allowance to drain its separately grouped payload and report.
+                try:
+                    drained = self._drain_journey(child)
+                except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as error:
+                    self._failure(error)
+                    drained = False
+                if not drained and sys.exception() is None:
+                    raise LifecycleError("qualification process shutdown was not verified")
+
+    def _drain_journey(self, child: subprocess.Popen[bytes]) -> bool:
+        stop_at = self.journey_shutdown_at or (
+            time.monotonic()
+            + qualification_deadline.REPORT_SECONDS
+            + 4 * qualification_deadline.GRACE_SECONDS
+        )
+        qualification_deadline._kill_group(child, signal.SIGTERM)
+        while executing_group(child.pid):
+            child.poll()
+            if time.monotonic() >= stop_at:
+                break
+            time.sleep(qualification_deadline.INTERRUPT_POLL_SECONDS)
+        # A launcher exiting is not proof its supervisor stopped. Only kill the
+        # remaining group after cooperative shutdown's existing bounded window.
+        qualification_deadline._kill_group(child, signal.SIGKILL)
+        try:
+            child.wait(timeout=qualification_deadline.GRACE_SECONDS)
+        except subprocess.TimeoutExpired as error:
+            self._failure(error)
+            return False
+        return not executing_group(child.pid)
+
+    def _monitor_journey(self, child: subprocess.Popen[bytes]) -> int:
+        interrupted = False
+        interrupted_status = 143
+        while child.poll() is None:
+            expired = time.monotonic() >= self.ends_at
+            if (
+                self.state.cancelled or self.pending.signum is not None or expired
+            ) and not interrupted:
+                interrupted_status = 124 if expired else 143
+                qualification_deadline._kill_group(child, signal.SIGTERM)
+                interrupted, self.journey_shutdown_at = (
+                    True,
+                    time.monotonic()
+                    + qualification_deadline.REPORT_SECONDS
+                    + 4 * qualification_deadline.GRACE_SECONDS,
+                )
+            if (
+                self.journey_shutdown_at is not None
+                and time.monotonic() >= self.journey_shutdown_at
+            ):
+                break
+            self.state.update("running", cleanup="pending")
+            time.sleep(1)
+        return (
+            interrupted_status
+            if interrupted
+            else (128 - child.returncode if child.returncode < 0 else child.returncode)
+        )
 
     def revoke(self) -> bool:
         try:
@@ -631,12 +685,21 @@ class Worker:
             # Another local reconciler owns the critical section. Retain this
             # attempt as unresolved and let the persistent retry/watchdogs act.
             self._failure(error, cleanup_failed=True)
-            self.state.update("finished", cleanup="unresolved", preserve_verified=True)
+            self._cleanup_progress("finished", "unresolved")
+            try:
+                (self.directory / "runtime-inputs.json").unlink(missing_ok=True)
+            except OSError as disposal_error:
+                self._failure(disposal_error, cleanup_failed=True)
             return False
 
     def _revoke_locked(self) -> bool:  # noqa: PLR0912 - cache types and cleanup proofs remain explicit
-        self.state.update("revoking", cleanup="pending", preserve_verified=True)
         try:
+            recorded = self._cleanup_progress("revoking", "pending")
+            try:
+                (self.directory / "runtime-inputs.json").unlink(missing_ok=True)
+            except OSError as error:
+                recorded = False
+                self._failure(error, cleanup_failed=True)
             lifecycle = cleanup.connect_cleanup(
                 self.config.cleanup,
                 self.config.targets,
@@ -679,7 +742,8 @@ class Worker:
                 raise LifecycleError("independent credential obligations are missing")
             results = receipt["results"]
             verified = (
-                recovered
+                recorded
+                and recovered
                 and isinstance(results, list)
                 and all(
                     isinstance(value, dict)
@@ -694,14 +758,29 @@ class Worker:
                     path.unlink()
                 if not (self.directory / "revocation.json").exists():
                     write_private(self.directory / "revocation.json", receipt)
-            self.state.update("finished", cleanup="verified" if verified else "unresolved")
-            return verified
+            return (
+                self._cleanup_progress("finished", "verified" if verified else "unresolved")
+                and verified
+            )
         except (RuntimeError, OSError, ValueError, KeyError, TypeError) as error:
             self._failure(error, cleanup_failed=True)
-            self.state.update("finished", cleanup="unresolved")
+            self._cleanup_progress("finished", "unresolved")
             return False
         finally:
-            (self.directory / "runtime-inputs.json").unlink(missing_ok=True)
+            try:
+                (self.directory / "runtime-inputs.json").unlink(missing_ok=True)
+            except OSError as error:
+                self._failure(error, cleanup_failed=True)
+
+    def _cleanup_progress(self, phase: str, status: str) -> bool:
+        try:
+            self.state.update(phase, cleanup=status, preserve_verified=True)
+            return True
+        except (RuntimeError, OSError, ValueError, KeyError, TypeError) as error:
+            # Progress storage failure is not permission to skip revocation.
+            # Keep closure unresolved until its evidence can be persisted.
+            self._failure(error, cleanup_failed=True)
+            return False
 
     def run(self) -> int:
         private_directory(self.directory)
@@ -749,6 +828,12 @@ class Worker:
                             self.config.targets.archive_bucket,
                             "--backup-bucket",
                             self.config.targets.backup_bucket,
+                            "--probe-record",
+                            str(self.directory / "fixture-storage-ownership.json"),
+                            "--source-revision",
+                            self.revision,
+                            "--run-id",
+                            self.run_id,
                         ],
                         log="rehearsal-probes.log",
                         environment=environment,

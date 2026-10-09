@@ -23,6 +23,8 @@ from scripts.production_qualification_inputs import current_candidate, git, revi
 OWNER = "lowerduckpond.m3-11.unattended"
 EVIDENCE_VOLUME = "ldp-m311-evidence"
 LEASE_VOLUME = "ldp-m311-storage-leases"
+LEASE_DIRECTORY = "/root/.local/share/lowerduckpond.net/storage-leases"
+COLLECTIONS_DIRECTORY = "/usr/share/ansible/collections"
 CONFIG_VOLUME = "ldp-m311-controller-config"
 CLEANUP_VOLUME = "ldp-m311-cleanup-config"
 SOCKET = "/var/run/docker.sock"
@@ -144,6 +146,10 @@ def source_volume(source: str) -> str:
     return "ldp-m311-source-" + revision(source)
 
 
+def collections_volume(source: str) -> str:
+    return "ldp-m311-collections-" + revision(source)
+
+
 def controller_name(run_id: str) -> str:
     return "ldp-m311-controller-" + uuid.UUID(run_id).hex
 
@@ -224,6 +230,7 @@ def prepare(docker: Docker, source: str) -> dict[str, object]:
     for volume in (
         helper_volume(source),
         source_volume(source),
+        collections_volume(source),
         EVIDENCE_VOLUME,
         LEASE_VOLUME,
         CONFIG_VOLUME,
@@ -246,6 +253,10 @@ def prepare(docker: Docker, source: str) -> dict[str, object]:
         f"type=volume,source={source_volume(source)},target=/work/source",
         "--mount",
         f"type=volume,source={EVIDENCE_VOLUME},target=/evidence",
+        "--mount",
+        f"type=volume,source={LEASE_VOLUME},target={LEASE_DIRECTORY}",
+        "--mount",
+        f"type=volume,source={collections_volume(source)},target={COLLECTIONS_DIRECTORY}",
         "--workdir",
         "/opt/qualification-tools",
         image,
@@ -270,6 +281,21 @@ for root in /opt/lifecycle /work/source; do
     cd "$root"
     mise exec -- uv sync --all-packages --all-groups --frozen
 done
+# A fresh Docker volume is 0755. Tighten only this owned mount, preserving
+# existing leases and the runner's strict canonical-directory validation.
+mise exec -- uv run --no-sync --frozen python - <<'PY'
+import os
+from pathlib import Path
+from scripts.m3_11_unattended.state import private_directory
+root = Path.home() / '.local/share/lowerduckpond.net/storage-leases'
+if root.resolve(strict=True) != root or root.stat().st_uid != os.geteuid():
+    raise ValueError('storage lease mount ownership is invalid')
+root.chmod(0o700)
+private_directory(root)
+PY
+mise exec -- uv run --no-sync --frozen ansible-galaxy collection install \
+    --no-deps --requirements-file config/ansible/requirements.yml \
+    --collections-path /usr/share/ansible/collections
 mkdir -p "/evidence/prepared/$1"
 chmod 0700 /evidence /evidence/prepared "/evidence/prepared/$1"
 mise exec -- scripts/build-static-host-agent "/evidence/prepared/$1/static-host-agent.tar"
@@ -452,7 +478,9 @@ def launch(docker: Docker, *, source: str, image: str, run_id: str, daemon_socke
         "--mount",
         f"type=volume,source={CONFIG_VOLUME},target=/configuration,readonly",
         "--mount",
-        f"type=volume,source={LEASE_VOLUME},target=/root/.local/share/lowerduckpond.net/storage-leases",
+        f"type=volume,source={LEASE_VOLUME},target={LEASE_DIRECTORY}",
+        "--mount",
+        f"type=volume,source={collections_volume(source)},target={COLLECTIONS_DIRECTORY},readonly",
         image,
         "uv",
         "run",
