@@ -13,7 +13,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Final, override
 
-from scripts.m3_11_unattended.model import LifecycleError
+from scripts.m3_11_unattended.model import LifecycleError, Targets
 
 ORIGINS: Final = frozenset({"https://api.digitalocean.com", "https://api.cloudflare.com/client/v4"})
 MAX_BYTES: Final = 2 * 1024 * 1024
@@ -76,6 +76,22 @@ class Api:
         return self._request(
             "PUT", f"/accounts/{approved['account_id']}/tokens/{approved['credential_id']}", body
         )
+
+    def cleanup_expiry_update(
+        self, *, plan: dict[str, object], targets: Targets, expected: str, provider: str
+    ) -> Response:
+        from scripts.m3_11_unattended.cleanup_expiry import approved_update  # noqa: PLC0415
+
+        if self.origin != "https://api.cloudflare.com/client/v4":
+            raise LifecycleError("cleanup expiry update requires the fixed Cloudflare API")
+        path, body = approved_update(
+            plan,
+            targets=targets,
+            expected=expected,
+            provider=provider,
+            authority_sha256=self.credential_sha256,
+        )
+        return self._request("PUT", path, body)
 
     def _request(self, method: str, path: str, body: dict[str, object] | None) -> Response:
         try:

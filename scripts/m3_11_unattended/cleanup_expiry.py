@@ -17,10 +17,12 @@ from scripts.m3_11_unattended.cloudflare import ORIGIN, Cloudflare, result
 from scripts.m3_11_unattended.config import Configuration, _cloudflare_authority
 from scripts.m3_11_unattended.connect_diagnostics import failure
 from scripts.m3_11_unattended.http import Api
+from scripts.m3_11_unattended.lifecycle import identifier as credential_id
 from scripts.m3_11_unattended.model import (
     CLEANUP_MARGIN,
     LIFETIME,
     LifecycleError,
+    Targets,
     digest,
     instant,
     stamp,
@@ -75,22 +77,55 @@ def plan(config: Configuration, *, expires_at: str, now: datetime) -> dict[str, 
     }
 
 
-def apply(config: Configuration, raw: object, *, directory: Path, expected: str) -> None:
+def approved_plan(
+    targets: Targets, raw: object, *, expected: str, now: datetime
+) -> dict[str, object]:
     approved = fields(raw, {"format", "targets_sha256", "expires_at", "observed_at", "providers"})
-    expiry, observed, now = (
+    expiry, observed = (
         instant(approved["expires_at"]),
         instant(approved["observed_at"]),
-        datetime.now(UTC),
     )
-    rows = fields(approved["providers"], {"cloudflare-account", "cloudflare-user"})
+    fields(approved["providers"], {"cloudflare-account", "cloudflare-user"})
     if (
         digest(approved) != expected
         or approved["format"] != FORMAT
-        or approved["targets_sha256"] != digest(dataclasses.asdict(config.targets))
+        or approved["targets_sha256"] != digest(dataclasses.asdict(targets))
         or not observed <= now < observed + timedelta(days=1)
         or not now + LIFETIME + CLEANUP_MARGIN < expiry <= observed + timedelta(days=8)
     ):
         raise LifecycleError("cleanup expiry approval is stale or mismatched")
+    return approved
+
+
+def approved_update(
+    raw: object, *, targets: Targets, expected: str, provider: str, authority_sha256: str
+) -> tuple[str, dict[str, object]]:
+    """Derive the sole allowed PUT path and body from the exact approved plan."""
+    approved = approved_plan(targets, raw, expected=expected, now=datetime.now(UTC))
+    rows = cast(dict[str, object], approved["providers"])
+    if provider not in rows:
+        raise LifecycleError("cleanup expiry provider is outside the approved plan")
+    row = fields(rows[provider], {"id", "authority_sha256", "before", "after"})
+    before, after = body(row["before"]), body(row["after"])
+    if (
+        row["authority_sha256"] != authority_sha256
+        or after != {**before, "expires_on": approved["expires_at"]}
+        or instant(before["expires_on"]) >= instant(approved["expires_at"])
+    ):
+        raise LifecycleError("cleanup update must preserve the approved identity and policy")
+    prefix = (
+        f"/accounts/{targets.account_id}/tokens"
+        if provider == "cloudflare-account"
+        else "/user/tokens"
+    )
+    return prefix + "/" + credential_id(row["id"]), after
+
+
+def apply(config: Configuration, raw: object, *, directory: Path, expected: str) -> None:
+    now = datetime.now(UTC)
+    approved = approved_plan(config.targets, raw, expected=expected, now=now)
+    expiry = instant(approved["expires_at"])
+    rows = cast(dict[str, object], approved["providers"])
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     private_directory(directory)
     intent = directory / "intent.json"
@@ -114,8 +149,8 @@ def apply(config: Configuration, raw: object, *, directory: Path, expected: str)
             raise LifecycleError("cleanup bootstrap changed outside the approved expiry operation")
         if current == before:
             try:
-                response = client.api.request(
-                    "PUT", client.path + "/" + identifier, cast(dict[str, object], row["after"])
+                response = client.api.cleanup_expiry_update(
+                    plan=approved, targets=config.targets, expected=expected, provider=kind
                 )
                 result(response.status, response.body)
             except RuntimeError, OSError, ValueError:
