@@ -172,6 +172,17 @@ helper upgrade preserves that genesis and all historical obligations, and requir
 fresh independent readiness at the successor helper. It never reinitializes an
 existing journal or revives an old attempt's provisioning window.
 
+Explicitly authorized cleanup-client renewal retains both server identities,
+vault grants and the original epoch. The independent job keeps the original
+client value solely as checkpoint encryption material and authenticates with
+its new client; the controller never receives that key. The setup helper proves
+original-genesis decryption before issuance. Fresh native cleanup evidence binds
+the new client and current usable lifetime before controller installation;
+the historical genesis receipt is not rewritten. Approved Cloudflare bootstrap
+expiry changes preserve token IDs, values and exact policies, with durable
+intent and provider readback after interruption. Renewal neither discards
+unresolved obligations nor extends any existing qualification attempt.
+
 Checkpoint lineage follows the append-only registry's publication order, never
 the numeric magnitude of opaque GitHub artifact IDs. Exact genesis, predecessor,
 logical sequence and retained-history extension are required before independent

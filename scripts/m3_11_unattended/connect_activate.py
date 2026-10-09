@@ -18,6 +18,7 @@ from scripts.m3_11_qualification_evidence import canonical_bytes, fields
 from scripts.m3_11_unattended import connect_action as action
 from scripts.m3_11_unattended import connect_configuration as backend
 from scripts.m3_11_unattended import connect_genesis as genesis
+from scripts.m3_11_unattended import connect_renewal
 from scripts.m3_11_unattended.cleanup import require_independent_ready
 from scripts.m3_11_unattended.config import Configuration
 from scripts.m3_11_unattended.connect_control import BACKEND, SETTING, GitHub
@@ -65,7 +66,13 @@ def activation_probes(value: object) -> dict[str, object]:
 
 
 def readers(bundle: dict[str, object]) -> dict[str, dict[str, object]]:
-    fields(bundle, {"format", "manifest", "url", "tokens", "provider_metadata"})
+    fields(
+        bundle,
+        {"format", "manifest", "url", "tokens", "provider_metadata"}
+        | ({"renewal"} if "renewal" in bundle else set()),
+    )
+    if "renewal" in bundle:
+        connect_renewal.receipt(bundle["renewal"])
     if bundle["format"] != FORMAT or not isinstance(bundle["manifest"], dict):
         raise LifecycleError("Connect activation requires the delivered bootstrap bundle")
     vaults = role_vaults(bundle["manifest"])
@@ -112,6 +119,8 @@ def document(bundle: dict[str, object], selected: dict[str, object]) -> dict[str
         "anchor_sha256": approved["anchor_sha256"],
         "independent_expires_at": proof["authority_expires_at"],
     }
+    if "renewal" in bundle:
+        common["independent_expires_at"] = connect_renewal.expires(bundle["renewal"])
     value: dict[str, object] = {
         "format": "lowerduckpond-m3-11-controller-connect-v1",
         "targets": manifest["targets"],
@@ -656,7 +665,11 @@ class Activation:
         self.github.set_variable(BACKEND, "connect")
         directory = self.directory / "readiness" / str(uuid.uuid7())
         dispatch = self.github.dispatch(directory, operation="reconcile", selection=selected)
-        self.github.wait(dispatch, helper=self.helper, directory=directory)
+        native = self.github.wait(dispatch, helper=self.helper, directory=directory)
+        if "renewal" in self.bundle:
+            connect_renewal.verify_native(
+                self.bundle["renewal"], native, cast(dict[str, object], selected["receipt"])
+            )
         journal = configuration.cleanup.journal(
             configuration.journal_vault, directory=directory / "journal"
         )
@@ -695,9 +708,11 @@ class Activation:
                         "active_helper"
                     ]
                 if expected != previous:
-                    raise LifecycleError(
-                        "existing Connect controller differs beyond the reviewed helper"
-                    )
+                    if "renewal" not in self.bundle:
+                        raise LifecycleError(
+                            "existing Connect controller differs beyond the reviewed helper"
+                        )
+                    connect_renewal.permit_install(previous, value, self.bundle["renewal"])
             elif (
                 any(
                     bootstrap.values[key] != cast(dict[str, object], self.manifest[role])[key]
