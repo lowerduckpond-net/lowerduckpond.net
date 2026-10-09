@@ -690,8 +690,27 @@ An expired or unavailable registry login must not suppress revocation: independe
 cleanup visibly records login failure and still attempts public pulls and normal
 reconciliation. It cannot claim readiness unless reconciliation succeeds. Registry
 authentication addresses anonymous pull allowances; it does not establish recovery
-from authentication-endpoint outages. Revoke this dedicated token and remove both
-GitHub secret copies when it is no longer needed; delivery removal is not revocation.
+from authentication-endpoint outages. When access is no longer needed, first
+remove the login selector at **both** scopes so later CI runs return to anonymous
+pulls. Then revoke the dedicated token in Docker Hub and remove both GitHub secret
+copies and expiry metadata. Delivery removal alone is not revocation. Use normal
+`gh` login on the secure workstation for each of these cleanup phases:
+
+```bash
+# Disable authenticated pulls before removing the credential.
+gh variable delete DOCKERHUB_USERNAME --repo lowerduckpond-net/lowerduckpond.net
+gh variable delete DOCKERHUB_USERNAME --repo lowerduckpond-net/lowerduckpond.net --env m3-11-credential-cleanup
+```
+
+Revoke the dedicated token in Docker Hub and confirm its revoked status there.
+Then remove delivery and metadata:
+
+```bash
+gh secret delete DOCKERHUB_PUBLIC_READ_TOKEN --repo lowerduckpond-net/lowerduckpond.net
+gh secret delete DOCKERHUB_PUBLIC_READ_TOKEN --repo lowerduckpond-net/lowerduckpond.net --env m3-11-credential-cleanup
+gh variable delete DOCKERHUB_EXPIRES_AT --repo lowerduckpond-net/lowerduckpond.net
+gh variable delete DOCKERHUB_EXPIRES_AT --repo lowerduckpond-net/lowerduckpond.net --env m3-11-credential-cleanup
+```
 
 ### Renewing cleanup access within the existing epoch
 
