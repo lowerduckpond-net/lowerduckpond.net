@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from infrastructure.test_m3_11_connect_setup import CANARY, Operator, run
+from infrastructure.test_m3_11_connect_setup import CANARY, run
 from scripts.m3_11_private_inputs import write_private
 from scripts.m3_11_unattended.connect_delivery import PARENT_DOCKER, RECEIVER, Delivery
 from scripts.m3_11_unattended.model import LifecycleError
@@ -72,7 +72,7 @@ class Client(Delivery):
 def test_delivery_sends_only_controller_to_exact_workspace_and_only_cleanup_to_github(
     tmp_path: Path,
 ) -> None:
-    run(Operator(), tmp_path)
+    run(tmp_path)
     client = Client()
     client.preflight()
     client.install(tmp_path)
@@ -92,7 +92,7 @@ def test_delivery_sends_only_controller_to_exact_workspace_and_only_cleanup_to_g
 def test_wrong_workspace_or_cleanup_policy_blocks_all_delivery(
     tmp_path: Path, setting: str, value: object
 ) -> None:
-    run(Operator(), tmp_path)
+    run(tmp_path)
     client = Client()
     setattr(client, setting, value)
     with pytest.raises(LifecycleError):
@@ -101,7 +101,7 @@ def test_wrong_workspace_or_cleanup_policy_blocks_all_delivery(
 
 
 def test_swapped_bundles_cannot_export_production_authority_to_github(tmp_path: Path) -> None:
-    run(Operator(), tmp_path)
+    run(tmp_path)
     controller = tmp_path / "controller-connect.json"
     cleanup = tmp_path / "github-connect.json"
     cleanup.write_bytes(controller.read_bytes())
@@ -125,7 +125,7 @@ def receive(
 
 def test_actual_receiver_private_atomic_idempotent_and_never_overwrites(tmp_path: Path) -> None:
     source, destination = tmp_path / "source", tmp_path / "workspace" / "connect.json"
-    run(Operator(), source)
+    run(source)
     raw = (source / "controller-connect.json").read_bytes()
     result = receive(destination, raw)
     assert result.returncode == 0
@@ -143,21 +143,19 @@ def test_actual_receiver_private_atomic_idempotent_and_never_overwrites(tmp_path
 
 
 def test_delivery_failure_can_retry_original_tokens_without_issuance(tmp_path: Path) -> None:
-    operator = Operator()
     source, destination = tmp_path / "source", tmp_path / "workspace" / "connect.json"
-    run(operator, source)
+    run(source)
     raw = (source / "controller-connect.json").read_bytes()
     assert receive(destination, raw, expected="f" * 64).returncode != 0
     assert not destination.exists()
-    run(operator, source)
-    assert operator.tokens == 4
+    assert (source / "controller-connect.json").read_bytes() == raw
     assert receive(destination, raw).returncode == 0
 
 
 @pytest.mark.parametrize("unsafe", ["symlink", "hardlink", "public", "cleanup-bundle"])
 def test_actual_receiver_rejects_unsafe_or_wrong_material(tmp_path: Path, unsafe: str) -> None:
     source, destination = tmp_path / "source", tmp_path / "destination.json"
-    run(Operator(), source)
+    run(source)
     raw = (source / "controller-connect.json").read_bytes()
     original = tmp_path / "original.json"
     write_private(original, {"preserve": CANARY})

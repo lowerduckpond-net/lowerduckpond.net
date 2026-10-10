@@ -68,9 +68,8 @@ class Api:
         )
 
         approved = approved_candidate(candidate)
-        if self.origin != "https://api.cloudflare.com/client/v4" or body not in (
-            normalized(approved["before"]),
-            normalized(approved["candidate_after"]),
+        if self.origin != "https://api.cloudflare.com/client/v4" or body != normalized(
+            approved["before"]
         ):
             raise LifecycleError("audit policy update escaped its exact approved bodies")
         return self._request(
@@ -80,18 +79,7 @@ class Api:
     def cleanup_expiry_update(
         self, *, plan: dict[str, object], targets: Targets, expected: str, provider: str
     ) -> Response:
-        from scripts.m3_11_unattended.cleanup_expiry import approved_update  # noqa: PLC0415
-
-        if self.origin != "https://api.cloudflare.com/client/v4":
-            raise LifecycleError("cleanup expiry update requires the fixed Cloudflare API")
-        path, body = approved_update(
-            plan,
-            targets=targets,
-            expected=expected,
-            provider=provider,
-            authority_sha256=self.credential_sha256,
-        )
-        return self._request("PUT", path, body)
+        raise LifecycleError("obsolete cleanup expiry updates are permanently disabled")
 
     def _request(self, method: str, path: str, body: dict[str, object] | None) -> Response:
         try:

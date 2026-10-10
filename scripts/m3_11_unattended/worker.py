@@ -18,42 +18,46 @@ from scripts import qualification_deadline
 from scripts.m3_10_qualification_report import verify_report
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
-from scripts.m3_11_unattended import cleanup, historical_absence, inputs, quota
-from scripts.m3_11_unattended.cloudflare import Cloudflare
-from scripts.m3_11_unattended.config import Configuration, connect
-from scripts.m3_11_unattended.connect_admission import WINDOW
+from scripts.m3_11_unattended import cleanup, inputs
+from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.connect_diagnostics import retain_failure
-from scripts.m3_11_unattended.connect_journal import ConnectJournal
-from scripts.m3_11_unattended.connect_provisioning import ProvisioningJournal, persist_run
-from scripts.m3_11_unattended.creation_outcome import FORMAT as CREATION_PROTOCOL
 from scripts.m3_11_unattended.creation_outcome import (
-    RETAINED_FORMAT,
-    AbortRecoveryError,
-    original_abort,
     restore_aborted,
 )
-from scripts.m3_11_unattended.docker import SOCKET, Docker
-from scripts.m3_11_unattended.journal import Journal, OpJournal, event, validate
-from scripts.m3_11_unattended.lifecycle import Lifecycle, identifier, intents, known_id
+from scripts.m3_11_unattended.docker import OWNER, SOCKET, Docker, controller_name
+from scripts.m3_11_unattended.inventory import (
+    ConnectInventory,
+    fact,
+    require_clear,
+    require_confirmation,
+)
+from scripts.m3_11_unattended.journal import event, validate
+from scripts.m3_11_unattended.lifecycle import (
+    LeaseLifecycle,
+    Lifecycle,
+    fixture_scopes,
+    identifier,
+    intents,
+    known_id,
+    lease_manifest,
+)
 from scripts.m3_11_unattended.model import (
-    ROLES,
     Credential,
     Intent,
     LifecycleError,
-    ProviderKind,
+    digest,
     identity,
     instant,
     stamp,
     strings,
 )
 from scripts.m3_11_unattended.state import (
-    CleanupLockBusyError,
+    LeaseState,
     RunState,
     cleanup_lock,
     private_directory,
 )
 from scripts.production_qualification_inputs import current_candidate, fingerprint, revision
-from scripts.qualification_timing import measure
 
 SECRETS = {
     "archive": ("SPACES_ARCHIVE_ACCESS_KEY_ID", "SPACES_ARCHIVE_SECRET_ACCESS_KEY"),
@@ -178,11 +182,19 @@ def persist_terminal_result(lifecycle: Lifecycle, directory: Path) -> None:
 
 
 class Worker:
-    def __init__(self, directory: Path, config: Configuration, source: Path) -> None:
+    def __init__(self, directory: Path, config: LeaseConfiguration, source: Path) -> None:
         self.state, self.config, self.source = RunState(directory), config, source
         self.request = fields(
             read_private(directory / "request.json"),
-            {"format", "binding", "mode", "approval_sha256", "controller_image", "daemon"},
+            {
+                "format",
+                "binding",
+                "mode",
+                "approval_sha256",
+                "controller_image",
+                "daemon",
+                "lease_id",
+            },
         )
         self.binding = fields(self.request["binding"], inputs.BINDING)
         self.run_id = identity(self.binding["managed_run_id"])
@@ -191,11 +203,40 @@ class Worker:
         self.directory = directory
         self.pending = qualification_deadline.Interruption()
         self.ends_at = time.monotonic() + qualification_deadline.LIVE_SECONDS
-        self.cleanup_journal: OpJournal | ConnectJournal | None = None
-        self.cleanup_cache = directory.parent.parent / "cleanup-journal-cache.json"
+        if config.mode != "controller":
+            raise LifecycleError("cleanup-only configuration cannot launch qualification")
+        self.lease_id = identity(self.request["lease_id"])
+        self.lease_state = LeaseState(directory.parent.parent / "leases" / self.lease_id)
+        self.lifecycle: LeaseLifecycle | None = None
+        self.inventory: ConnectInventory | None = None
+        self.attempt_started = False
+
+    @property
+    def owns_lease(self) -> bool:
+        """Issuance ancestry does not restore released runtime ownership."""
+        directory = self.lease_state.directory
+        if (directory / ("released-" + self.run_id + ".json")).exists():
+            return False
+        uses = list(directory.glob("use-*.json"))
+        own = directory / ("use-" + self.run_id + ".json")
+        if own in uses:
+            return read_private(own) == {
+                "attempt_id": self.run_id,
+                "binding_sha256": digest(self.binding),
+                "kind": "attempt",
+            } and not any(
+                path != own
+                and not (
+                    directory / ("released-" + path.stem.removeprefix("use-") + ".json")
+                ).exists()
+                for path in uses
+            )
+        # The original issuer owns preparation failures until a runtime consumer
+        # has acquired the lease. It cannot inherit another consumer's authority.
+        return self.lease_id == self.run_id and not uses
 
     def check_cancelled(self) -> None:
-        if self.state.cancelled or self.pending.signum is not None:
+        if self.state.cancelled or self.state.stopped or self.pending.signum is not None:
             raise LifecycleError("qualification was cancelled")
         if time.monotonic() >= self.ends_at:
             raise LifecycleError("qualification exceeded its original 600-minute ceiling")
@@ -246,7 +287,7 @@ class Worker:
             or self.config.targets.storage_digest != self.binding["storage_target_sha256"]
         ):
             raise LifecycleError("controller source or storage target changed")
-        if self.request["format"] != "lowerduckpond-m3-11-unattended-request-v1" or self.request[
+        if self.request["format"] != "lowerduckpond-m3-11-unattended-request-v2" or self.request[
             "mode"
         ] not in {"rehearsal", "qualification"}:
             raise LifecycleError("controller request is invalid")
@@ -261,6 +302,27 @@ class Worker:
         docker = Docker()
         if docker.endpoint != "unix://" + SOCKET or docker.info() != self.request["daemon"]:
             raise LifecycleError("controller socket does not reach the approved Docker host")
+        selected = docker.owned(controller_name(self.run_id))
+        labels = selected.get("Config", {})
+        if (
+            selected.get("Name") != "/" + controller_name(self.run_id)
+            or selected.get("Image") != self.request["controller_image"]
+            or not isinstance(labels, dict)
+            or not isinstance(labels.get("Labels"), dict)
+            or labels["Labels"].get(OWNER + ".source") != self.helper
+        ):
+            raise LifecycleError("controller identity differs from the approved attempt")
+        proof = {
+            "id": selected["Id"],
+            "image": selected["Image"],
+            "name": selected["Name"],
+            "daemon_sha256": digest(self.request["daemon"]),
+        }
+        path = self.directory / "controller-identity.json"
+        if not path.exists():
+            write_private(path, proof)
+        if read_private(path) != proof:
+            raise LifecycleError("restored attempt cannot adopt another controller")
 
     def _command(
         self,
@@ -308,231 +370,95 @@ class Worker:
             )
         self.check_cancelled()
 
-    def _provision(self) -> tuple[dict[str, Credential], dict[str, object]]:  # noqa: PLR0912, PLR0915 - independent admission and credential roles
-        for sibling in self.directory.parent.iterdir():
-            if sibling != self.directory and (sibling / "status.json").exists():
-                progress = RunState(sibling).status()
-                if (
-                    progress["credential_cleanup"] != "verified" or progress["phase"] != "finished"
-                ) and not historical_absence.retained_failure(
-                    sibling.name, progress, read_private(sibling / "attempt.json")["binding"]
-                ):
+    def _inventory(self) -> ConnectInventory:
+        if self.inventory is None:
+            bootstrap = self.config.generations[self.config.active_generation]["cleanup"]
+            self.inventory = ConnectInventory(
+                bootstrap.reader(),
+                self.config.journal_vault,
+                spool=self.directory.parent.parent / "inventory-pending" / "controller",
+            )
+        return self.inventory
+
+    def _provision(self) -> tuple[dict[str, Credential], dict[str, object]]:
+        """One complete manifest confirmation; no creation ACK choreography."""
+        inventory = self._inventory()
+        legacy = cleanup.sweep_legacy(
+            self.config, inventory.client, root=self.directory.parent.parent
+        )
+        if legacy["status"] != "ready":
+            raise LifecycleError("legacy credential obligations remain unresolved")
+        require_clear(inventory, current_lease=self.lease_id)
+        now = datetime.now(UTC)
+        if self.lease_id == self.run_id:
+            self.config.require_issuance(now=now)
+            roles = self.config.generations[self.config.active_generation]
+            creator = roles["provision"].providers(targets=self.config.targets, now=now)
+            cleanup_providers = roles["cleanup"].providers(targets=self.config.targets, now=now)
+            manifest = lease_manifest(
+                lease_id=self.lease_id,
+                source=self.revision,
+                helper=self.helper,
+                targets=self.config.targets,
+                policy=self.config.policy,
+                approved_policy_sha256=self.config.approved_policy_sha256,
+                creator=roles["provision"].generation,
+                cleanup=roles["cleanup"].generation,
+                providers=creator,
+                cleanup_providers=cleanup_providers,
+                scopes=fixture_scopes(self.config.targets, creator),
+                now=now,
+            )
+            if (self.lease_state.directory / "manifest.json").exists():
+                raise LifecycleError("existing issuance cannot be replayed")
+            self.lifecycle = LeaseLifecycle(
+                manifest, inventory, self.lease_state, providers=creator
+            )
+            writer = digest({"attempt": self.run_id, "pid": os.getpid(), "started": stamp(now)})
+            self.lifecycle.prepare(writer_sha256=writer)
+            while True:
+                self.check_cancelled()
+                if datetime.now(UTC) >= instant(manifest.policy.issuance_before):
                     raise LifecycleError(
-                        "another attempt or unresolved cleanup blocks provisioning"
+                        "independent manifest confirmation missed the approved cutoff"
                     )
-        now = datetime.now(UTC).replace(microsecond=0)
-        separate = connect(
-            self.config.cleanup,
-            targets=self.config.targets,
-            vault=self.config.journal_vault,
-            now=now,
-            journal_directory=self.directory.parent.parent / "connect-journal" / "cleanup",
-        )
-        if isinstance(separate.journal, OpJournal):
-            separate.journal.use_cache(self.cleanup_cache)
-        if isinstance(separate.journal, OpJournal | ConnectJournal):
-            self.cleanup_journal = separate.journal
-        separate.authority.require(now + timedelta(hours=14))
-        cleanup.wait_independent_ready(
-            separate.journal,
-            helper=self.helper,
-            deadline=self.ends_at,
-            check_cancelled=self.check_cancelled,
-        )
-        Lifecycle(separate.journal, separate.providers).require_clear()
-        creator = connect(
-            self.config.provision,
-            targets=self.config.targets,
-            vault=self.config.journal_vault,
-            now=now,
-            provisioning=True,
-            journal_directory=self.directory.parent.parent / "connect-journal" / "provision",
-        )
-        if self.request["mode"] == "qualification":
-            self._require_rehearsal(creator.journal)
-        if isinstance(creator.journal, ConnectJournal):
-            creator.journal.check_cancelled = self.check_cancelled
-        for kind in separate.providers:
-            # Establish the same provider inventory/owner through independent
-            # authorities before allocating any child credential.
-            before = {item["id"] for item in separate.providers[kind].inventory()}
-            if not before or before != {item["id"] for item in creator.providers[kind].inventory()}:
-                raise LifecycleError("provisioning and cleanup provider identities differ")
-        records = creator.journal.records()
-        if isinstance(creator.journal, OpJournal) and isinstance(separate.journal, OpJournal):
-            quota.require_capacity(creator.journal.op, separate.journal.op, records=len(records))
-        elif (
-            self.config.provision.connect_settings is None
-            or self.config.cleanup.connect_settings is None
-        ):
-            raise LifecycleError("controller credential backends are ambiguous")
-        for record in records:
-            payload = record["payload"]
-            if (
-                record["kind"] == "run"
-                and isinstance(payload, dict)
-                and payload.get("approval_sha256") == self.request["approval_sha256"]
-                and payload.get("mode") == self.request["mode"]
-            ):
-                raise LifecycleError("this approved attempt has already been consumed")
-        run_record = persist_run(
-            creator.journal,
-            event(
-                "run",
-                self.run_id,
-                {
-                    "binding": self.binding,
-                    "mode": self.request["mode"],
-                    "approval_sha256": self.request["approval_sha256"],
-                    "creation_protocol": CREATION_PROTOCOL,
-                },
-            ),
-            deadline=self.ends_at,
-        )
-        # Match the immutable reservation clock, not the time its ACK arrives.
-        # Keep the intent's separate five-minute provider settlement range intact.
-        provisioning_deadline = (
-            instant(run_record["recorded_at"]).replace(microsecond=0) + WINDOW
-            if isinstance(creator.journal, ConnectJournal)
-            else None
-        )
-        pipeline = (
-            ProvisioningJournal(creator.journal)
-            if isinstance(creator.journal, ConnectJournal)
-            else None
-        )
-
-        def remember_aborted(intent: Intent, intent_record: dict[str, object]) -> None:
-            record = original_abort(intent, intent_record, run_record)
-            directory = self.directory / "credential-aborted"
-            directory.mkdir(mode=0o700, exist_ok=True)
-            private_directory(directory)
-            # Exclusive durable creation; a partial file remains unresolved.
-            write_private(
-                directory / (intent.sha256 + ".json"),
-                {"format": RETAINED_FORMAT, "intent": intent_record, "abort": record},
-            )
-
-        lifecycle = Lifecycle(
-            pipeline if pipeline is not None else creator.journal,
-            creator.providers,
-            remember=self.remember,
-            remember_intent=self.remember_intent,
-            remember_created=self.remember_created,
-            remember_aborted=remember_aborted,
-        )
-        credentials: dict[str, Credential] = {}
-        deadlines: list[datetime] = []
-        for role in ("archive", "backup", "operator", "audit", "caddy", "observer", "page-rules"):
-            self.check_cancelled()
-            if role in {"archive", "backup", "operator"}:
-                provider: ProviderKind = "spaces"
-                bucket = (
-                    "" if role == "operator" else getattr(self.config.targets, role + "_bucket")
-                )
-                scope: dict[str, object] = {
-                    "grants": [
-                        {
-                            "bucket": bucket,
-                            "permission": "fullaccess" if role == "operator" else "readwrite",
-                        }
-                    ]
-                }
-            else:
-                provider = "cloudflare-user" if role == "page-rules" else "cloudflare-account"
-                client = creator.providers[provider]
-                if not isinstance(client, Cloudflare):
-                    raise LifecycleError("fixture token provisioning authority is invalid")
-                scope = client.scope(role, self.config.targets)
-            with measure("credential-provision-" + role):
-                intent, credential = lifecycle.provision(
-                    run_id=self.run_id,
-                    role=role,
-                    source=self.revision,
-                    helper=self.helper,
-                    targets=self.config.targets,
-                    provider=provider,
-                    scope=scope,
-                    authority=separate.authority,
-                    provisioning_deadline=provisioning_deadline,
-                )
-            if separate.providers[provider].inspect(credential.identifier) is None:
-                raise LifecycleError("independent cleanup cannot observe the created credential")
-            credentials[role] = credential
-            deadlines.append(instant(intent.deadline))
-        if pipeline is not None:
-            pipeline.flush()
-        self.check_cancelled()
-        if len({credential.secret for credential in credentials.values()}) != len(ROLES) or len(
-            {credential.identifier for credential in credentials.values()}
-        ) != len(ROLES):
-            raise LifecycleError("provider issued duplicate fixture credential identities")
-        receipt = {
-            "format": inputs.FIXTURE_FORMAT,
-            **self.binding,
-            "started_at": stamp(min(deadlines) - timedelta(hours=14)),
-            "completed_at": stamp(datetime.now(UTC)),
-            "deadline": stamp(min(deadlines)),
-            "checks": inputs.FIXTURE_RESULT,
-            "identities_sha256": {
-                role: hashlib.sha256(value.identifier.encode()).hexdigest()
-                for role, value in credentials.items()
-            },
-        }
-        return credentials, receipt
-
-    def _require_rehearsal(self, journal: Journal) -> None:
-        records = journal.records()
-        completed = [
-            record
-            for record in records
-            if record["kind"] == "result"
-            and isinstance(record["payload"], dict)
-            and record["payload"].get("approval_sha256") == self.request["approval_sha256"]
-            and record["payload"].get("qualification") == "rehearsal-interrupted"
-            and record["payload"].get("credential_cleanup") == "verified"
-        ]
-        if len(completed) != 1:
-            raise LifecycleError(
-                "qualification requires its completed credential lifecycle rehearsal"
-            )
-        rehearsal = completed[0]
-        if isinstance(journal, ConnectJournal) and not journal.confirmed(rehearsal):
-            raise LifecycleError(
-                "credential lifecycle rehearsal result is not independently durable"
-            )
-        owned = {
-            Intent.parse(record["payload"]).sha256
-            for record in records
-            if record["kind"] == "intent" and record["run_id"] == rehearsal["run_id"]
-        }
-        for record in records:
-            payload = record["payload"]
-            if (
-                record["kind"] == "heartbeat"
-                and isinstance(payload, dict)
-                and payload.get("actor") == "github"
-                and payload.get("helper_revision") == self.helper
-                and instant(record["recorded_at"]) >= instant(rehearsal["recorded_at"])
-                and isinstance(payload.get("results"), list)
-                and (
-                    not isinstance(journal, ConnectJournal)
-                    or (
-                        journal.confirmed(record)
-                        and journal.ledger.authored(record, journal.witness.author)
+                try:
+                    require_confirmation(
+                        inventory, manifest, independent_server_id=self.config.independent_server_id
                     )
-                )
+                    break
+                except LifecycleError:
+                    time.sleep(5)
+            self.lifecycle.issue(
+                writer_sha256=writer,
+                approved_policy_sha256=self.config.approved_policy_sha256,
+                independent_server_id=self.config.independent_server_id,
+                check_cancelled=self.check_cancelled,
+            )
+        else:
+            manifest = self.lease_state.manifest()
+            if (
+                manifest.targets != self.config.targets
+                or manifest.policy.sha256 != self.config.approved_policy_sha256
             ):
-                verified = {
-                    value.get("intent_sha256")
-                    for value in payload["results"]
-                    if isinstance(value, dict) and value.get("status") == "verified"
-                }
-                if len(owned) == len(ROLES) and owned <= verified:
-                    return
-        raise LifecycleError("GitHub has not independently verified the rehearsal revocations")
+                raise LifecycleError("reused lease target or approved policy changed")
+            bootstrap = self.config.generations[self.config.active_generation]["cleanup"]
+            providers = bootstrap.providers(targets=self.config.targets, now=now)
+            self.lifecycle = LeaseLifecycle(
+                manifest, inventory, self.lease_state, providers=providers
+            )
+        from scripts.m3_11_unattended.watchdog import require_released_consumers  # noqa: PLC0415
+
+        with self.lease_state.use_lock():
+            require_released_consumers(self.lease_state, Docker())
+            self.lease_state.acquire_use(
+                attempt_id=self.run_id, binding_sha256=digest(self.binding), kind="attempt"
+            )
+        return self.lifecycle.credentials(binding=self.binding)
 
     def _production(self, credentials: dict[str, Credential]) -> dict[str, object]:
+        if self.config.production is None:
+            raise LifecycleError("isolated production reader is unavailable")
         request = {
             **self.config.production,
             "targets": dataclasses.asdict(self.config.targets),
@@ -547,10 +473,6 @@ class Worker:
                 },
             },
         }
-        if "connect" not in request:
-            if instant(request.pop("service_account_expires_at")) <= datetime.now(UTC):
-                raise LifecycleError("production reader authority has expired")
-            request["service_account"] = request.pop("service_account_token")
         self._command(
             [sys.executable, "-m", "scripts.m3_11_unattended.production", "bootstrap"],
             log="production-check.log",
@@ -571,6 +493,8 @@ class Worker:
             if identifier_name is not None:
                 values[identifier_name] = credentials[role].identifier
             values[secret_name] = credentials[role].secret
+        if self.lifecycle is None:
+            raise LifecycleError("lease validation is unavailable")
         path = self.directory / "runtime-inputs.json"
         write_private(
             path,
@@ -625,6 +549,11 @@ class Worker:
                     drained = False
                 if not drained and sys.exception() is None:
                     raise LifecycleError("qualification process shutdown was not verified")
+                if drained:
+                    write_private(
+                        self.directory / "host-drained.json",
+                        {"binding_sha256": digest(self.binding), "drained": True},
+                    )
 
     def _drain_journey(self, child: subprocess.Popen[bytes]) -> bool:
         stop_at = self.journey_shutdown_at or (
@@ -654,7 +583,10 @@ class Worker:
         while child.poll() is None:
             expired = time.monotonic() >= self.ends_at
             if (
-                self.state.cancelled or self.pending.signum is not None or expired
+                self.state.cancelled
+                or self.state.stopped
+                or self.pending.signum is not None
+                or expired
             ) and not interrupted:
                 interrupted_status = 124 if expired else 143
                 qualification_deadline._kill_group(child, signal.SIGTERM)
@@ -678,99 +610,110 @@ class Worker:
         )
 
     def revoke(self) -> bool:
+        """Publish before the local provider lock; failed publication cannot skip deletion."""
+        if self.lifecycle is None:
+            if not (self.lease_state.directory / "manifest.json").exists():
+                return False
+            self.lifecycle = LeaseLifecycle(
+                self.lease_state.manifest(), self._inventory(), self.lease_state, providers={}
+            )
+        published = True
         try:
-            with cleanup_lock(self.directory.parent, blocking=False):
-                return self._revoke_locked()
-        except CleanupLockBusyError as error:
-            # Another local reconciler owns the critical section. Retain this
-            # attempt as unresolved and let the persistent retry/watchdogs act.
+            # Serialize the fresh ownership decision and close request with
+            # release/acquisition. Explicit lease cancellation and expiry remain
+            # global cleanup obligations even after this attempt released use.
+            with self.lease_state.use_lock():
+                if (
+                    not self.state.cancelled
+                    and datetime.now(UTC)
+                    < self.lifecycle.manifest.policy.deadline(
+                        instant(self.lifecycle.manifest.created_at)
+                    )
+                    and not self.owns_lease
+                ):
+                    return False
+                try:
+                    self.lifecycle.abandon_prepared()
+                except (RuntimeError, OSError, ValueError) as error:
+                    published = False
+                    self._failure(error, cleanup_failed=True)
+                try:
+                    self.lifecycle.request_close("cancel" if self.state.cancelled else "finish")
+                except (RuntimeError, OSError, ValueError) as error:
+                    published = False
+                    self._failure(error, cleanup_failed=True)
+        except (RuntimeError, OSError, ValueError) as error:
             self._failure(error, cleanup_failed=True)
-            self._cleanup_progress("finished", "unresolved")
-            try:
-                (self.directory / "runtime-inputs.json").unlink(missing_ok=True)
-            except OSError as disposal_error:
-                self._failure(disposal_error, cleanup_failed=True)
             return False
-
-    def _revoke_locked(self) -> bool:  # noqa: PLR0912 - cache types and cleanup proofs remain explicit
         try:
-            recorded = self._cleanup_progress("revoking", "pending")
-            try:
-                (self.directory / "runtime-inputs.json").unlink(missing_ok=True)
-            except OSError as error:
-                recorded = False
-                self._failure(error, cleanup_failed=True)
-            lifecycle = cleanup.connect_cleanup(
-                self.config.cleanup,
-                self.config.targets,
-                self.config.journal_vault,
-                journal_directory=self.directory.parent.parent / "connect-journal" / "cleanup",
-            )
-            if self.cleanup_journal is None:
-                if isinstance(lifecycle.journal, OpJournal):
-                    lifecycle.journal.use_cache(self.cleanup_cache)
-                if isinstance(lifecycle.journal, OpJournal | ConnectJournal):
-                    self.cleanup_journal = lifecycle.journal
-            else:
-                if isinstance(self.cleanup_journal, OpJournal):
-                    self.cleanup_journal.refresh()
-                # Connect keeps only validated immutable item details; every
-                # read still validates fresh inventories and native metadata.
-                lifecycle.journal = self.cleanup_journal
-            lifecycle.request_revocation(self.run_id)
-            recovered = True
-            try:
-                restore_created(lifecycle, self.directory, run_id=self.run_id)
-            except AbortRecoveryError as error:
-                recovered = False
-                self._failure(error, cleanup_failed=True)
-            available = retained_credentials(self.directory)
-            receipt = cleanup.sweep(
-                lifecycle,
-                actor="controller",
-                helper=self.helper,
-                secrets=available,
-                recovery_verified=recovered,
-            )
-            own = {
-                intent.sha256
-                for intent in intents(lifecycle.journal)
-                if intent.run_id == self.run_id
-            }
-            local = {path.stem for path in (self.directory / "credential-intents").glob("*.json")}
-            if not local <= own or not set(available) <= own:
-                raise LifecycleError("independent credential obligations are missing")
-            results = receipt["results"]
-            verified = (
-                recorded
-                and recovered
-                and isinstance(results, list)
-                and all(
-                    isinstance(value, dict)
-                    and (value.get("intent_sha256") not in own or value.get("status") == "verified")
-                    for value in results
+            (self.directory / "runtime-inputs.json").unlink(missing_ok=True)
+            with cleanup_lock(self.directory.parent, blocking=False):
+                self._cleanup_progress("revoking", "pending")
+                manifest = self.lifecycle.manifest
+                bootstrap = self.config.generations[self.config.active_generation]["cleanup"]
+                providers = bootstrap.providers(
+                    targets=self.config.targets, now=datetime.now(UTC), tolerate_unavailable=True
                 )
-            )
-            if verified and (self.directory / "journey-result.json").exists():
-                persist_terminal_result(lifecycle, self.directory)
-            if verified:
-                for path in (self.directory / "credential-cleanup").glob("*.json"):
-                    path.unlink()
-                if not (self.directory / "revocation.json").exists():
-                    write_private(self.directory / "revocation.json", receipt)
-            return (
+                generations = {
+                    key: roles["cleanup"].providers(
+                        targets=self.config.targets,
+                        now=datetime.now(UTC),
+                        tolerate_unavailable=True,
+                    )
+                    for key, roles in self.config.generations.items()
+                }
+                results = self.lifecycle.reconcile(providers, generations=generations)
+                verified = published and all(result.status == "verified" for result in results)
+                receipt: dict[str, object] = {
+                    "actor": "controller",
+                    "helper_revision": self.helper,
+                    "observed_at": stamp(datetime.now(UTC)),
+                    "status": "verified" if verified else "unresolved",
+                    "overdue": datetime.now(UTC)
+                    > manifest.policy.deadline(instant(manifest.created_at)),
+                    "results": [dataclasses.asdict(result) for result in results],
+                }
+                if verified:
+                    self._inventory().publish(
+                        fact(manifest, "closed", {"results": receipt["results"]})
+                    )
+                    if not (self.directory / "revocation.json").exists():
+                        write_private(self.directory / "revocation.json", receipt)
+                    for path in self.lease_state.directory.glob("credential-*.json"):
+                        path.unlink()
                 self._cleanup_progress("finished", "verified" if verified else "unresolved")
-                and verified
-            )
+                return verified
         except (RuntimeError, OSError, ValueError, KeyError, TypeError) as error:
             self._failure(error, cleanup_failed=True)
             self._cleanup_progress("finished", "unresolved")
             return False
-        finally:
-            try:
+
+    def _terminal(self) -> None:
+        retain = False
+        try:
+            if self.lifecycle is not None and (self.directory / "journey-result.json").exists():
+                result = read_private(self.directory / "journey-result.json")
+                retain = (
+                    self.request["mode"] == "qualification"
+                    and self.lifecycle.manifest.policy.retain_after_failure
+                    and not self.state.cancelled
+                    and self.attempt_started
+                    and (self.directory / "attempt-started.json").exists()
+                    and (not self.pending.signum or (self.directory / "stop-attempt.json").exists())
+                    and result["outcome"] in {"failed", "interrupted"}
+                    and (self.directory / "runtime-inputs.json").exists()
+                    and not any(slot.startswith("close-") for slot in self.lifecycle.records())
+                )
+            if retain:
+                # Retention is not release: the durable runtime-use owner stays
+                # held until exact host/guest quiescence is verified separately.
                 (self.directory / "runtime-inputs.json").unlink(missing_ok=True)
-            except OSError as error:
-                self._failure(error, cleanup_failed=True)
+                self._cleanup_progress("finished", "pending")
+            else:
+                self.revoke()
+        except (RuntimeError, OSError, ValueError) as error:
+            self._failure(error, cleanup_failed=True)
+            self.revoke()
 
     def _cleanup_progress(self, phase: str, status: str) -> bool:
         try:
@@ -845,6 +788,16 @@ class Worker:
                         raise LifecycleError("rehearsal interruption was not observed")
                     self.state.finish_journey("rehearsal-interrupted", 143)
                     return 0
+                if self.lifecycle is None:
+                    raise LifecycleError("attempt has no validated lease")
+                write_private(
+                    self.directory / "attempt-started.json",
+                    {
+                        "binding_sha256": digest(self.binding),
+                        "manifest_sha256": self.lifecycle.manifest.sha256,
+                    },
+                )
+                self.attempt_started = True
                 status = self._journey(environment)
                 if status == 0:
                     paths = list((self.directory / "qualification").glob("*/qualification.json"))
@@ -884,7 +837,7 @@ class Worker:
                     )
                 return 1
             finally:
-                self.revoke()
+                self._terminal()
 
 
 def main() -> int:
@@ -895,7 +848,7 @@ def main() -> int:
     args = parser.parse_args()
     os.umask(0o077)
     try:
-        worker = Worker(args.directory, Configuration.load(args.config), args.source)
+        worker = Worker(args.directory, LeaseConfiguration.load(args.config), args.source)
         # One daemon-wide admission lock, shared across all pinned helper revisions.
         with RunState(args.directory.parent.parent).lock():
             worker.run()
@@ -907,6 +860,12 @@ def main() -> int:
             # failures to an hourly cadence without consuming the shared quota.
             time.sleep(retry_seconds)
             if worker.state.status()["credential_cleanup"] != "verified":
+                if worker.lifecycle is not None and not worker.state.cancelled:
+                    manifest = worker.lifecycle.manifest
+                    if datetime.now(UTC) < manifest.policy.deadline(
+                        instant(manifest.created_at)
+                    ) and not any(slot.startswith("close-") for slot in worker.lifecycle.records()):
+                        continue
                 verified = worker.revoke()
                 retry_seconds = (
                     cleanup.REMOTE_SECONDS

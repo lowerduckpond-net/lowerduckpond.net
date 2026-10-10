@@ -1,9 +1,7 @@
-"""Protected cleanup selection, real protocol integration and sanitized delivery."""
+"""One complete independent confirmation, cold cleanup and sanitized transport."""
 
 from __future__ import annotations
 
-import copy
-import dataclasses
 import io
 import json
 import os
@@ -13,42 +11,159 @@ import sys
 import time
 import uuid
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime, timedelta
+from contextlib import contextmanager, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
 import pytest
 
-from infrastructure.test_m3_11_connect_admission import Case as AdmissionCase
-from infrastructure.test_m3_11_connect_configuration import VAULTS, reader_config
-from infrastructure.test_m3_11_connect_genesis import Case as GenesisCase
-from infrastructure.test_m3_11_connect_journal import sync
-from infrastructure.test_m3_11_connect_ledger import REMOTE_AUTHOR, REMOTE_SERVER
-from infrastructure.test_m3_11_unattended_lifecycle import CANARY, TARGETS, ProviderDouble
-from scripts.m3_11_private_inputs import read_private
+from scripts.m3_11_private_inputs import read_private, write_private
+from scripts.m3_11_unattended import cleanup, worker
 from scripts.m3_11_unattended import connect_action as action
-from scripts.m3_11_unattended import connect_diagnostics as diagnostics
-from scripts.m3_11_unattended import connect_genesis as genesis
-from scripts.m3_11_unattended.cleanup import require_independent_ready
-from scripts.m3_11_unattended.config import Connections
-from scripts.m3_11_unattended.connect_admission import Admission, run_digest
+from scripts.m3_11_unattended.config import LeaseBootstrap, LeaseConfiguration
+from scripts.m3_11_unattended.connect_api import Connect
 from scripts.m3_11_unattended.connect_auth import Access
-from scripts.m3_11_unattended.connect_configuration import PROVIDER_REFERENCES
-from scripts.m3_11_unattended.github_checkpoint import (
-    MINIMUM_START_CAPACITY,
-    REPOSITORY,
-    WORKFLOW,
-    GitHubArtifacts,
+from scripts.m3_11_unattended.connect_setup import assemble
+from scripts.m3_11_unattended.docker import Docker
+from scripts.m3_11_unattended.inventory import ConnectInventory, fact, require_confirmation
+from scripts.m3_11_unattended.journal import MIGRATION_FORMAT, MIGRATION_TAG
+from scripts.m3_11_unattended.lifecycle import LeaseLifecycle, Provider, lease_manifest
+from scripts.m3_11_unattended.model import (
+    PROVIDERS,
+    ROLES,
+    LifecycleError,
+    ProviderKind,
+    digest,
+    stamp,
 )
-from scripts.m3_11_unattended.journal import event
-from scripts.m3_11_unattended.lifecycle import Lifecycle
-from scripts.m3_11_unattended.model import Authority, Intent, LifecycleError, digest, instant
+from scripts.m3_11_unattended.state import LeaseState, RunState
+from scripts.m3_11_unattended.watchdog import prepare_lease_cleanup
+
+from .test_m3_11_connect_setup import CANARY, independent_reader
+from .test_m3_11_lease_configuration import document
+from .test_m3_11_lease_inventory import ConnectDouble, LeaseProviderDouble
+from .test_m3_11_lease_migration import note
+
+
+class Case:
+    """Real entrypoints with only the native server and provider transport doubled."""
+
+    def __init__(self, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.root = root
+        raw = document()
+        self.mapping: dict[str, object] = {
+            "format": MIGRATION_FORMAT,
+            "records": {},
+            "obligations": {},
+            "retained_files": {},
+            "expiry_updates": [],
+            "issuers": [],
+            "approved_at": stamp(datetime.now(UTC)),
+            "approval_reference": "SYNTHETIC-EMPTY-MIGRATION",
+        }
+        raw["migration_sha256"] = digest(self.mapping)
+        # Native IDs are commonly uppercase; preserve exact independent identity.
+        raw["independent_server_id"] = "I" * 26
+        self.config = LeaseConfiguration.parse(raw)
+        self.client = ConnectDouble(self.config.journal_vault)
+        note(
+            self.client,
+            self.mapping,
+            tag=MIGRATION_TAG,
+            title="m3-11-import-" + digest(self.mapping),
+        )
+        self.inventory = ConnectInventory(
+            self.client, self.client.vault, spool=root / "host-pending"
+        )
+        self.providers: dict[str, dict[ProviderKind, LeaseProviderDouble]] = {}
+        for role in ("provision", "cleanup"):
+            gen = self.config.generations[self.config.active_generation][role].generation
+            self.providers[role] = {
+                kind: LeaseProviderDouble(kind, gen.fingerprints[kind]) for kind in PROVIDERS
+            }
+        for kind in PROVIDERS:
+            self.providers["cleanup"][kind].items = self.providers["provision"][kind].items
+        self.server_active = False
+        self.teardown_failure = False
+        self.auth_attempts = 0
+        self.auth_failures = 0
+
+        def providers(bootstrap: LeaseBootstrap, **_kwargs: object) -> dict[ProviderKind, Provider]:
+            return dict(self.providers[bootstrap.generation.role])
+
+        @contextmanager
+        def server(_docker: object, credentials: object) -> Iterator[str]:
+            assert credentials == {"synthetic": CANARY}
+            self.server_active = True
+            try:
+                yield "http://127.0.0.1:9999"
+            finally:
+                self.server_active = False
+                if self.teardown_failure:
+                    raise LifecycleError(CANARY)
+
+        def authenticate(_client: Connect, access: Access, *, forbidden: set[str]) -> None:
+            assert self.server_active
+            assert access.server_id == self.config.independent_server_id
+            assert self.config.journal_vault in access.grants
+            assert forbidden.isdisjoint(access.grants)
+            self.auth_attempts += 1
+            if self.auth_attempts <= self.auth_failures:
+                raise LifecycleError(CANARY)
+
+        monkeypatch.setattr(LeaseBootstrap, "providers", providers)
+        monkeypatch.setattr(LeaseBootstrap, "reader", lambda _self: self.client)
+        monkeypatch.setattr(action, "Docker", object)
+        monkeypatch.setattr(action, "independent_server", server)
+        monkeypatch.setattr(action, "Connect", lambda *_args, **_kwargs: self.client)
+        monkeypatch.setattr(action, "authenticate", authenticate)
+        monkeypatch.setenv("GITHUB_RUN_ID", "12345")
+        monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+        _, self.bundle = assemble(
+            raw, independent_reader(self.config.independent_server_id), {"synthetic": CANARY}
+        )
+        self.manifest = lease_manifest(
+            lease_id=str(uuid.uuid7()),
+            source="f" * 40,
+            helper=self.config.helper_revision,
+            targets=self.config.targets,
+            policy=self.config.policy,
+            approved_policy_sha256=self.config.approved_policy_sha256,
+            creator=self.config.generations[self.config.active_generation]["provision"].generation,
+            cleanup=self.config.generations[self.config.active_generation]["cleanup"].generation,
+            providers=self.providers["provision"],
+            cleanup_providers=self.providers["cleanup"],
+            scopes={role: {"synthetic_role": role} for role in ROLES},
+            now=datetime.now(UTC),
+        )
+        self.state = LeaseState(root / "host/leases" / self.manifest.lease_id)
+        self.lifecycle = LeaseLifecycle(
+            self.manifest, self.inventory, self.state, providers=self.providers["provision"]
+        )
+        self.lifecycle.prepare()
+
+    def execute(
+        self, operation: str = "confirm", *, directory: Path | None = None
+    ) -> dict[str, object]:
+        target = directory or self.root / "independent"
+        target.mkdir(mode=0o700, parents=True, exist_ok=True)
+        return action.execute(
+            {"bootstrap": self.bundle, "operation": operation},
+            directory=target,
+            helper=self.config.helper_revision,
+        )
+
+    def issue(self) -> None:
+        self.lifecycle.issue(
+            writer_sha256="a" * 64,
+            approved_policy_sha256=self.config.approved_policy_sha256,
+            independent_server_id=self.config.independent_server_id,
+        )
 
 
 @pytest.fixture(autouse=True)
 def restore_process_umask() -> Iterator[None]:
-    # CLI entry points restrict their own process. Direct calls in these tests
-    # must not change how unrelated tests create deliberately unsafe files.
     previous = os.umask(0o077)
     os.umask(previous)
     try:
@@ -57,512 +172,186 @@ def restore_process_umask() -> Iterator[None]:
         os.umask(previous)
 
 
-def selected(case: GenesisCase) -> dict[str, object]:
-    return {
-        "format": action.FORMAT,
-        "stage": "active",
-        "active_helper": case.journal.witness.helper,
-        "request": case.approved,
-        "receipt": case.initialize(),
-    }
+def test_real_action_confirms_once_before_original_issuer_can_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = Case(tmp_path, monkeypatch)
+    with pytest.raises(LifecycleError, match="confirmation"):
+        case.issue()
+    assert case.execute()["status"] == "ready"
+    require_confirmation(
+        case.inventory, case.manifest, independent_server_id=case.config.independent_server_id
+    )
+    count = case.client.posts
+    assert case.execute()["status"] == "ready"
+    assert case.client.posts == count
+    assert all(provider.creates == 0 for provider in case.providers["provision"].values())
+    case.issue()
+    assert sum(provider.creates for provider in case.providers["provision"].values()) == len(ROLES)
+    assert CANARY not in json.dumps(case.inventory.records())
 
 
-def test_discovery_shared_forgery_genesis_and_recovery_use_real_adapters(tmp_path: Path) -> None:
-    case = GenesisCase(tmp_path)
-    forged = cast(dict[str, object], case.approved["shared_forgery_probe"])
-    # Remove the pre-staged forgery to exercise the actual required order.
-    for replica in (case.journal.shared, case.journal.remote):
-        for key, item in list(replica.items.items()):
-            if str(forged["event_id"]) in json.dumps(item):
-                del replica.items[key]
-                replica.version += 1
-    initial = cast(dict[str, str], case.approved["initial"])
-    initial.pop(str(forged["event_id"]))
-    request = {key: value for key, value in case.approved.items() if key != "shared_forgery_probe"}
-    request["format"] = genesis.DISCOVERY_FORMAT
-    discovery = genesis.discover(
-        case.ledger,
-        request,
-        helper=case.journal.witness.helper,
-        server=REMOTE_SERVER,
-        now=case.now,
+def test_cold_independent_cleanup_deletes_but_preserves_retained_negative_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = Case(tmp_path, monkeypatch)
+    case.execute()
+    case.issue()
+    case.lifecycle.request_close("finish")
+    result = case.execute("cleanup")
+    assert result["status"] == "unresolved"
+    assert sum(len(provider.deletes) for provider in case.providers["cleanup"].values()) == len(
+        ROLES
     )
-    assert discovery["independent_author"] == REMOTE_AUTHOR
-    sync(case.journal.remote, case.journal.shared)
-    local = case.journal.local()
-    forged = event(
-        "run",
-        case.epoch,
-        {
-            "format": genesis.PROBE_FORMAT,
-            "epoch": case.epoch,
-            "actor": "shared-forgery",
-            "claimed_author": discovery["independent_author"],
-        },
+    assert all(not provider.items for provider in case.providers["cleanup"].values())
+    assert all(
+        row.status == "verified" for row in case.lifecycle.reconcile(case.providers["cleanup"])
     )
-    local.ledger.stage(forged, claimed_author=str(discovery["independent_author"]))
-    sync(case.journal.shared, case.journal.remote)
-    case.approved["shared_forgery_probe"] = forged
-    initial[str(forged["event_id"])] = digest(forged)
-    value = selected(case)
-    assert action.selection(value, helper=case.journal.witness.helper) == value
-    access = Access(REMOTE_SERVER, "T" * 26, "A" * 26, case.now + timedelta(days=7), {}, CANARY)
-    store = cast(GitHubArtifacts, case.store)
-    store.remaining_capacity = lambda: MINIMUM_START_CAPACITY + 10  # type: ignore[method-assign]
-    journal = action.restore(case.ledger, store, value, access)
-    receipt = cast(dict[str, object], value["receipt"])
-    assert journal.checkpoint.records.keys() == cast(dict[str, str], receipt["initial"]).keys()
+    assert case.execute("cleanup")["status"] == "ready"
+    assert any(row["slot"] == "closed" for row in case.inventory.records())
+    assert CANARY not in json.dumps(result)
 
 
 @pytest.mark.parametrize(
-    "fault", ["subset", "author", "shared-forgery", "request", "helper", "mixed-stage"]
+    "closing", ["unpublished-local", "newly-visible-remote", "second-read-unavailable"]
 )
-def test_activation_requires_exact_complete_genesis_and_both_provenance_probes(
-    tmp_path: Path,
-    fault: str,
+def test_sweep_reports_unresolved_when_reconciliation_discovers_close_after_initial_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, closing: str
 ) -> None:
-    case = GenesisCase(tmp_path)
-    value = selected(case)
-    receipt = cast(dict[str, object], value["receipt"])
-    if fault == "subset":
-        cast(dict[str, str], receipt["initial"]).popitem()
-    elif fault == "author":
-        receipt["independent_author"] = receipt["shared_author"]
-    elif fault == "shared-forgery":
-        receipt["shared_forged_author_ignored"] = False
-    elif fault == "request":
-        receipt["request_sha256"] = "0" * 64
-    elif fault == "helper":
-        receipt["helper_revision"] = "0" * 40
+    case = Case(tmp_path, monkeypatch)
+    case.execute()
+    case.issue()
+    if closing == "unpublished-local":
+        publish = case.inventory.publish
+
+        def unavailable(record: dict[str, object]) -> None:
+            if str(record["slot"]).startswith("close-"):
+                raise LifecycleError("synthetic close publication failure")
+            publish(record)
+
+        monkeypatch.setattr(case.inventory, "publish", unavailable)
+        with pytest.raises(LifecycleError):
+            case.lifecycle.request_close("cancel")
+        root = case.state.directory.parent
+    elif closing == "newly-visible-remote":
+        records = case.inventory.records
+        before_close = records()
+        case.lifecycle.request_close("cancel")
+        snapshots = iter([before_close])
+        monkeypatch.setattr(case.inventory, "records", lambda: next(snapshots, None) or records())
+        root = tmp_path / "independent-cold"
     else:
-        value["stage"] = "genesis"
-    with pytest.raises(LifecycleError):
-        action.selection(value, helper=case.journal.witness.helper)
+        case.lifecycle.request_close("cancel")
+        records = case.inventory.records
+        calls = 0
 
+        def unavailable_read() -> list[dict[str, object]]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:  # noqa: PLR2004 - fail reconciliation's read after the first snapshot
+                raise LifecycleError("synthetic second inventory read failure")
+            return records()
 
-def reconcile(
-    case: AdmissionCase, provider: ProviderDouble, *, expected: str = "", fail: bool = False
-) -> dict[str, object]:
-    def connections() -> Connections:
-        if fail:
-            raise LifecycleError(CANARY)
-        return Connections(case.journal.github, {"spaces": provider}, case.authority)
-
-    return action.reconcile(
-        case.journal.github,
-        connections,
-        targets=TARGETS,
-        request_sha256=expected,
-        run_id=50,
-        attempt=1,
-        fallback=lambda: Lifecycle(case.journal.github, {"spaces": provider}),
+        monkeypatch.setattr(case.inventory, "records", unavailable_read)
+        root = tmp_path / "independent-cold"
+    result = cleanup.sweep_leases(
+        case.config,
+        case.inventory,
+        root=root,
+        actor="github",
+        connect_client=case.client,
     )
-
-
-def test_protected_witness_reserves_and_acknowledges_only_the_dispatched_request(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    case = AdmissionCase(tmp_path)
-    monkeypatch.setattr(action, "WITNESS_SECONDS", 0)
-    provider = ProviderDouble()
-    result = reconcile(case, provider, expected=run_digest(case.run_id, case.payload))
-    sync(case.journal.remote, case.journal.shared)
-    assert result["status"] == "ready" and case.journal.controller.confirmed(case.run)
-    assert provider.creates == 0
-    ready = [
-        r
-        for r in case.journal.controller.records()
-        if cast(dict[str, object], r["payload"]).get("format") == action.READY_FORMAT
-    ]
-    assert len(ready) == 1 and case.journal.controller.confirmed(ready[0])
-
-
-def test_reconciliation_without_dispatch_cannot_admit_creation(tmp_path: Path) -> None:
-    case = AdmissionCase(tmp_path)
-    result = reconcile(case, ProviderDouble())
-    sync(case.journal.remote, case.journal.shared)
-    assert result["status"] == "ready" and not case.journal.controller.confirmed(case.run)
-
-
-def test_cleanup_bootstrap_binds_cloudflare_targets_as_well_as_storage() -> None:
-    configured = reader_config("cleanup")
-    targets = dataclasses.asdict(TARGETS)
-    bundle: dict[str, object] = {
-        "format": "lowerduckpond-m3-11-connect-bootstrap-v1",
-        "targets": targets,
-        "journal_vault": VAULTS["journal"],
-        "cleanup": {
-            **{key: f"op://{VAULTS['cleanup']}/{'i' * 26}/{key}" for key in PROVIDER_REFERENCES},
-            "service_account_expires_at": "2026-10-10T00:00:00Z",
-        },
-        "token": configured["entry"],
-        "provider_metadata": configured["metadata"],
-        "server_credentials": {"private": CANARY},
-    }
-    approved: dict[str, object] = {
-        "vaults": VAULTS,
-        "targets_sha256": digest(targets),
-        "shared_server": "Q" * 26,
-    }
-    _private, _access, actual, _references = action.bootstrap(bundle, approved)
-    assert actual == TARGETS
-    bundle["targets"] = dataclasses.asdict(dataclasses.replace(TARGETS, zone_id="f" * 32))
-    with pytest.raises(LifecycleError, match="targets differ"):
-        action.bootstrap(bundle, approved)
-
-
-def test_unresolved_existing_intent_blocks_new_reservation_before_any_creation_ack(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    case = AdmissionCase(tmp_path)
-    case.intent()
-    monkeypatch.setattr(action, "WITNESS_SECONDS", 0)
-    with pytest.raises(LifecycleError, match="outstanding credential obligations"):
-        reconcile(case, ProviderDouble(), expected=run_digest(case.run_id, case.payload))
-    sync(case.journal.remote, case.journal.shared)
-    assert not case.journal.controller.confirmed(case.run)
-
-
-@pytest.mark.parametrize("fault", ["policy-unavailable", "expires-soon"])
-def test_unverified_authority_keeps_cleanup_available_but_disallows_creation(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    fault: str,
-) -> None:
-    case = AdmissionCase(tmp_path)
-    monkeypatch.setattr(action, "WITNESS_SECONDS", 0)
-    if fault == "expires-soon":
-        case.authority = Authority("d" * 64, datetime.now(UTC) + timedelta(hours=14))
-    result = reconcile(
-        case,
-        ProviderDouble(),
-        expected=run_digest(case.run_id, case.payload),
-        fail=fault == "policy-unavailable",
-    )
-    sync(case.journal.remote, case.journal.shared)
     assert result["status"] == "unresolved"
-    assert not case.journal.controller.confirmed(case.run)
-    assert CANARY not in json.dumps(result)
+    leases = cast(list[dict[str, object]], result["leases"])
+    assert len(leases) == 1 and leases[0]["status"] == "unresolved"
+    assert all(
+        row["status"] == "unresolved" for row in cast(list[dict[str, object]], leases[0]["results"])
+    )
+    assert sum(len(provider.deletes) for provider in case.providers["cleanup"].values()) == (
+        0 if closing == "second-read-unavailable" else len(ROLES)
+    )
+    assert not any(row["slot"] == "closed" for row in case.inventory.records())
 
 
-def test_failed_provider_read_and_expired_bootstrap_never_erase_cleanup_obligation(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "fault", ["orphan", "unavailable", "legacy-missing", "unavailable-provider"]
+)
+def test_failed_inventory_or_legacy_read_never_confirms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
 ) -> None:
-    case = AdmissionCase(tmp_path)
-    intent = case.intent()
-    provider = ProviderDouble()
-    provider.fail_read = True
-    result = reconcile(case, provider, fail=True)
-    assert result["status"] == "unresolved"
-    assert intent in case.journal.github.checkpoint.records.values()
-    assert CANARY not in json.dumps(result)
+    case = Case(tmp_path, monkeypatch)
+    if fault == "orphan":
+        case.client.items = {
+            key: item
+            for key, item in case.client.items.items()
+            if str(item["title"]).startswith("m3-11-import-")
+        }
+        case.inventory.publish(fact(case.manifest, "close-cancel", {}))
+    elif fault == "unavailable":
+        case.client.fail_list = True
+    elif fault == "legacy-missing":
+        del case.client.items[next(iter(case.client.items))]
+    else:
+        case.providers["cleanup"]["spaces"].fail_read = True
+    with suppress(LifecycleError):
+        assert case.execute()["status"] == "unresolved"
+    case.client.fail_list = False
+    assert not any(row["slot"] == "confirmed" for row in case.inventory.records())
+    assert all(provider.creates == 0 for provider in case.providers["provision"].values())
 
 
-def test_lost_heartbeat_post_does_not_strand_future_cleanup_after_process_restart(
-    tmp_path: Path,
+def test_native_authentication_retry_is_bounded_and_teardown_preserves_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    case = AdmissionCase(tmp_path)
-    case.journal.remote.fail = "before"
+    case = Case(tmp_path, monkeypatch)
+    case.auth_failures = 1
+    ticks = [0.0]
+    monkeypatch.setattr(time, "monotonic", lambda: ticks[0])
+    monkeypatch.setattr(time, "sleep", lambda duration: ticks.__setitem__(0, ticks[0] + duration))
+    assert case.execute()["status"] == "ready"
+    assert case.auth_attempts == case.auth_failures + 1
+    case.auth_failures = 1000
     with pytest.raises(LifecycleError):
-        reconcile(case, ProviderDouble())
-    missing = [
-        row
-        for row in case.journal.github.checkpoint.records.values()
-        if row["kind"] == "heartbeat"
-        and cast(dict[str, object], row["payload"]).get("actor") == "github"
-    ]
-    assert not missing
-    case.journal.remote.fail = ""
-    case.journal.github = case.journal.independent(directory="fresh-worker")
-    case.journal.github.capacity = lambda: MINIMUM_START_CAPACITY + 10
-    assert reconcile(case, ProviderDouble())["status"] == "ready"
-    assert case.journal.github.cache_complete
-
-
-def test_a_forged_checkpoint_only_receipt_cannot_be_republished_as_independent(
-    tmp_path: Path,
-) -> None:
-    case = AdmissionCase(tmp_path)
-    forged = event("heartbeat", case.run_id, {"actor": "github", "forged": True})
-    case.journal.controller.append(forged)
-    sync(case.journal.shared, case.journal.remote)
-    case.journal.github.persist(forged)
-    with pytest.raises(LifecycleError, match="native author"):
-        case.journal.github.append(forged)
-    assert not case.journal.github.ledger.authored(forged, case.journal.witness.author)
-
-
-def test_cold_replica_waits_for_complete_items_after_vault_authentication(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    case = AdmissionCase(tmp_path)
-    case.journal.github.acknowledge(run_id=50, attempt=1, allow=lambda _record: False)
-    for key, item in list(case.journal.remote.items.items()):
-        if str(case.run["event_id"]) in json.dumps(item):
-            del case.journal.remote.items[key]
-            case.journal.remote.version += 1
-    cold = case.journal.independent(directory="cold-replica")
-
-    def ready() -> bool:
-        cold.records()
-        return cold.cache_complete
-
-    assert not ready()
-    monkeypatch.setattr(
-        time, "sleep", lambda _seconds: sync(case.journal.shared, case.journal.remote)
-    )
-    assert action.synchronize(ready) and cold.cache_complete
-    assert not case.journal.controller.confirmed(case.run)
-
-
-def test_cold_replica_wait_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(action, "SYNC_SECONDS", 0)
-    assert not action.synchronize(lambda: False)
-
-
-def test_reviewed_successor_helper_preserves_original_genesis(tmp_path: Path) -> None:
-    case = GenesisCase(tmp_path)
-    value = selected(case)
-    original = copy.deepcopy(value)
-    value["active_helper"] = "f" * 40
-    with pytest.raises(LifecycleError, match="installed revision"):
-        action.selection(value, helper=case.journal.witness.helper)
-    assert action.selection(value, helper="f" * 40) == value
-    assert value["request"] == original["request"] and value["receipt"] == original["receipt"]
-
-
-def test_successor_helper_requires_its_own_fresh_independent_readiness(tmp_path: Path) -> None:
-    case = AdmissionCase(tmp_path)
-    assert reconcile(case, ProviderDouble())["status"] == "ready"
-    sync(case.journal.remote, case.journal.shared)
-    case.journal.witness = dataclasses.replace(case.journal.witness, active_helper="f" * 40)
-    case.journal.controller = case.journal.local()
-    case.journal.github = case.journal.independent(directory="successor")
-    case.journal.github.capacity = lambda: MINIMUM_START_CAPACITY + 10
-    with pytest.raises(LifecycleError, match="another helper"):
-        require_independent_ready(case.journal.controller, helper="f" * 40, now=datetime.now(UTC))
-    assert reconcile(case, ProviderDouble())["status"] == "ready"
-    sync(case.journal.remote, case.journal.shared)
-    require_independent_ready(case.journal.controller, helper="f" * 40, now=datetime.now(UTC))
-
-
-def test_successor_attempt_cannot_start_until_historical_credentials_are_reconciled(
-    tmp_path: Path,
-) -> None:
-    case = AdmissionCase(tmp_path)
-    case.acknowledge(case.reserve())
-    intent_record = case.intent()
-    case.acknowledge(case.admission())
-    intent = Intent.parse(intent_record["payload"])
-    provider = ProviderDouble()
-    credential = provider.create(intent, record=lambda _identifier, _secret: None)
-    created = event(
-        "created",
-        case.run_id,
-        {
-            "intent_sha256": intent.sha256,
-            "credential_id": credential.identifier,
-        },
-    )
-    failed = event(
-        "result", case.run_id, {"qualification": "failed", "credential_cleanup": "pending"}
-    )
-    for record in (created, failed):
-        case.journal.controller.append(record)
-    case.journal.witness_once()
-    original_genesis = case.journal.witness.genesis
-    original_binding = case.journal.witness.binding()
-    case.journal.witness = dataclasses.replace(case.journal.witness, active_helper="f" * 40)
-    case.journal.github = case.journal.independent(directory="reviewed-successor")
-    case.journal.github.capacity = lambda: MINIMUM_START_CAPACITY + 10
-    case.journal.controller = case.journal.local()
-    assert case.journal.controller.confirmed(case.run)
-    assert case.journal.witness.binding() == original_binding
-
-    new_id = str(uuid.uuid7())
-    payload = copy.deepcopy(case.payload)
-    cast(dict[str, str], payload["binding"]).update(
-        managed_run_id=new_id,
-        source_revision="f" * 40,
-        helper_revision="f" * 40,
-    )
-    new_run = event("run", new_id, payload)
-    case.journal.controller.append(new_run)
-    sync(case.journal.shared, case.journal.remote)
-    cleaner = Lifecycle(case.journal.github, {"spaces": provider})
-
-    def reserve() -> Admission:
-        admission = Admission(case.journal.github, targets=TARGETS, now=datetime.now(UTC))
-        admission.reserve(
-            run_digest(new_id, payload), case.authority, require_clear=cleaner.require_clear
-        )
-        return admission
-
-    with pytest.raises(LifecycleError, match="outstanding credential obligations"):
-        reserve()
-    assert not case.journal.controller.confirmed(new_run)
-    cleaner.request_revocation(case.run_id)
-    assert cleaner.reconcile(intent, credential).status == "verified"
-    admission = reserve()
-    assert not admission.allow(case.run) and not admission.allow(intent_record)
-    case.journal.github.acknowledge(run_id=51, attempt=1, allow=admission.allow)
-    sync(case.journal.remote, case.journal.shared)
-    assert case.journal.controller.confirmed(new_run)
-    assert case.journal.witness.genesis == original_genesis
-    assert failed in case.journal.github.checkpoint.records.values()
-    assert provider.creates == 1 and provider.deletes == [credential.identifier]
-
-
-def test_secret_canary_cannot_escape_the_action_error_receipt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
-    monkeypatch.setenv("GITHUB_ACTIONS", "true")
-    monkeypatch.setenv("GITHUB_REPOSITORY", REPOSITORY)
-    monkeypatch.setenv(
-        "GITHUB_WORKFLOW_REF",
-        f"{REPOSITORY}/.github/workflows/{WORKFLOW}@refs/heads/main",
-    )
-    monkeypatch.setenv("M3_11_HELPER_REVISION", "a" * 40)
-
-    def fail(*_args: object) -> None:
-        raise ValueError(CANARY)
-
-    monkeypatch.setattr(action, "current_candidate", fail)
-    assert action.main() == 1
-    receipt = read_private(tmp_path / "m3-11-connect/receipt.json")
-    assert receipt["status"] == "unresolved"
-    captured = capsys.readouterr()
-    assert CANARY not in json.dumps(receipt) + captured.out + captured.err
+        case.execute()
+    assert ticks[0] <= action.SYNC_SECONDS + action.POLL_SECONDS
+    case.auth_failures = 0
+    case.teardown_failure = True
+    with pytest.raises(LifecycleError):
+        case.execute()
+    assert read_private(tmp_path / "independent/cleanup.json")["status"] == "ready"
 
 
 @pytest.mark.parametrize("fail", [False, True])
-def test_real_main_atomically_replaces_progress_and_final_receipt(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    fail: bool,
+def test_main_replaces_progress_and_sanitizes_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], fail: bool
 ) -> None:
     monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
-    monkeypatch.setenv("GITHUB_REPOSITORY", REPOSITORY)
+    monkeypatch.setenv("GITHUB_REPOSITORY", action.REPOSITORY)
+    monkeypatch.setenv("GITHUB_REF", "refs/heads/main")
     monkeypatch.setenv(
-        "GITHUB_WORKFLOW_REF", f"{REPOSITORY}/.github/workflows/{WORKFLOW}@refs/heads/main"
+        "GITHUB_WORKFLOW_REF",
+        f"{action.REPOSITORY}/.github/workflows/{action.WORKFLOW}@refs/heads/main",
     )
     monkeypatch.setenv("M3_11_HELPER_REVISION", "a" * 40)
     monkeypatch.setattr(action, "current_candidate", lambda *_args: None)
     monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"{}")))
 
     def execute(
-        _payload: object,
-        *,
-        directory: Path,
-        helper: str,
-        progress: Callable[[str], None],
+        _raw: object, *, directory: Path, helper: str, progress: Callable[[str], None]
     ) -> dict[str, object]:
-        for phase in (
-            "start-independent-connect",
-            "authenticate-independent-connect",
-            "reconcile-and-witness",
-        ):
-            progress(phase)
-            assert read_private(directory / "receipt.json")["phase"] == phase
+        progress("credential-cleanup")
+        assert read_private(directory / "receipt.json")["status"] == "unresolved"
         if fail:
             raise ValueError(CANARY)
         return {"format": action.RECEIPT_FORMAT, "status": "ready", "helper_revision": helper}
 
     monkeypatch.setattr(action, "execute", execute)
     assert action.main() == int(fail)
-    final = read_private(tmp_path / "m3-11-connect/receipt.json")
-    assert final["status"] == ("unresolved" if fail else "ready")
-    assert CANARY not in json.dumps(final)
-
-
-@pytest.mark.parametrize(
-    ("error", "category"),
-    [
-        (LifecycleError(CANARY), "lifecycle"),
-        (ValueError(CANARY), "input"),
-        (KeyError(CANARY), "input"),
-        (OSError(1, CANARY, CANARY), "io"),
-        (subprocess.CalledProcessError(1, CANARY, output=CANARY, stderr=CANARY), "subprocess"),
-        (type("PRIVATE_DYNAMIC_CLASS_CANARY", (Exception,), {})(CANARY), "unexpected"),
-    ],
-)
-def test_failure_diagnostics_export_only_closed_categories(error: Exception, category: str) -> None:
-    try:
-        raise error
-    except Exception as caught:
-        value = diagnostics.failure(caught)
-    expected: dict[str, object] = {"category": category, "origin": None}
-    if isinstance(error, subprocess.CalledProcessError):
-        expected["exit_status"] = error.returncode
-    assert value == expected
-    assert CANARY not in json.dumps(value)
-    assert "PRIVATE_DYNAMIC_CLASS_CANARY" not in json.dumps(value)
-
-
-def test_failure_location_comes_only_from_the_pinned_source_ast() -> None:
-    try:
-        instant(CANARY)
-    except LifecycleError as error:
-        value = diagnostics.failure(error)
-    origin = cast(dict[str, object], value["origin"])
-    assert origin["path"] == "scripts/m3_11_unattended/model.py"
-    assert origin["function"] == "instant" and type(origin["line"]) is int
-    assert CANARY not in json.dumps(value)
-
-
-@pytest.mark.parametrize("spoof_path", [False, True])
-def test_dynamic_traceback_filenames_and_function_names_cannot_be_exported(
-    spoof_path: bool,
-) -> None:
-    code = "def PRIVATE_FUNCTION_CANARY():\n    raise ValueError(secret)\nPRIVATE_FUNCTION_CANARY()"
-    filename = str(diagnostics.ROOT / diagnostics.SOURCES[0]) if spoof_path else CANARY
-    try:
-        exec(compile(code, filename, "exec"), {"secret": CANARY})  # noqa: S102 - static canary fixture
-    except ValueError as error:
-        value = diagnostics.failure(error)
-    assert value == {"category": "input", "origin": None}
-
-
-def test_unavailable_diagnostic_source_keeps_unresolved_output_sanitized(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def unavailable(_path: Path) -> str:
-        raise OSError(CANARY)
-
-    monkeypatch.setattr(Path, "read_text", unavailable)
-    try:
-        instant(CANARY)
-    except LifecycleError as error:
-        value = diagnostics.failure(error)
-    assert value == {"category": "lifecycle", "origin": None}
-
-
-def test_broken_diagnostic_reporter_cannot_suppress_the_unresolved_action_receipt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
-    monkeypatch.setenv("GITHUB_ACTIONS", "false")
-
-    def broken(_error: Exception) -> dict[str, object]:
-        raise ValueError(CANARY)
-
-    monkeypatch.setattr(action, "failure", broken)
-    assert action.main() == 1
-    value = read_private(tmp_path / "m3-11-connect/receipt.json")
-    assert value == {
-        "format": action.RECEIPT_FORMAT,
-        "status": "unresolved",
-        "phase": "validate-protected-execution",
-    }
+    receipt = read_private(tmp_path / "m3-11-connect/receipt.json")
+    assert receipt["status"] == ("unresolved" if fail else "ready")
     captured = capsys.readouterr()
-    assert CANARY not in json.dumps(value) + captured.out + captured.err
+    assert CANARY not in json.dumps(receipt) + captured.out + captured.err
 
 
 def test_javascript_action_delivers_stdin_without_bootstrap_in_child_environment_or_logs(
@@ -575,12 +364,12 @@ def test_javascript_action_delivers_stdin_without_bootstrap_in_child_environment
     receiver.write_text(f'''#!{sys.executable}
 import json, os, sys
 from pathlib import Path
+from typing import cast
 value = json.load(sys.stdin)
 Path("delivery.json").write_text(json.dumps({{
     "received": value["bootstrap"] == {{"token": "{CANARY}"}},
     "environment_clean": all(key not in os.environ for key in (
-        "M3_11_CONNECT_BOOTSTRAP", "M3_11_CONNECT_CONFIGURATION")),
-    "runtime_available": os.environ.get("ACTIONS_RUNTIME_TOKEN") == "runtime-canary",
+        "M3_11_CONNECT_BOOTSTRAP", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")),
     "argv_clean": "{CANARY}" not in str(sys.argv),
 }}))
 print("{CANARY}")
@@ -590,12 +379,13 @@ print("{CANARY}", file=sys.stderr)
     environment = {
         **os.environ,
         "M3_11_CONNECT_BOOTSTRAP": json.dumps({"token": CANARY}),
-        "M3_11_CONNECT_CONFIGURATION": "{}",
-        "M3_11_CONNECT_OPERATION": "reconcile",
+        "M3_11_CONNECT_OPERATION": "confirm",
         "ACTIONS_RUNTIME_TOKEN": "runtime-canary",
+        "GH_TOKEN": CANARY,
+        "GITHUB_TOKEN": CANARY,
     }
     source = Path(__file__).resolve().parents[2] / ".github/actions/m3-11-connect/index.js"
-    result = subprocess.run(  # noqa: S603 - committed action with private provider-double receiver
+    result = subprocess.run(  # noqa: S603 - private local receiver
         [node, str(source)],
         cwd=tmp_path,
         env=environment,
@@ -607,3 +397,111 @@ print("{CANARY}", file=sys.stderr)
     assert result.returncode == 0
     assert all(json.loads((tmp_path / "delivery.json").read_text()).values())
     assert CANARY not in result.stdout + result.stderr
+
+
+def attempt(case: Case) -> tuple[Path, dict[str, object]]:
+
+    run_id = str(uuid.uuid7())
+    directory = case.root / "host/runs" / run_id
+    directory.mkdir(mode=0o700, parents=True)
+    directory.parent.chmod(0o700)
+    directory.parent.parent.chmod(0o700)
+    binding: dict[str, object] = {
+        "managed_run_id": run_id,
+        "source_revision": "f" * 40,
+        "helper_revision": case.config.helper_revision,
+        "artifact_sha256": "a" * 64,
+        "qualification_inputs_sha256": "b" * 64,
+        "storage_target_sha256": case.config.targets.storage_digest,
+    }
+    write_private(
+        directory / "request.json",
+        {
+            "format": "lowerduckpond-m3-11-unattended-request-v2",
+            "binding": binding,
+            "mode": "qualification",
+            "approval_sha256": "c" * 64,
+            "controller_image": "sha256:" + "d" * 64,
+            "daemon": {},
+            "lease_id": case.manifest.lease_id,
+        },
+    )
+    return directory, binding
+
+
+@pytest.mark.parametrize("contended", [False, True])
+def test_worker_owns_reuse_before_first_child_probe_and_rejected_consumer_cannot_cancel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, contended: bool
+) -> None:
+
+    case = Case(tmp_path, monkeypatch)
+    case.execute()
+    case.issue()
+    directory, binding = attempt(case)
+    selected = worker.Worker(directory, case.config, tmp_path / "source")
+    selected.state.begin(binding)
+    monkeypatch.setattr(selected, "_inventory", lambda: case.inventory)
+    monkeypatch.setattr(worker, "Docker", object)
+    if contended:
+        with case.state.use_lock():
+            case.state.acquire_use(
+                attempt_id=case.manifest.lease_id, binding_sha256="d" * 64, kind="attempt"
+            )
+    probes = []
+    for provider in case.providers["cleanup"].values():
+        original = provider.inspect
+
+        def inspect(
+            identifier: str, original: Callable[[str], dict[str, object] | None] = original
+        ) -> dict[str, object] | None:
+            assert read_private(case.state.directory / ("use-" + selected.run_id + ".json"))[
+                "binding_sha256"
+            ] == digest(binding)
+            probes.append(identifier)
+            return original(identifier)
+
+        monkeypatch.setattr(provider, "inspect", inspect)
+    if contended:
+        with pytest.raises(LifecycleError, match="quiescence"):
+            selected._provision()
+        selected.state.finish_journey("failed", 1)
+        assert not selected.revoke()
+        assert prepare_lease_cleanup(directory.parent, cast(Docker, None), case.inventory)
+        assert probes == []
+        assert not any(str(row["slot"]).startswith("close-") for row in case.inventory.records())
+    else:
+        credentials, receipt = selected._provision()
+        assert set(credentials) == ROLES and len(probes) == len(ROLES)
+        assert receipt["managed_run_id"] == selected.run_id
+        assert selected.owns_lease
+    assert sum(provider.creates for provider in case.providers["provision"].values()) == len(ROLES)
+
+
+@pytest.mark.parametrize("started", [False, True])
+def test_watchdog_retains_only_approved_failure_after_actual_attempt_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, started: bool
+) -> None:
+
+    case = Case(tmp_path, monkeypatch)
+    case.execute()
+    case.issue()
+    directory, binding = attempt(case)
+    state = RunState(directory)
+    state.begin(binding)
+    state.finish_journey("failed", 1)
+    with case.state.use_lock():
+        case.state.acquire_use(
+            attempt_id=directory.name, binding_sha256=digest(binding), kind="attempt"
+        )
+    if started:
+        write_private(
+            directory / "attempt-started.json",
+            {"binding_sha256": digest(binding), "manifest_sha256": case.manifest.sha256},
+        )
+
+    class DeadDocker:
+        def owned(self, _name: str) -> dict[str, object]:
+            return {"State": {"Running": False}}
+
+    assert prepare_lease_cleanup(directory.parent, cast(Docker, DeadDocker()), case.inventory)
+    assert ("close-cancel" in case.lifecycle.records()) is not started

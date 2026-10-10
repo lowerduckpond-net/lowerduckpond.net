@@ -6,52 +6,37 @@ import argparse
 import dataclasses
 import hashlib
 import json
-import os
 import sys
 import time
 import uuid
 from collections.abc import Callable
-from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from scripts.m3_11_private_inputs import read_private, read_private_bytes
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended import audit_policy_recovery, historical_absence
-from scripts.m3_11_unattended.cloudflare import ORIGIN, Cloudflare
-from scripts.m3_11_unattended.config import (
-    DO_READ_SCOPES,
-    Bootstrap,
-    Reader,
-    UnavailableProvider,
-    _cloudflare_authority,
-    cleanup_configuration,
+from scripts.m3_11_unattended.cloudflare import Cloudflare
+from scripts.m3_11_unattended.config import LeaseConfiguration, UnavailableProvider
+from scripts.m3_11_unattended.connect_api import Connect
+from scripts.m3_11_unattended.inventory import ConnectInventory, Inventory, fact
+from scripts.m3_11_unattended.journal import ConnectObligations, event
+from scripts.m3_11_unattended.lifecycle import (
+    LeaseLifecycle,
+    Lifecycle,
+    intents,
 )
-from scripts.m3_11_unattended.connect_checkpoint import Stored
-from scripts.m3_11_unattended.connect_journal import (
-    ACK_POLL_SECONDS,
-    ACK_WAIT_SECONDS,
-    ConnectJournal,
-    IndependentJournal,
-)
-from scripts.m3_11_unattended.connect_ledger import SnapshotChangedError
-from scripts.m3_11_unattended.creation_outcome import valid_resolution
-from scripts.m3_11_unattended.github_checkpoint import MINIMUM_START_CAPACITY
-from scripts.m3_11_unattended.http import Api
-from scripts.m3_11_unattended.journal import Journal, OpJournal, event
-from scripts.m3_11_unattended.lifecycle import Lifecycle, Provider, intents, pending_authentication
 from scripts.m3_11_unattended.model import (
     Credential,
-    Intent,
+    LeaseManifest,
     LifecycleError,
-    ProviderKind,
-    Targets,
+    identity,
     instant,
     stamp,
+    strings,
 )
-from scripts.m3_11_unattended.spaces import Spaces
-from scripts.m3_11_unattended.state import CleanupLockBusyError, cleanup_lock
-from scripts.production_qualification_inputs import git, revision
-from scripts.qualification_timing import measure
+from scripts.m3_11_unattended.state import CleanupLockBusyError, LeaseState, cleanup_lock
+from scripts.production_qualification_inputs import revision
 
 HEARTBEAT_MAX_AGE = timedelta(minutes=90)
 POLL_SECONDS = 60
@@ -59,66 +44,7 @@ REMOTE_SECONDS = 3600
 RETRY_SECONDS = 300
 
 
-class ReadinessPendingError(LifecycleError):
-    """A valid native readiness receipt is visible before its independent ACK."""
-
-
-def connect_cleanup(
-    bootstrap: Bootstrap, targets: Targets, vault: str, *, journal_directory: Path | None = None
-) -> Lifecycle:
-    return Lifecycle(
-        bootstrap.journal(vault, directory=journal_directory),
-        cleanup_providers(bootstrap.reader(), bootstrap.values, targets),
-    )
-
-
-def cleanup_providers(
-    reader: Reader, references: dict[str, str], targets: Targets
-) -> dict[ProviderKind, Provider]:
-    """Try every authority so one unavailable provider cannot strand the others."""
-    providers: dict[ProviderKind, Provider] = {}
-    for kind, reference in (
-        ("spaces", "digitalocean"),
-        ("cloudflare-account", "cloudflare_account"),
-        ("cloudflare-user", "cloudflare_user"),
-    ):
-        selected: ProviderKind = kind  # type: ignore[assignment] # fixed provider table
-        try:
-            secret = reader.read(references[reference])
-            if selected == "spaces":
-                metadata = fields(
-                    json.loads(reader.read(references["digitalocean_metadata"])),
-                    {
-                        "format",
-                        "token_sha256",
-                        "expires_at",
-                        "scopes",
-                        "verified_at",
-                        "verified_by",
-                    },
-                )
-                if (
-                    metadata["format"] != "lowerduckpond-digitalocean-bootstrap-v1"
-                    or metadata["token_sha256"] != hashlib.sha256(secret.encode()).hexdigest()
-                    or metadata["scopes"] != sorted(DO_READ_SCOPES | {"spaces_key:delete"})
-                    or metadata["verified_by"] != "operator-provider-console"
-                ):
-                    raise LifecycleError("cleanup DigitalOcean identity is unverified")
-                providers[selected] = Spaces(Api("https://api.digitalocean.com", secret))
-            else:
-                client = Cloudflare(
-                    Api(ORIGIN, secret),
-                    account=targets.account_id if selected == "cloudflare-account" else None,
-                )
-                _cloudflare_authority(client, target=targets, now=datetime.now(UTC))
-                providers[selected] = client
-        except RuntimeError, OSError, ValueError, TypeError, KeyError:
-            providers[selected] = UnavailableProvider(selected)
-    return providers
-
-
-@measure("credential-sweep")
-def sweep(  # noqa: PLR0912, PLR0913 - independent restoration never suppresses child obligations
+def sweep(  # noqa: PLR0913 - independent restoration never suppresses child obligations
     lifecycle: Lifecycle,
     *,
     actor: str,
@@ -126,26 +52,12 @@ def sweep(  # noqa: PLR0912, PLR0913 - independent restoration never suppresses 
     secrets: dict[str, Credential] | None = None,
     authority_verified: bool = True,
     recovery_verified: bool = True,
-    quiet_empty: bool = False,
     arm_policy_restore: Callable[[datetime], None] | None = None,
     force_policy_restore: bool = False,
     before_receipt: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
     if actor not in {"controller", "watchdog", "github"}:
         raise LifecycleError("unknown cleanup actor")
-    if quiet_empty:
-        if actor != "github" or not isinstance(lifecycle.journal, OpJournal):
-            raise LifecycleError("only native GitHub cleanup can quiesce an empty journal")
-        lifecycle.journal.refresh()
-        # This is a complete live inventory, not cached absence. A historical
-        # intent still takes the normal cleanup/proof path and blocks genesis.
-        if not any(record["kind"] == "intent" for record in lifecycle.journal.records()):
-            return {
-                "actor": "github-initialization",
-                "helper_revision": revision(helper),
-                "observed_at": stamp(datetime.now(UTC)),
-                "status": "initializing-empty",
-            }
     # Restoration is separate from child revocation: failure must not prevent
     # any ordinary credential from being deleted and independently verified.
     try:
@@ -202,8 +114,6 @@ def sweep(  # noqa: PLR0912, PLR0913 - independent restoration never suppresses 
         )
         else "unresolved"
     )
-    if isinstance(lifecycle.journal, IndependentJournal) and not lifecycle.journal.cache_complete:
-        status = "unresolved"
     receipt: dict[str, object] = {
         "actor": actor,
         "helper_revision": revision(helper),
@@ -212,10 +122,6 @@ def sweep(  # noqa: PLR0912, PLR0913 - independent restoration never suppresses 
         "overdue": overdue,
         "results": [dataclasses.asdict(value) for value in observed],
     }
-    if isinstance(lifecycle.journal, IndependentJournal):
-        receipt["connect"] = lifecycle.journal.readiness()
-        if not lifecycle.journal.cache_complete:
-            receipt["status"] = "unresolved"
     if before_receipt is not None:
         # Provider, restoration, authority and independent checkpoint checks are
         # complete. Publishing their informational heartbeat can be slow; let
@@ -248,376 +154,407 @@ def sweep(  # noqa: PLR0912, PLR0913 - independent restoration never suppresses 
     return receipt
 
 
-def require_independent_ready(
-    journal: Journal,
-    *,
-    helper: str,
-    now: datetime,
-    observed: list[dict[str, object]] | None = None,
-) -> None:
-    observed = journal.records() if observed is None else observed
-    records = [
-        record
-        for record in observed
-        if record["kind"] == "heartbeat"
-        and isinstance(record["payload"], dict)
-        and record["payload"].get("actor") == "github"
-    ]
-    if not records:
-        raise LifecycleError("independent GitHub cleanup has not demonstrated readiness")
-    newest = max(records, key=lambda record: instant(record["recorded_at"]))
-    selected_fields = {"actor", "helper_revision", "observed_at", "status", "overdue", "results"}
-    if isinstance(journal, ConnectJournal):
-        selected_fields.add("connect")
-    value = fields(
-        newest["payload"],
-        selected_fields,
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--actor", choices=("watchdog",), required=True)
+    parser.add_argument("--watch", action="store_true")
+    parser.add_argument("--runs", type=Path, required=True)
+    return parser.parse_args()
+
+
+def retained_legacy(journal: ConnectObligations) -> tuple[dict[str, Credential], bool]:
+    """Use only hash-bound original local facts and secrets; absence remains unavailable."""
+    from scripts.m3_11_unattended.worker import (  # noqa: PLC0415
+        restore_created,
+        retained_credentials,
     )
-    accepted = _accepted_results(journal, value, observed)
-    if accepted and not isinstance(journal, ConnectJournal):
-        raise LifecycleError("historical exception requires native independent Connect readiness")
-    for record in audit_policy_recovery.plans(observed):
-        restore_after = instant(audit_policy_recovery.plan(record)["restore_after"])
-        if now < restore_after or instant(value["observed_at"]) < restore_after:
-            raise LifecycleError("diagnostic policy restoration has no fresh independent receipt")
-    if (
-        value["helper_revision"] != helper
-        or value["status"] != "ready"
-        or value["overdue"] != 0
-        or not now - HEARTBEAT_MAX_AGE
-        <= instant(value["observed_at"])
-        <= now + timedelta(minutes=5)
-    ):
-        raise LifecycleError("independent cleanup is stale, overdue or bound to another helper")
-    if isinstance(journal, ConnectJournal):
-        proof = fields(
-            value["connect"], {"epoch", "remaining_capacity", "cache_complete", "checkpoint"}
-        )
-        pointer = fields(proof["checkpoint"], {"identity", "sha256"})
-        if type(pointer["identity"]) is not int or not isinstance(pointer["sha256"], str):
-            raise LifecycleError("independent cleanup checkpoint is invalid")
-        checkpoint = Stored(pointer["identity"], pointer["sha256"])
-        if (
-            journal.witness.current_helper != helper
-            or proof["epoch"] != journal.witness.epoch
-            or proof["cache_complete"] is not True
-            or type(proof["remaining_capacity"]) is not int
-            or proof["remaining_capacity"] < MINIMUM_START_CAPACITY
-            or (
-                checkpoint.identity == journal.witness.genesis.identity
-                and checkpoint != journal.witness.genesis
-            )
-            or not journal.ledger.authored(newest, journal.witness.author)
-        ):
-            raise LifecycleError("independent Connect readiness or cleanup capacity is unverified")
-        # Candidate, native author and ACK come from this one complete snapshot.
-        # A confirmation refresh could observe a newer adverse receipt while
-        # still acknowledging the older candidate selected above.
-        if not journal.confirmed(newest, observed=observed):
-            raise ReadinessPendingError("independent Connect readiness awaits acknowledgement")
 
-
-def _accepted_results(
-    journal: Journal, value: dict[str, object], records: list[dict[str, object]]
-) -> set[str]:
-    """Native cleanup observes absence; ACKed policy receipts only retain the decision."""
-    entries = value.get("results")
-    if not isinstance(entries, list):
-        raise LifecycleError("independent cleanup results are malformed")
-    accepted: set[str] = set()
-    selected_intents = [Intent.parse(row["payload"]) for row in records if row["kind"] == "intent"]
-    by_digest = {item.sha256: item for item in selected_intents}
-    for row in entries:
-        if not isinstance(row, dict) or row.get("status") != historical_absence.STATUS:
+    if journal.mapping is None:
+        raise LifecycleError("legacy mapping is unavailable")
+    retained = strings(journal.mapping["retained_files"])
+    runs: set[Path] = set()
+    available: dict[str, Credential] = {}
+    complete = True
+    for filename, expected in retained.items():
+        path = Path(filename)
+        if path.parent.name not in {
+            "credential-created",
+            "credential-aborted",
+            "credential-cleanup",
+        }:
             continue
-        if (
-            row
-            != {
-                "intent_sha256": historical_absence.INTENT,
-                "status": historical_absence.STATUS,
-                "negative_authentication": "unavailable",
-            }
-            or historical_absence.INTENT in accepted
-        ):
-            raise LifecycleError("independent historical exception result is invalid")
-        selected = by_digest.get(historical_absence.INTENT)
-        proofs = [] if selected is None else historical_absence.receipts(selected, records)
-        if not any(
-            not isinstance(journal, ConnectJournal) or journal.confirmed(proof, observed=records)
-            for proof in proofs
-        ):
-            raise LifecycleError("historical exception lacks its exact durable acceptance")
-        accepted.add(historical_absence.INTENT)
-    historical = by_digest.get(historical_absence.INTENT)
-    if (
-        historical is not None
-        and historical_absence.eligible(historical, records)
-        and historical_absence.INTENT not in accepted
-    ):
-        raise LifecycleError("independent cleanup has not observed the historical exception")
-    return accepted
-
-
-def wait_independent_ready(
-    journal: Journal, *, helper: str, deadline: float, check_cancelled: Callable[[], None]
-) -> None:
-    until = min(deadline, time.monotonic() + ACK_WAIT_SECONDS)
-    while True:
-        check_cancelled()
-        if time.monotonic() >= until:
-            raise ReadinessPendingError(
-                "independent Connect readiness exceeded its acknowledgement wait"
-            )
+        if not path.exists() and not path.is_symlink():
+            continue  # Independent host loss cannot claim a negative probe passed.
+        if hashlib.sha256(read_private_bytes(path)).hexdigest() != expected:
+            complete = False
+            continue
+        runs.add(path.parent.parent)
+    for directory in runs:
         try:
-            budget = (
-                journal.ledger.read_budget(deadline=until, check_cancelled=check_cancelled)
-                if isinstance(journal, ConnectJournal)
-                else nullcontext()
-            )
-            with budget:
-                require_independent_ready(journal, helper=helper, now=datetime.now(UTC))
-            check_cancelled()
-            if time.monotonic() >= until:
-                raise ReadinessPendingError(
-                    "independent Connect readiness exceeded its acknowledgement wait"
-                )
-            return
-        except ReadinessPendingError, SnapshotChangedError:
-            remaining = until - time.monotonic()
-            if remaining <= 0:
-                raise
-            time.sleep(min(ACK_POLL_SECONDS, remaining))
+            # No unreviewed sibling can be imported by the original bounded readers.
+            for kind in ("credential-created", "credential-aborted", "credential-cleanup"):
+                for path in (directory / kind).glob("*.json"):
+                    if (
+                        str(path) not in retained
+                        or hashlib.sha256(read_private_bytes(path)).hexdigest()
+                        != retained[str(path)]
+                    ):
+                        raise LifecycleError("local legacy fact is outside the reviewed inventory")
+            restore_created(Lifecycle(journal, {}), directory, run_id=identity(directory.name))
+            for key, value in retained_credentials(directory).items():
+                if key in available and available[key] != value:
+                    raise LifecycleError("retained legacy secret identities conflict")
+                available[key] = value
+        except RuntimeError, OSError, ValueError, KeyError, TypeError:
+            complete = False
+    return available, complete
 
 
-def status_document(journal: Journal, *, helper: str, now: datetime) -> dict[str, object]:
-    """Observe external obligations without deleting, provisioning, or exporting IDs."""
+def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligations
+    config: LeaseConfiguration,
+    client: Connect,
+    *,
+    root: Path,
+    secrets: dict[str, Credential] | None = None,
+) -> dict[str, object]:
+    """Reconcile the reviewed legacy mapping without re-enabling its issuer."""
+    from scripts.m3_11_unattended.cleanup_expiry import reconcile_imported  # noqa: PLC0415
+
+    journal = ConnectObligations(
+        client,
+        config.journal_vault,
+        spool=root / "legacy-pending",
+        expected=config.migration_sha256,
+    )
     records = journal.records()
-    accepted: set[str] = set()
-    try:
-        require_independent_ready(journal, helper=helper, now=now, observed=records)
-        latest = max(
-            (
-                row
-                for row in records
-                if row["kind"] == "heartbeat"
-                and isinstance(row["payload"], dict)
-                and row["payload"].get("actor") == "github"
-            ),
-            key=lambda row: instant(row["recorded_at"]),
+    available, local_complete = retained_legacy(journal)
+    for key, value in (secrets or {}).items():
+        if key in available and available[key] != value:
+            raise LifecycleError("legacy cleanup secret conflicts with the approved retained value")
+        available[key] = value
+    mapping = journal.mapping
+    if mapping is None:
+        raise LifecycleError("legacy import is unavailable")
+    obligations = mapping["obligations"]
+    if not isinstance(obligations, dict):
+        raise LifecycleError("legacy obligation mapping is unavailable")
+    now = datetime.now(UTC)
+    providers = {
+        key: roles["cleanup"].providers(
+            targets=config.targets, now=now, reader=client, tolerate_unavailable=True
         )
-        accepted = _accepted_results(journal, latest["payload"], records)  # type: ignore[arg-type] # filtered mapping
-    except LifecycleError, ValueError:
-        pass
-    pending = 0
-    overdue = 0
+        for key, roles in config.generations.items()
+    }
+    outcomes = []
     for intent in intents(journal):
-        results = [
-            record
-            for record in records
-            if record["kind"] in {"resolved", "cleanup"}
-            and isinstance(record["payload"], dict)
-            and record["payload"].get("intent_sha256") == intent.sha256
-            and (record["kind"] != "resolved" or valid_resolution(record, intent, records))
-            and (
-                record["kind"] != "resolved"
-                or not isinstance(journal, ConnectJournal)
-                or journal.confirmed(record, observed=records)
-            )
-        ]
-        unresolved = (
-            not any(record["kind"] == "resolved" for record in results)
-            and intent.sha256 not in accepted
-        ) or bool(pending_authentication(results))
-        pending += unresolved
-        overdue += unresolved and instant(intent.deadline) < now
-    heartbeats = [
-        record
-        for record in records
-        if record["kind"] == "heartbeat"
-        and isinstance(record["payload"], dict)
-        and record["payload"].get("actor") == "github"
-    ]
-    independent: dict[str, object] = {"status": "missing", "observed_at": None}
-    if heartbeats:
-        latest = max(heartbeats, key=lambda record: instant(record["recorded_at"]))
-        selected_fields = {
-            "actor",
-            "helper_revision",
-            "observed_at",
-            "status",
-            "overdue",
-            "results",
-        }
-        if isinstance(journal, ConnectJournal):
-            selected_fields.add("connect")
-        value = fields(
-            latest["payload"],
-            selected_fields,
+        if intent.targets != config.targets:
+            raise LifecycleError("legacy obligation target differs")
+        row = fields(
+            obligations[intent.sha256], {"generation_id", "provider_id", "original_status"}
         )
-        observed = instant(value["observed_at"])
-        fresh = now - HEARTBEAT_MAX_AGE <= observed <= now + timedelta(minutes=5)
-        if isinstance(journal, ConnectJournal):
-            try:
-                require_independent_ready(journal, helper=helper, now=now, observed=records)
-            except LifecycleError, ValueError:
-                fresh = False
-        independent = {
-            "observed_at": stamp(observed),
-            "status": "ready"
-            if fresh
-            and value["helper_revision"] == revision(helper)
-            and value["status"] == "ready"
-            and value["overdue"] == 0
-            else "stale-or-unresolved",
+        generation = str(row["generation_id"])
+        clients = providers.get(generation, {})
+        selected = clients.get(intent.provider, UnavailableProvider(intent.provider))
+        if selected.authority_sha256 != intent.cleanup_authority_sha256:
+            outcomes.append(
+                {
+                    "intent_sha256": intent.sha256,
+                    "status": "unresolved",
+                    "negative_authentication": "unavailable",
+                }
+            )
+            continue
+        lifecycle = Lifecycle(journal, clients)
+        # Migration preserves the original failed attempt and requests only its
+        # outstanding credential cleanup; imported status never proves removal.
+        lifecycle.request_revocation(intent.run_id)
+        result = lifecycle.reconcile(intent, available.get(intent.sha256))
+        outcomes.append(dataclasses.asdict(result))
+    restorations = []
+    for record in audit_policy_recovery.plans(records):
+        bound = next(
+            (
+                item
+                for item in intents(journal)
+                if item.run_id == record["run_id"] and item.role == "audit"
+            ),
+            None,
+        )
+        if bound is None:
+            restorations.append("unresolved")
+            continue
+        generation = str(
+            fields(obligations[bound.sha256], {"generation_id", "provider_id", "original_status"})[
+                "generation_id"
+            ]
+        )
+        try:
+            restored = audit_policy_recovery.reconcile(
+                journal,
+                providers.get(generation, {}).get("cloudflare-account"),
+                now=now,
+                force_restore=True,
+            )
+        except RuntimeError, OSError, ValueError, KeyError, TypeError:
+            restored = "unresolved"
+        restorations.append(restored)
+    restoration = (
+        "no-obligation"
+        if not restorations
+        else "original-policy-verified"
+        if all(item == "original-policy-verified" for item in restorations)
+        else "unresolved"
+    )
+    expiry = "verified"
+    updates = mapping["expiry_updates"]
+    if not isinstance(updates, list):
+        raise LifecycleError("legacy expiry obligation mapping is unavailable")
+    for raw in updates:
+        row = fields(raw, {"plan", "plan_sha256", "generation_id", "result_files"})
+        clients = providers.get(str(row["generation_id"]), {})
+        cloudflare = {
+            str(key): value for key, value in clients.items() if isinstance(value, Cloudflare)
         }
+        try:
+            reconcile_imported(
+                row["plan"],
+                targets=config.targets,
+                expected=str(row["plan_sha256"]),
+                providers=cloudflare,
+            )
+        except RuntimeError, OSError, ValueError, KeyError, TypeError:
+            expiry = "unresolved"
+    ready = (
+        local_complete
+        and restoration in {"no-obligation", "original-policy-verified"}
+        and expiry == "verified"
+        and all(historical_absence.admits(row["intent_sha256"], row["status"]) for row in outcomes)
+    )
     return {
-        "observed_at": stamp(now),
-        "outstanding": pending,
-        "accepted_historical_uncertainty": sorted(accepted),
-        "overdue": overdue,
-        "github": independent,
-        "new_start": "blocked"
-        if pending or independent["status"] != "ready"
-        else "eligible-for-preflight",
+        "migration_sha256": config.migration_sha256,
+        "status": "ready" if ready else "unresolved",
+        "results": outcomes,
+        "audit_restoration": restoration,
+        "expiry_updates": expiry,
+        "accepted_historical_uncertainty": [
+            row["intent_sha256"] for row in outcomes if row["status"] == historical_absence.STATUS
+        ],
     }
 
 
-def argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--actor", choices=("github", "watchdog"), required=True)
-    parser.add_argument("--watch", action="store_true")
-    parser.add_argument("--runs", type=Path)
-    parser.add_argument("--journal-cache", type=Path)
-    parser.add_argument("--journal-cache-output", type=Path)
-    parser.add_argument("--quiet-empty", action="store_true")
-    return parser
+def sweep_leases(  # noqa: PLR0912, PLR0913, PLR0915 - independent cleanup and confirmation gates
+    config: LeaseConfiguration,
+    inventory: Inventory,
+    *,
+    root: Path,
+    actor: str,
+    confirmation: dict[str, object] | None = None,
+    connect_client: Connect | None = None,
+) -> dict[str, object]:
+    """The same compact obligations serve terminal, watchdog and independent cleanup."""
+    now = datetime.now(UTC)
+    try:
+        legacy_client = (
+            connect_client or config.generations[config.active_generation]["cleanup"].reader()
+        )
+        legacy = sweep_legacy(config, legacy_client, root=root.parent)
+    except RuntimeError, OSError, ValueError, KeyError, TypeError:
+        legacy = {"migration_sha256": config.migration_sha256, "status": "unresolved"}
+    readable = True
+    try:
+        records = inventory.records()
+    except RuntimeError, OSError, ValueError:
+        records, readable = [], False
+    manifests = {
+        row["lease_id"]: LeaseManifest.parse(row["payload"])
+        for row in records
+        if row["slot"] == "manifest"
+    }
+    if any(row["lease_id"] not in manifests for row in records):
+        readable = False
+    closed_ids = {row["lease_id"] for row in records if row["slot"] == "closed"}
+    if root.exists():
+        for path in root.glob("*/manifest.json"):
+            local = LeaseManifest.parse(read_private(path))
+            if local.lease_id in manifests and manifests[local.lease_id] != local:
+                raise LifecycleError("local lease manifest differs from the external inventory")
+            manifests[local.lease_id] = local
+    results = []
+    for manifest in manifests.values():
+        if manifest.targets != config.targets:
+            raise LifecycleError("cleanup manifest differs from approved targets")
+        own = {str(row["slot"]): row for row in records if row["lease_id"] == manifest.lease_id}
+        if "closed" in own:
+            results.append(
+                {
+                    "lease_id": manifest.lease_id,
+                    "manifest_sha256": manifest.sha256,
+                    "status": "closed",
+                    "overdue": False,
+                }
+            )
+            continue
+        state = LeaseState(root / manifest.lease_id)
+        active = config.generations[config.active_generation]["cleanup"].generation
+        active.require_same_principal(manifest.cleanup)
+        original = config.generations.get(manifest.cleanup.generation_id, {}).get("cleanup")
+        if original is not None and original.generation != manifest.cleanup:
+            raise LifecycleError("cleanup generation metadata differs from the manifest")
+        # A fully transferred generation need not retain its old access. Any
+        # unknown or untransferred role still selects that missing generation
+        # during reconciliation and remains unresolved.
+        generations = {
+            key: roles["cleanup"].providers(
+                targets=config.targets, now=now, tolerate_unavailable=True, reader=connect_client
+            )
+            for key, roles in config.generations.items()
+        }
+        providers = generations.get(manifest.cleanup.generation_id, {})
+        lifecycle = LeaseLifecycle(manifest, inventory, state, providers={})
+        closing = any(slot.startswith("close-") for slot in own) or now >= manifest.policy.deadline(
+            instant(manifest.created_at)
+        )
+        if (
+            confirmation is not None
+            and readable
+            and len(manifests.keys() - closed_ids) == 1
+            and "confirmed" not in own
+            and not closing
+            and legacy["status"] == "ready"
+        ):
+            if (
+                actor != "github"
+                or confirmation.get("independent_server_id") != config.independent_server_id
+                or manifest.helper_revision != config.helper_revision
+                or manifest.policy.sha256 != config.approved_policy_sha256
+                or original is None
+            ):
+                raise LifecycleError(
+                    "independent lease confirmation differs from approved configuration"
+                )
+            manifest.cleanup.require_coverage(
+                policy=manifest.policy,
+                deadline=manifest.policy.deadline(instant(manifest.created_at)),
+            )
+            if now >= instant(manifest.policy.issuance_before):
+                raise LifecycleError("lease issuance cutoff passed before independent confirmation")
+            if instant(confirmation["cleanup_access_expires_at"]) < (
+                manifest.policy.deadline(instant(manifest.created_at))
+                + timedelta(seconds=manifest.policy.cleanup_reserve_seconds)
+            ):
+                raise LifecycleError("independent cleanup access expires before the reserve")
+            for kind, provider in providers.items():
+                if provider.authority_sha256 != manifest.cleanup.fingerprints[kind]:
+                    raise LifecycleError("independent cleanup authority is unavailable")
+                provider.inventory()
+            inventory.publish(fact(manifest, "confirmed", confirmation))
+        outcomes = lifecycle.reconcile(providers, generations=generations)
+        verified = all(outcome.status == "verified" for outcome in outcomes)
+        if verified:
+            inventory.publish(
+                fact(
+                    manifest,
+                    "closed",
+                    {"results": [dataclasses.asdict(result) for result in outcomes]},
+                )
+            )
+            for path in state.directory.glob("credential-*.json"):
+                path.unlink()
+        results.append(
+            {
+                "lease_id": manifest.lease_id,
+                "manifest_sha256": manifest.sha256,
+                "status": "closed"
+                if verified
+                else "active"
+                if not closing and all(outcome.status == "not-due" for outcome in outcomes)
+                else "unresolved",
+                "overdue": now >= manifest.policy.deadline(instant(manifest.created_at))
+                and not verified,
+                "results": [dataclasses.asdict(result) for result in outcomes],
+            }
+        )
+    return {
+        "format": "lowerduckpond-m3-11-lease-cleanup-v1",
+        "helper_revision": config.helper_revision,
+        "actor": actor,
+        "observed_at": stamp(now),
+        "leases": results,
+        "legacy": legacy,
+        "status": "unresolved"
+        if not readable
+        or legacy["status"] != "ready"
+        or any(row["status"] == "unresolved" for row in results)
+        else "ready",
+    }
 
 
-def parse_arguments() -> argparse.Namespace:
-    parser = argument_parser()
-    args = parser.parse_args()
-    if args.journal_cache_output is not None and args.journal_cache is None:
-        parser.error("journal cache output requires an input cache path")
-    if args.actor == "github" and (
-        os.environ.get("GITHUB_ACTIONS") != "true"
-        or os.environ.get("GITHUB_REPOSITORY") != "lowerduckpond-net/lowerduckpond.net"
-        or os.environ.get("GITHUB_REF") != "refs/heads/main"
-    ):
-        parser.exit(1, "Independent cleanup requires its protected main-branch workflow.\n")
-    return args
+def main() -> int:
+    from scripts.m3_11_unattended.docker import Docker  # noqa: PLC0415
+    from scripts.m3_11_unattended.watchdog import (  # noqa: PLC0415
+        due_processes,
+        finish_leases,
+        prepare_lease_cleanup,
+    )
 
-
-def main() -> int:  # noqa: PLR0912, PLR0915 - remote cadence and explicit backend boundaries
     args = parse_arguments()
-    repository = Path(__file__).resolve().parents[2]
-    helper = revision(git(repository, "rev-parse", "HEAD").decode().strip())
-    status = 1
-    journal: Journal | None = None
+    config = LeaseConfiguration.load(args.config)
+    if config.mode != "cleanup-only":
+        raise LifecycleError("watchdog requires its cleanup-only bundle")
+    root = args.runs.parent
+    bootstrap = config.generations[config.active_generation]["cleanup"]
+    retry = RETRY_SECONDS
     next_remote = next_retry = 0.0
-    retry_seconds = RETRY_SECONDS
-    last_due: set[Path] = set()
+    last_due: set[tuple[Path, bool]] = set()
+    docker = Docker()
     while True:
         try:
+            due = {
+                (path, (path / "cancel.json").exists()) for path in due_processes(args.runs, docker)
+            }
             now = time.monotonic()
-            due: set[Path] = set()
-            if args.runs is not None:
-                if args.actor != "watchdog":
-                    raise LifecycleError("only the persistent watchdog reads local runtime spools")
-                from scripts.m3_11_unattended.docker import Docker  # noqa: PLC0415 - watchdog only
-                from scripts.m3_11_unattended.watchdog import (  # noqa: PLC0415 - watchdog only
-                    due_processes,
-                    finish_reconciled,
-                    reconcile_processes,
-                )
-
-                due = set(due_processes(args.runs, Docker()))
             newly_due = bool(due - last_due)
             if args.watch and now < next_remote and not newly_due and (not due or now < next_retry):
                 time.sleep(POLL_SECONDS)
                 continue
-            # Local process checks remain every minute. Remote reconciliation is
-            # hourly, or immediate on an unresolved local terminal path, with a
-            # five-minute first retry and backoff to hourly after failure. Avoid
-            # consuming the daily quota rereading idle bootstrap every minute.
-            retry_seconds = RETRY_SECONDS if newly_due else retry_seconds
-            next_remote, next_retry = now + REMOTE_SECONDS, now + retry_seconds
+            if newly_due:
+                retry = RETRY_SECONDS
             last_due = due
-            with (
-                cleanup_lock(args.runs, blocking=False) if args.runs is not None else nullcontext()
-            ):
-                targets, vault, bootstrap = cleanup_configuration(args.config)
-                if bootstrap.connect_settings is not None and args.actor == "github":
-                    raise LifecycleError(
-                        "GitHub Connect cleanup requires its independent checkpoint action"
-                    )
-                journal_directory = (
-                    (args.runs.parent if args.runs is not None else args.config.parent)
-                    / "connect-journal"
-                    / "cleanup"
-                )
-                lifecycle = connect_cleanup(
-                    bootstrap, targets, vault, journal_directory=journal_directory
-                )
-                if journal is None:
-                    if isinstance(lifecycle.journal, OpJournal) and args.journal_cache is not None:
-                        lifecycle.journal.use_cache(
-                            args.journal_cache, output=args.journal_cache_output
-                        )
-                    journal = lifecycle.journal
-                else:
-                    # Refresh after acquiring the shared lock: a preceding
-                    # controller may have resolved obligations and removed keys.
-                    if isinstance(journal, OpJournal):
-                        journal.refresh()
-                    lifecycle.journal = journal
-                available = None
-                outcome_failures: set[Path] = set()
-                if args.runs is not None:
-                    available = reconcile_processes(
-                        lifecycle,
-                        args.runs,
-                        Docker(),
-                        directories=due,
-                        outcome_failures=outcome_failures,
-                    )
-                receipt = sweep(
-                    lifecycle,
-                    actor=args.actor,
-                    helper=helper,
-                    secrets=available,
-                    quiet_empty=args.quiet_empty,
-                    recovery_verified=not outcome_failures,
-                )
-                if args.runs is not None:
-                    finish_reconciled(lifecycle, due - outcome_failures, receipt)
-            print(json.dumps(receipt, sort_keys=True), flush=True)
-            status = (
-                0
-                if receipt["status"] == "ready"
-                or (args.quiet_empty and receipt["status"] == "initializing-empty")
-                else 1
+            next_remote, next_retry = now + REMOTE_SECONDS, now + retry
+            inventory = ConnectInventory(
+                bootstrap.reader(),
+                config.journal_vault,
+                spool=root / "inventory-pending" / args.actor,
             )
+            # Publication and writer recovery precede the provider-cleanup lock.
+            try:
+                published = prepare_lease_cleanup(args.runs, docker, inventory)
+            except RuntimeError, OSError, ValueError, KeyError, TypeError:
+                published = False
+            with cleanup_lock(args.runs, blocking=False):
+                receipt = sweep_leases(config, inventory, root=root / "leases", actor=args.actor)
+                if not published:
+                    receipt["status"] = "unresolved"
+                else:
+                    finish_leases(args.runs, receipt)
+            print(json.dumps(receipt, sort_keys=True), flush=True)
+            status = 0 if receipt["status"] == "ready" else 1
         except CleanupLockBusyError:
-            # Lock contention is neither successful revocation nor a provider
-            # failure. Keep observing local death/deadlines every minute rather
-            # than sleeping inside flock behind another actor's network work.
-            if not args.watch:
-                return 1
+            status = 1
             next_remote = next_retry = time.monotonic() + POLL_SECONDS
-            time.sleep(POLL_SECONDS)
-            continue
         except RuntimeError, OSError, ValueError, KeyError, TypeError:
             print(
-                "Credential cleanup unresolved; retained obligations need another reconciliation.",
-                file=sys.stderr,
-                flush=True,
+                "Credential cleanup unresolved; obligations retained.", file=sys.stderr, flush=True
             )
             status = 1
-        retry_seconds = RETRY_SECONDS if status == 0 else min(2 * retry_seconds, REMOTE_SECONDS)
         if not args.watch:
             return status
+        # Keep the established minute/hour cadence; no timer-policy changes.
         time.sleep(POLL_SECONDS)
+        retry = (
+            REMOTE_SECONDS if status == 0 else min(max(RETRY_SECONDS, retry * 2), REMOTE_SECONDS)
+        )
 
 
 if __name__ == "__main__":

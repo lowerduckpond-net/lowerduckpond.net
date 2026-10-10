@@ -209,6 +209,8 @@ class Cloudflare:
             if intent.role in {"audit", "page-rules"}
             else timedelta(hours=14)
         )
+        if intent.policy is not None:
+            maximum = timedelta(seconds=intent.policy.credential_lifetime_seconds)
         if (
             expiry != instant(intent.deadline)
             or not MINIMUM_TOKEN_REMAINING <= expiry - now <= maximum

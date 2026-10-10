@@ -6,10 +6,10 @@ from datetime import datetime, timedelta
 
 from scripts.m3_11_qualification_evidence import digest as sha256
 from scripts.m3_11_qualification_evidence import fields
-from scripts.m3_11_unattended.model import LifecycleError, Targets, instant
+from scripts.m3_11_unattended.model import LifecycleError, Targets, identity, instant
 from scripts.production_qualification_inputs import revision
 
-FORMAT = "lowerduckpond-m3-11-live-approval-v1"
+FORMAT = "lowerduckpond-m3-11-live-approval-v2"
 PREPARED = {"source_revision", "helper_revision", "controller_image", "artifact_sha256", "daemon"}
 
 
@@ -24,10 +24,14 @@ def validate(value: object, *, mode: str, now: datetime) -> dict[str, object]:
             "modes",
             "approved_at",
             "expires_at",
-            "credential_lifetime_hours",
+            "policy_sha256",
+            "lease_id",
             "approval_reference",
         },
     )
+    sha256(approved["policy_sha256"])
+    if approved["lease_id"] is not None:
+        identity(approved["lease_id"])
     prepared = fields(approved["prepared"], PREPARED)
     revision(prepared["source_revision"])
     revision(prepared["helper_revision"])
@@ -45,7 +49,6 @@ def validate(value: object, *, mode: str, now: datetime) -> dict[str, object]:
     reference = approved["approval_reference"]
     if (
         approved["format"] != FORMAT
-        or approved["credential_lifetime_hours"] != 14  # noqa: PLR2004 - approved native expiry
         or not isinstance(modes, list)
         or not modes
         or len(modes) != len(set(modes))

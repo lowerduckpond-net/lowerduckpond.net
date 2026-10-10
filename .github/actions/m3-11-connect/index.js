@@ -2,17 +2,13 @@
 
 const { spawn } = require("node:child_process");
 
-// A JavaScript action receives the artifact runtime token. Ordinary shell steps
-// do not. Retain it only in this private cleanup process and its pinned uploader.
+// Keep the versioned private bundle on stdin and suppress raw child output.
 function main() {
   let input;
   try {
     input = JSON.stringify({
       bootstrap: JSON.parse(process.env.M3_11_CONNECT_BOOTSTRAP),
-      selection: JSON.parse(process.env.M3_11_CONNECT_CONFIGURATION),
       operation: process.env.M3_11_CONNECT_OPERATION,
-      run_sha256: process.env.M3_11_CONNECT_RUN_SHA256 || "",
-      dispatch_id: process.env.M3_11_CONNECT_DISPATCH_ID || "",
     });
     if (Buffer.byteLength(input) > 128 * 1024) throw new Error();
   } catch {
@@ -20,8 +16,8 @@ function main() {
     process.exitCode = 1;
     return;
   }
-  const environment = { ...process.env, M3_11_ACTION_NODE: process.execPath };
-  for (const name of ["M3_11_CONNECT_BOOTSTRAP", "M3_11_CONNECT_CONFIGURATION"]) {
+  const environment = { ...process.env };
+  for (const name of ["M3_11_CONNECT_BOOTSTRAP", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]) {
     delete environment[name];
     delete process.env[name];
   }

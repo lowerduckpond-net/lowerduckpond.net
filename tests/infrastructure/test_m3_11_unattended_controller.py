@@ -1,152 +1,122 @@
-"""Exercise actual persistent state, worker terminal paths and private delivery."""
+"""Actual worker terminal/restart paths with synthetic lease and provider endpoints."""
 
 from __future__ import annotations
 
 import dataclasses
-import hashlib
 import json
+import shutil
 import sys
 import threading
 import time
+import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import cast, override
+from typing import cast
 
 import pytest
 
 from scripts.m3_11_private_inputs import read_private, write_private
-from scripts.m3_11_unattended import (
-    approval,
-    cleanup,
-    evidence,
-    inputs,
-    production,
-    setup,
-    watchdog,
-    worker,
-)
-from scripts.m3_11_unattended.cloudflare import Cloudflare
-from scripts.m3_11_unattended.config import Bootstrap, Configuration, Connections
-from scripts.m3_11_unattended.docker import SOCKET, Docker
-from scripts.m3_11_unattended.journal import OpJournal, event
-from scripts.m3_11_unattended.lifecycle import (
-    CreationRecorder,
-    Lifecycle,
-    Provider,
-    intents,
-    known_id,
-)
-from scripts.m3_11_unattended.model import (
-    ROLES,
-    Authority,
-    Credential,
-    Intent,
-    LifecycleError,
-    ProviderKind,
-    stamp,
-)
-from scripts.m3_11_unattended.state import RunState, replace_private
+from scripts.m3_11_unattended import approval, evidence, production, worker
+from scripts.m3_11_unattended.config import LeaseBootstrap, LeaseConfiguration
+from scripts.m3_11_unattended.docker import OWNER, SOCKET, controller_name
+from scripts.m3_11_unattended.inventory import ConnectInventory
+from scripts.m3_11_unattended.lifecycle import LeaseLifecycle, Provider
+from scripts.m3_11_unattended.model import ROLES, LifecycleError, ProviderKind, digest, stamp
+from scripts.m3_11_unattended.state import RunState, cleanup_lock, replace_private
 
-from .test_m3_11_creation_identities import CreationApi, provision
-from .test_m3_11_unattended_lifecycle import (
-    CANARY,
-    TARGETS,
-    Case,
-    DelayedPersistence,
-    ProviderDouble,
-)
+from .test_m3_11_lease_configuration import document
+from .test_m3_11_lease_inventory import TARGETS, LeaseCase
+from .test_m3_11_unattended_lifecycle import CANARY
 
 DAEMON = dict.fromkeys(("ID", "Name", "DockerRootDir", "ServerVersion"), "approved-daemon")
 
 
-def configuration() -> Configuration:
-    return Configuration(TARGETS, "a" * 26, Bootstrap({}), Bootstrap({}), {})
+def configuration() -> LeaseConfiguration:
+    return LeaseConfiguration.parse(document())
 
 
-def bound(case: Case) -> dict[str, object]:
+def subject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[worker.Worker, LeaseCase]:
+    root = tmp_path / "evidence"
+    case = LeaseCase(tmp_path / "case")
+    directory = root / "runs" / case.manifest.lease_id
+    directory.mkdir(mode=0o700, parents=True)
+    (root / "runs").chmod(0o700)
+    root.chmod(0o700)
+    write_private(
+        directory / "request.json",
+        {
+            "format": "lowerduckpond-m3-11-unattended-request-v2",
+            "binding": bound(case),
+            "mode": "qualification",
+            "approval_sha256": "c" * 64,
+            "controller_image": "sha256:" + "d" * 64,
+            "daemon": DAEMON,
+            "lease_id": case.manifest.lease_id,
+        },
+    )
+    config = configuration()
+    roles = config.generations[config.active_generation]
+    config = dataclasses.replace(
+        config,
+        policy=case.manifest.policy,
+        approved_policy_sha256=case.manifest.policy.sha256,
+        active_generation=case.manifest.creator.generation_id,
+        generations={
+            case.manifest.creator.generation_id: {
+                "provision": dataclasses.replace(
+                    roles["provision"], generation=case.manifest.creator
+                ),
+                "cleanup": dataclasses.replace(roles["cleanup"], generation=case.manifest.cleanup),
+            }
+        },
+    )
+    selected = worker.Worker(directory, config, tmp_path / "source")
+    case.state = selected.lease_state
+    case.lifecycle = LeaseLifecycle(
+        case.manifest,
+        case.inventory,
+        case.state,
+        providers=case.providers,
+        clock=case.lifecycle.clock,
+    )
+    selected.lifecycle = case.lifecycle
+    monkeypatch.setattr(selected, "_inventory", lambda: cast(ConnectInventory, case.inventory))
+    monkeypatch.setattr(selected, "_verify_source", lambda: None)
+    monkeypatch.setattr(
+        worker,
+        "Docker",
+        lambda: SimpleNamespace(
+            endpoint="unix://" + SOCKET,
+            info=lambda: DAEMON,
+            owned=lambda _name: {
+                "Id": "a" * 64,
+                "Name": "/" + controller_name(selected.run_id),
+                "Image": selected.request["controller_image"],
+                "Config": {"Labels": {OWNER + ".source": selected.helper}},
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        LeaseBootstrap,
+        "providers",
+        lambda self, **_kwargs: cast(
+            dict[ProviderKind, Provider],
+            case.providers if self.generation.role == "provision" else case.cleanup_providers,
+        ),
+    )
+    return selected, case
+
+
+def bound(case: LeaseCase) -> dict[str, object]:
     return {
-        "managed_run_id": case.run_id,
+        "managed_run_id": case.manifest.lease_id,
         "source_revision": "e" * 40,
         "helper_revision": "f" * 40,
         "artifact_sha256": "a" * 64,
         "qualification_inputs_sha256": "b" * 64,
         "storage_target_sha256": TARGETS.storage_digest,
     }
-
-
-def subject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[worker.Worker, Case]:
-    directory = tmp_path / "run"
-    directory.mkdir(mode=0o700)
-    case = Case(tmp_path / "journal")
-    write_private(
-        directory / "request.json",
-        {
-            "format": "lowerduckpond-m3-11-unattended-request-v1",
-            "binding": bound(case),
-            "mode": "qualification",
-            "approval_sha256": "c" * 64,
-            "controller_image": "sha256:" + "d" * 64,
-            "daemon": DAEMON,
-        },
-    )
-    selected = worker.Worker(directory, configuration(), tmp_path / "source")
-    selected.cleanup_cache = tmp_path / "cleanup-journal-cache.json"
-    monkeypatch.setattr(selected, "_verify_source", lambda: None)
-    monkeypatch.setattr(
-        worker,
-        "Docker",
-        lambda: SimpleNamespace(endpoint="unix://" + SOCKET, info=lambda: DAEMON),
-    )
-    monkeypatch.setattr(cleanup, "connect_cleanup", lambda *_args, **_kwargs: case.lifecycle)
-    return selected, case
-
-
-@pytest.mark.parametrize("actor", ["controller", "watchdog"])
-@pytest.mark.parametrize("outcome", ["failed", "passed"])
-def test_terminal_result_waits_for_durability_across_controller_and_watchdog_retries(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor: str, outcome: str
-) -> None:
-    selected, case = subject(tmp_path, monkeypatch)
-    directory = selected.directory.with_name(case.run_id)
-    selected.directory.rename(directory)
-    selected.directory, selected.state = directory, RunState(directory)
-    selected.state.begin(selected.binding)
-    for name in ("credential-intents", "credential-cleanup"):
-        (selected.directory / name).mkdir(mode=0o700)
-    journal = DelayedPersistence(case.journal.directory)
-    case.lifecycle.journal = journal
-    case.lifecycle.remember = selected.remember
-    case.lifecycle.remember_intent = selected.remember_intent
-    case.create()
-    selected.state.finish_journey(outcome, 0 if outcome == "passed" else 1)
-    journal.pending_kind = "result"
-    assert not selected.revoke()
-    original = [row for row in journal.records() if row["kind"] == "result"]
-    assert len(original) == 1
-
-    def retry() -> bool:
-        if actor == "controller":
-            return selected.revoke()
-        receipt = cleanup.sweep(
-            case.lifecycle,
-            actor="watchdog",
-            helper=selected.helper,
-            secrets=worker.retained_credentials(selected.directory),
-        )
-        watchdog.finish_reconciled(case.lifecycle, {selected.directory}, receipt)
-        return selected.state.status()["credential_cleanup"] == "verified"
-
-    assert not retry()
-    assert selected.state.status()["closure"] == "unresolved"
-    assert selected.state.status()["qualification"] == outcome
-    assert worker.retained_credentials(selected.directory)
-    journal.pending_kind = ""
-    assert retry()
-    assert not worker.retained_credentials(selected.directory)
-    assert selected.state.status()["qualification"] == outcome
-    assert [row for row in journal.records() if row["kind"] == "result"] == original
-    assert read_private(selected.directory / "terminal-journal-event.json") == original[0]
 
 
 @pytest.mark.parametrize("field", ["ID", "Name", "DockerRootDir", "ServerVersion", "endpoint"])
@@ -167,240 +137,14 @@ def test_mounted_socket_must_reach_approved_daemon_before_provisioning(
     monkeypatch.setattr(selected, "_provision", lambda: pytest.fail("must not provision"))
     assert selected.run() == 1
     assert selected.state.status()["qualification"] == "failed"
-    assert case.provider.creates == 0
-
-
-def test_restart_revokes_original_attempt_without_replaying_and_preserves_failed_evidence(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    selected, case = subject(tmp_path, monkeypatch)
-    selected.state.begin(selected.binding)
-    for name in ("credential-intents", "credential-cleanup"):
-        (selected.directory / name).mkdir(mode=0o700)
-    case.lifecycle.remember = selected.remember
-    case.lifecycle.remember_intent = selected.remember_intent
-    _, _credential = case.create()
-    retained = selected.directory / "private.log"
-    retained.write_text(CANARY)
-    # Model SIGKILL after provider creation: no terminal callback ran. A fresh
-    # worker uses the immutable attempt and independent provider inventory.
-    assert selected.run() == 1
-    assert case.provider.creates == 1
-    assert case.provider.deletes == ["credential00000001"]
-    assert selected.state.status()["qualification"] == "interrupted"
-    assert selected.state.status()["credential_cleanup"] == "verified"
-    assert selected.state.status()["closure"] == "unresolved"
-    assert retained.read_text() == CANARY
-    result = (selected.directory / "journey-result.json").read_bytes()
-    assert selected.run() == 1
-    assert (selected.directory / "journey-result.json").read_bytes() == result
-    assert case.provider.creates == 1
-    exported = evidence.export(selected.directory, repository=selected.source, include_report=True)
-    assert CANARY not in json.dumps(exported)
-    assert exported["revocation"]
-
-
-@pytest.mark.parametrize("fault", ["delivery", "cancel", "revocation"])
-def test_real_worker_terminal_paths_separate_test_outcome_from_cleanup(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    fault: str,
-) -> None:
-    selected, case = subject(tmp_path, monkeypatch)
-
-    def provision() -> tuple[dict[str, Credential], dict[str, object]]:
-        case.lifecycle.remember = selected.remember
-        case.lifecycle.remember_intent = selected.remember_intent
-        _, credential = case.create()
-        return {"archive": credential}, {}
-
-    def deliver(*_args: object) -> dict[str, str]:
-        (selected.directory / "runtime-inputs.json").write_text(CANARY)
-        if fault == "cancel":
-            selected.state.cancel()
-        if fault == "revocation":
-            case.provider.fail_delete = True
-        raise LifecycleError(CANARY)
-
-    monkeypatch.setattr(selected, "_provision", provision)
-    monkeypatch.setattr(selected, "_production", lambda _credentials: {})
-    monkeypatch.setattr(selected, "_deliver", deliver)
-    assert selected.run() == 1
-    status = selected.state.status()
-    assert status["qualification"] == ("interrupted" if fault == "cancel" else "failed")
-    assert status["credential_cleanup"] == ("unresolved" if fault == "revocation" else "verified")
-    assert status["closure"] == "unresolved"
-    assert not (selected.directory / "runtime-inputs.json").exists()
-    original = read_private(selected.directory / "journey-result.json")
-    case.provider.fail_delete = False
-    assert selected.revoke()
-    assert read_private(selected.directory / "journey-result.json") == original
-
-
-def test_private_spool_is_durable_before_remote_creation_acknowledgement(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    selected, case = subject(tmp_path, monkeypatch)
-    for name in ("credential-intents", "credential-cleanup"):
-        (selected.directory / name).mkdir(mode=0o700)
-    case.lifecycle.remember, case.lifecycle.remember_intent = (
-        selected.remember,
-        selected.remember_intent,
-    )
-    case.lifecycle.remember_created = selected.remember_created
-    append = case.journal.append
-
-    def lose_ack(record: dict[str, object]) -> None:
-        if record["kind"] == "created":
-            raise LifecycleError("journal unavailable")
-        append(record)
-
-    monkeypatch.setattr(case.journal, "append", lose_ack)
-    with pytest.raises(LifecycleError):
-        case.create()
-    available = worker.retained_credentials(selected.directory)
-    assert len(available) == 1
-    assert next(iter(available.values())).secret == CANARY
-    monkeypatch.setattr(case.journal, "append", append)
-    assert selected.revoke()
-    assert not worker.retained_credentials(selected.directory)
-
-
-@pytest.mark.parametrize("actor", ["controller", "watchdog"])
-@pytest.mark.parametrize("staged", [False, True])
-def test_id_only_creation_survives_remote_ack_failure_and_actor_restart(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor: str, staged: bool
-) -> None:
-    selected, case = subject(tmp_path, monkeypatch)
-    directory = selected.directory.with_name(case.run_id)
-    selected.directory.rename(directory)
-    selected.directory, selected.state = directory, RunState(directory)
-    selected.state.begin(selected.binding)
-    (directory / "credential-intents").mkdir(mode=0o700)
-    case.lifecycle.remember = selected.remember
-    case.lifecycle.remember_intent = selected.remember_intent
-    case.lifecycle.remember_created = selected.remember_created
-    api = CreationApi("spaces", response_fault="missing", wrong_scope=True)
-    append = case.journal.append
-
-    def lose_ack(record: dict[str, object]) -> None:
-        if record["kind"] == "created":
-            if staged:
-                append(record)
-            raise LifecycleError("journal unavailable")
-        append(record)
-
-    monkeypatch.setattr(case.journal, "append", lose_ack)
-    with pytest.raises(LifecycleError, match="journal unavailable"):
-        provision(case, api)
-    intent = intents(case.journal)[0]
-    original = read_private(directory / "credential-created" / (intent.sha256 + ".json"))
-    assert known_id(case.journal, intent) == (api.selected if staged else None)
-    assert not worker.retained_credentials(directory)
-    assert not selected.revoke()
-    assert api.deletes == []
-    monkeypatch.setattr(case.journal, "append", append)
-    case.lifecycle = Lifecycle(case.journal, {"spaces": api.provider()}, clock=lambda: case.now)
-    if actor == "controller":
-        restarted = worker.Worker(directory, configuration(), tmp_path / "source")
-        assert restarted.revoke()
-    else:
-        available = watchdog.reconcile_processes(
-            case.lifecycle, directory.parent, cast(Docker, None), directories={directory}
-        )
-        assert available == {}
-        assert case.lifecycle.sweep()[0].status == "verified"
-    assert api.creates == 1 and api.deletes == [api.selected]
-    assert read_private(directory / "credential-created" / (intent.sha256 + ".json")) == original
-    assert len([row for row in case.journal.records() if row["kind"] == "created"]) == 1
-
-
-def test_private_delivery_failure_still_records_returned_identity(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    selected, case = subject(tmp_path, monkeypatch)
-    api = CreationApi("spaces", response_fault="valid", wrong_scope=True)
-    case.lifecycle.remember_created = selected.remember_created
-
-    def fail_delivery(_intent: Intent, _credential: Credential) -> None:
-        raise OSError("private spool unavailable")
-
-    case.lifecycle.remember = fail_delivery
-    with pytest.raises(OSError, match="private spool unavailable"):
-        provision(case, api)
-    intent = intents(case.journal)[0]
-    assert known_id(case.journal, intent) == api.selected
-    assert CANARY not in repr(case.journal.records())
-    assert selected.revoke()
-    assert api.deletes == [api.selected]
-
-
-@pytest.mark.parametrize("actor", ["controller", "watchdog"])
-def test_torn_local_creation_record_cannot_delay_independent_terminal_cleanup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, actor: str
-) -> None:
-    selected, case = subject(tmp_path, monkeypatch)
-    directory = selected.directory.with_name(case.run_id)
-    selected.directory.rename(directory)
-    selected.directory, selected.state = directory, RunState(directory)
-    selected.state.begin(selected.binding)
-    case.lifecycle.remember_created = selected.remember_created
-    api = CreationApi("spaces", response_fault="missing", wrong_scope=True)
-    with pytest.raises(LifecycleError, match="omitted its secret"):
-        provision(case, api)
-    intent = intents(case.journal)[0]
-    path = directory / "credential-created" / (intent.sha256 + ".json")
-    path.write_text('{"torn":')
-    if actor == "controller":
-        assert not selected.revoke()
-        assert selected.state.status()["credential_cleanup"] == "unresolved"
-    else:
-        with pytest.raises(ValueError):
-            watchdog.reconcile_processes(
-                case.lifecycle, directory.parent, cast(Docker, None), directories={directory}
-            )
-    assert api.deletes == []
-    assert any(row["kind"] == "revoke" for row in case.journal.records())
-    independent = Lifecycle(case.journal, {"spaces": api.provider()}, clock=lambda: case.now)
-    assert independent.reconcile(intent).status == "verified"
-    assert api.deletes == [api.selected]
-    assert path.read_text() == '{"torn":'
-
-
-@pytest.mark.parametrize("age", [timedelta(minutes=91), timedelta(days=1)])
-def test_stale_independent_cleanup_blocks_admission(tmp_path: Path, age: timedelta) -> None:
-    case = Case(tmp_path)
-    case.journal.append(
-        event(
-            "heartbeat",
-            case.run_id,
-            {
-                "actor": "github",
-                "helper_revision": "f" * 40,
-                "observed_at": stamp(datetime.now(UTC) - age),
-                "status": "ready",
-                "overdue": 0,
-                "results": [],
-            },
-        )
-    )
-    with pytest.raises(LifecycleError, match="stale"):
-        cleanup.require_independent_ready(
-            cast(OpJournal, case.journal), helper="f" * 40, now=datetime.now(UTC)
-        )
-    status = cleanup.status_document(case.journal, helper="f" * 40, now=datetime.now(UTC))
-    assert status["new_start"] == "blocked"
-    github = status["github"]
-    assert isinstance(github, dict) and github["status"] == "stale-or-unresolved"
+    assert all(provider.creates == 0 for provider in case.providers.values())
 
 
 @pytest.mark.parametrize("field", ["status", "outcome", "observed_at", "format"])
 def test_failure_export_rejects_canary_in_every_scalar(tmp_path: Path, field: str) -> None:
     tmp_path.chmod(0o700)
     state = RunState(tmp_path)
-    state.begin({"managed_run_id": Case(tmp_path / "journal").run_id})
+    state.begin({"managed_run_id": str(uuid.uuid7())})
     state.finish_journey("failed", 1)
     value = read_private(tmp_path / "journey-result.json")
     value[field] = CANARY
@@ -422,53 +166,6 @@ def test_untrusted_ambient_bootstrap_is_excluded_from_runtime(
     assert CANARY not in worker.safe_environment().values()
 
 
-def test_setup_creates_private_configuration_and_cleanup_excludes_production(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    manifest = setup.template()
-    manifest["targets"], manifest["journal_vault"] = dataclasses.asdict(TARGETS), "a" * 26
-    for role in ("provision", "cleanup", "production"):
-        section = manifest[role]
-        assert isinstance(section, dict)
-        section["service_account_expires_at"] = stamp(datetime.now(UTC) + timedelta(days=7))
-    path = tmp_path / "manifest.json"
-    path.write_text(json.dumps(manifest))
-    token_file = tmp_path / "tokens.json"
-    write_private(
-        token_file, {role: CANARY + role for role in ("provision", "cleanup", "production")}
-    )
-    monkeypatch.setattr(setup, "validate", lambda _config: None)
-    output = tmp_path / "controller.json"
-    setup.configure(path, output, token_file=token_file)
-    assert output.stat().st_mode & 0o777 == 0o600  # noqa: PLR2004 - private mode
-    config = Configuration.load(output)
-    independent = json.dumps(config.cleanup_document())
-    assert CANARY + "cleanup" in independent
-    assert CANARY + "production" not in independent
-    assert CANARY + "provision" not in independent
-    assert "OPENTOFU_ENCRYPTION_PASSPHRASE" not in independent
-    assert CANARY not in repr(config)
-    with pytest.raises(LifecycleError, match="overwrite"):
-        setup.configure(path, output, token_file=token_file)
-
-
-def test_failed_setup_removes_incomplete_configuration(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    manifest = setup.template()
-    manifest["targets"], manifest["journal_vault"] = dataclasses.asdict(TARGETS), "a" * 26
-    path = tmp_path / "manifest.json"
-    path.write_text(json.dumps(manifest))
-    tokens = tmp_path / "tokens.json"
-    write_private(tokens, dict.fromkeys(("provision", "cleanup", "production"), CANARY))
-    output = tmp_path / "controller.json"
-    with pytest.raises(LifecycleError):
-        setup.configure(path, output, token_file=tokens)
-    assert not output.exists()
-
-
 def test_live_approval_is_exact_and_short_lived(tmp_path: Path) -> None:
     now = datetime.now(UTC)
     value = {
@@ -485,7 +182,8 @@ def test_live_approval_is_exact_and_short_lived(tmp_path: Path) -> None:
         "modes": ["rehearsal"],
         "approved_at": stamp(now),
         "expires_at": stamp(now + timedelta(hours=4)),
-        "credential_lifetime_hours": 14,
+        "policy_sha256": "d" * 64,
+        "lease_id": None,
         "approval_reference": "test operator approval",
     }
     assert approval.validate(value, mode="rehearsal", now=now) == value
@@ -560,33 +258,6 @@ def test_status_exposes_real_supervisor_phase_but_never_raw_failure_payloads(
     assert CANARY not in json.dumps(result)
 
 
-def test_worker_retains_closed_preflight_and_cleanup_diagnostics(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    selected, _case = subject(tmp_path, monkeypatch)
-    selected.request["daemon"] = {**DAEMON, "ID": CANARY}
-
-    def unavailable(*_args: object, **_kwargs: object) -> object:
-        raise LifecycleError(CANARY)
-
-    monkeypatch.setattr(cleanup, "connect_cleanup", unavailable)
-    assert selected.run() == 1
-    exported = json.loads(
-        json.dumps(
-            evidence.export(selected.directory, repository=selected.source, include_report=False)
-        )
-    )
-    assert exported["status"]["credential_cleanup"] == "unresolved"
-    assert exported["status"]["qualification"] == "failed"
-    assert exported["worker_diagnostic"]["stage"] == "starting"
-    assert exported["worker_diagnostic"]["failure"]["origin"]["function"] == "_verify_daemon"
-    assert exported["cleanup_diagnostic"]["stage"] == "revoking"
-    assert CANARY not in json.dumps(exported)
-    original = (selected.directory / "worker-failure.json").read_bytes()
-    selected._failure(RuntimeError(CANARY))
-    assert (selected.directory / "worker-failure.json").read_bytes() == original
-
-
 @pytest.mark.parametrize(
     "field", ["binding", "stage", "category", "path", "function", "line", "extra"]
 )
@@ -607,130 +278,6 @@ def test_worker_diagnostic_canaries_and_transplants_are_rejected(
     replace_private(path, value)
     with pytest.raises((LifecycleError, ValueError)):
         evidence.export(selected.directory, repository=selected.source, include_report=False)
-
-
-def test_broken_failure_diagnostics_cannot_prevent_terminal_cleanup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    selected, case = subject(tmp_path, monkeypatch)
-    case.create()
-    selected.request["daemon"] = {**DAEMON, "ID": CANARY}
-
-    def broken(*_args: object, **_kwargs: object) -> None:
-        raise OSError(CANARY)
-
-    monkeypatch.setattr(worker, "retain_failure", broken)
-    assert selected.run() == 1
-    assert selected.state.status()["qualification"] == "failed"
-    assert selected.state.status()["credential_cleanup"] == "verified"
-    assert not case.provider.items
-
-
-def test_rehearsal_keeps_all_worker_stages_and_revokes_all_seven_delivered_roles(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    selected, case = subject(tmp_path, monkeypatch)
-    selected.request["mode"] = "rehearsal"
-    replace_private(selected.directory / "request.json", selected.request)
-    now = datetime.now(UTC)
-    boot = Bootstrap({}, connect_settings={})
-    selected.config = dataclasses.replace(
-        selected.config,
-        provision=boot,
-        cleanup=boot,
-        production={"connect": {"private-canary": CANARY}},
-    )
-
-    class Tokens(ProviderDouble, Cloudflare):
-        @override
-        def scope(self, role: str, _targets: object) -> dict[str, object]:
-            return {"role": role}
-
-        @override
-        def create(self, intent: Intent, *, record: CreationRecorder) -> Credential:
-            def returned(identifier: str, secret: str | None) -> None:
-                record(identifier, None if secret is None else secret + intent.role)
-
-            credential = super().create(intent, record=returned)
-            return dataclasses.replace(credential, secret=credential.secret + intent.role)
-
-    kinds: tuple[ProviderKind, ...] = ("spaces", "cloudflare-account", "cloudflare-user")
-    providers = {kind: Tokens() for kind in kinds}
-    for kind, provider in providers.items():
-        provider.kind = kind
-        provider.items["existing-production"] = {"id": "existing-production"}
-    # Each double must return identities unique across both provider families.
-    for index, provider in enumerate(providers.values()):
-        provider.creates = index * 10
-    authority = Authority("d" * 64, now + timedelta(days=3))
-    connected = Connections(case.journal, cast(dict[ProviderKind, Provider], providers), authority)
-    monkeypatch.setattr(worker, "connect", lambda *_args, **_kwargs: connected)
-    case.lifecycle.providers = providers
-    case.journal.append(
-        event(
-            "heartbeat",
-            case.run_id,
-            {
-                "actor": "github",
-                "helper_revision": selected.helper,
-                "observed_at": stamp(now),
-                "status": "ready",
-                "overdue": 0,
-                "results": [],
-            },
-        )
-    )
-    monkeypatch.setattr(inputs, "current_candidate", lambda *_args: None)
-    monkeypatch.setattr(
-        inputs, "fingerprint", lambda *_args: selected.binding["qualification_inputs_sha256"]
-    )
-    delivered = []
-
-    def command(arguments: list[str], **kwargs: object) -> None:
-        if kwargs["log"] == "production-check.log":
-            request = json.loads(cast(bytes, kwargs["stdin"]))
-            assert CANARY not in repr(arguments)
-            assert set(request["fixture"]) == {
-                "audit",
-                "observer",
-                "archive_id",
-                "backup_id",
-                "caddy_id",
-            }
-            observed = stamp(datetime.now(UTC))
-            write_private(
-                Path(request["output"]),
-                {
-                    "format": inputs.PRODUCTION_FORMAT,
-                    **request["binding"],
-                    "started_at": observed,
-                    "completed_at": observed,
-                    "checks": inputs.PRODUCTION_RESULT,
-                    "identities_sha256": {
-                        role: hashlib.sha256(("production-" + role).encode()).hexdigest()
-                        for role in ("archive", "backup", "caddy")
-                    },
-                },
-            )
-        else:
-            assert kwargs["log"] == "rehearsal-probes.log"
-            environment = cast(dict[str, str], kwargs["environment"])
-            assert not any(str(key).startswith(inputs.FORBIDDEN_PREFIXES) for key in environment)
-            delivered.append(read_private(selected.directory / "runtime-inputs.json"))
-
-    # External process endpoints are doubles; provisioning, receipts, delivery,
-    # actual signal handling and terminal reconciliation remain the real worker.
-    monkeypatch.setattr(selected, "_command", command)
-    assert selected.run() == 0
-    assert len(delivered) == 1
-    assert len(intents(case.journal)) == len(ROLES)
-    assert selected.state.status()["qualification"] == "rehearsal-interrupted"
-    assert selected.state.status()["credential_cleanup"] == "verified"
-    assert all(set(provider.items) == {"existing-production"} for provider in providers.values())
-    assert not (selected.directory / "runtime-inputs.json").exists()
-    assert CANARY not in json.dumps(
-        evidence.export(selected.directory, repository=selected.source, include_report=False)
-    )
 
 
 @pytest.mark.parametrize("action", ["bootstrap", "validate"])
@@ -760,3 +307,216 @@ def test_short_production_process_retains_only_bound_static_failure(
     assert exported["production_diagnostic"]["failure"]["origin"]["function"] == "main"
     captured = capsys.readouterr()
     assert CANARY not in json.dumps(exported) + captured.out + captured.err
+
+
+@pytest.mark.parametrize("fault", ["delivery", "cancel", "revocation"])
+def test_worker_terminal_failure_keeps_outcome_and_revokes_all_owned_children(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    selected, case = subject(tmp_path, monkeypatch)
+
+    def provision() -> tuple[dict[str, object], dict[str, object]]:
+        case.confirm()
+        return cast(dict[str, object], case.issue()), {}
+
+    def deliver(*_args: object) -> dict[str, str]:
+        write_private(selected.directory / "runtime-inputs.json", {"private": CANARY})
+        if fault == "cancel":
+            selected.state.cancel()
+        if fault == "revocation":
+            for provider in case.cleanup_providers.values():
+                provider.fail_delete = True
+        raise LifecycleError(CANARY)
+
+    monkeypatch.setattr(selected, "_provision", provision)
+    monkeypatch.setattr(selected, "_production", lambda _credentials: {})
+    monkeypatch.setattr(selected, "_deliver", deliver)
+    assert selected.run() == 1
+    status = selected.state.status()
+    assert status["qualification"] == ("interrupted" if fault == "cancel" else "failed")
+    assert status["credential_cleanup"] == ("unresolved" if fault == "revocation" else "verified")
+    original = read_private(selected.directory / "journey-result.json")
+    for provider in case.cleanup_providers.values():
+        provider.fail_delete = False
+    assert selected.revoke()
+    assert read_private(selected.directory / "journey-result.json") == original
+    assert all(not provider.items for provider in case.providers.values())
+    assert CANARY not in json.dumps(
+        evidence.export(selected.directory, repository=selected.source, include_report=False)
+    )
+
+
+def test_restart_reconciles_without_replaying_creation_or_rewriting_failed_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selected, case = subject(tmp_path, monkeypatch)
+    selected.state.begin(selected.binding)
+    case.confirm()
+    case.issue()
+    (selected.directory / "private.log").write_text(CANARY)
+    assert selected.run() == 1
+    assert sum(provider.creates for provider in case.providers.values()) == len(ROLES)
+    assert all(not provider.items for provider in case.providers.values())
+    assert selected.state.status()["qualification"] == "interrupted"
+    assert selected.state.status()["credential_cleanup"] == "verified"
+    original = read_private(selected.directory / "journey-result.json")
+    assert selected.run() == 1
+    assert read_private(selected.directory / "journey-result.json") == original
+    assert (selected.directory / "private.log").read_text() == CANARY
+
+
+@pytest.mark.parametrize("restore", [False, True])
+def test_restarted_attempt_with_lost_or_old_lease_volume_cannot_issue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restore: bool
+) -> None:
+    selected, case = subject(tmp_path, monkeypatch)
+    selected.state.begin(selected.binding)
+    selected.state.finish_journey("failed", 1)
+    original = (selected.directory / "journey-result.json").read_bytes()
+    snapshot = tmp_path / "synthetic-pre-issuance-snapshot"
+    shutil.copytree(case.state.directory, snapshot)
+    case.confirm()
+    case.issue()
+    shutil.rmtree(case.state.directory)
+    if restore:
+        shutil.copytree(snapshot, case.state.directory)
+    restarted = worker.Worker(selected.directory, selected.config, selected.source)
+    monkeypatch.setattr(restarted, "_inventory", lambda: cast(ConnectInventory, case.inventory))
+    monkeypatch.setattr(restarted, "_verify_source", lambda: None)
+    monkeypatch.setattr(restarted, "_provision", lambda: pytest.fail("restored attempt issued"))
+    assert restarted.run() == 1
+    assert sum(provider.creates for provider in case.providers.values()) == len(ROLES)
+    assert (selected.directory / "journey-result.json").read_bytes() == original
+
+
+def test_close_publication_precedes_busy_cleanup_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+
+    selected, case = subject(tmp_path, monkeypatch)
+    selected.state.begin(selected.binding)
+    selected.state.finish_journey("failed", 1)
+    case.confirm()
+    case.issue()
+    with cleanup_lock(selected.directory.parent):
+        assert not selected.revoke()
+    assert "close-finish" in case.lifecycle.records()
+    assert sum(len(provider.items) for provider in case.providers.values()) == len(ROLES)
+    assert selected.revoke()
+
+
+@pytest.mark.parametrize("restarted", [False, True])
+@pytest.mark.parametrize("cleanup_reason", ["cancel", "expiry"])
+def test_released_creator_cannot_revoke_successor_but_global_cleanup_still_applies(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    restarted: bool,
+    cleanup_reason: str,
+) -> None:
+    selected, case = subject(tmp_path, monkeypatch)
+    selected.state.begin(selected.binding)
+    selected.state.finish_journey("failed", 1)
+    original = (selected.directory / "journey-result.json").read_bytes()
+    case.confirm()
+    case.issue()
+    successor = str(uuid.uuid7())
+    with case.state.use_lock():
+        case.state.acquire_use(
+            attempt_id=selected.run_id, binding_sha256=digest(selected.binding), kind="attempt"
+        )
+        assert bool(selected.owns_lease)
+        case.state.release_use(
+            attempt_id=selected.run_id,
+            quiescence={
+                "host_commands_drained": True,
+                "complete": True,
+                "containers": [
+                    {
+                        "id": "a" * 64,
+                        "name": "synthetic-stopped-consumer",
+                        "image": "sha256:" + "b" * 64,
+                        "owner": selected.run_id,
+                        "running": False,
+                        "restart_policy": "no",
+                    }
+                ],
+            },
+        )
+        assert not bool(selected.owns_lease)
+        case.state.acquire_use(attempt_id=successor, binding_sha256="c" * 64, kind="attempt")
+    successor_path = case.state.directory / ("use-" + successor + ".json")
+    successor_use = successor_path.read_bytes()
+    if restarted:
+        selected = worker.Worker(selected.directory, selected.config, selected.source)
+        monkeypatch.setattr(selected, "_inventory", lambda: cast(ConnectInventory, case.inventory))
+        monkeypatch.setattr(selected, "_verify_source", lambda: None)
+        assert selected.run() == 1
+    else:
+        assert not selected.revoke()
+    assert not selected.owns_lease
+    assert not any(str(row["slot"]).startswith("close-") for row in case.inventory.records())
+    assert all(not provider.deletes for provider in case.cleanup_providers.values())
+    assert sum(len(provider.items) for provider in case.providers.values()) == len(ROLES)
+    assert (selected.directory / "journey-result.json").read_bytes() == original
+    assert successor_path.read_bytes() == successor_use
+
+    if cleanup_reason == "cancel":
+        selected.state.cancel()
+    else:
+        expired = case.manifest.policy.deadline(
+            datetime.fromisoformat(case.manifest.created_at)
+        ) + timedelta(seconds=1)
+        monkeypatch.setattr(worker, "datetime", SimpleNamespace(now=lambda _zone: expired))
+    assert selected.revoke()
+    assert all(not provider.items for provider in case.providers.values())
+    assert (selected.directory / "journey-result.json").read_bytes() == original
+
+
+def test_failed_close_publication_does_not_suppress_immediate_deletion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selected, case = subject(tmp_path, monkeypatch)
+    selected.state.begin(selected.binding)
+    selected.state.finish_journey("passed", 0)
+    case.confirm()
+    case.issue()
+    publish = case.inventory.publish
+
+    def unavailable(record: dict[str, object]) -> None:
+        if str(record["slot"]).startswith("close-"):
+            raise LifecycleError("synthetic persistence failure")
+        publish(record)
+
+    monkeypatch.setattr(case.inventory, "publish", unavailable)
+    assert not selected.revoke()
+    assert all(not provider.items for provider in case.providers.values())
+    assert selected.state.status()["credential_cleanup"] == "unresolved"
+    monkeypatch.setattr(case.inventory, "publish", publish)
+    assert selected.revoke()
+    assert selected.state.status()["closure"] == "complete"
+
+
+def test_only_started_failed_attempt_may_retain_and_explicit_cancel_revokes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selected, case = subject(tmp_path, monkeypatch)
+    selected.state.begin(selected.binding)
+    selected.state.finish_journey("failed", 1)
+    case.confirm()
+    case.issue()
+    write_private(selected.directory / "runtime-inputs.json", {"private": CANARY})
+    write_private(
+        selected.directory / "attempt-started.json",
+        {
+            "binding_sha256": digest(selected.binding),
+            "manifest_sha256": case.manifest.sha256,
+        },
+    )
+    selected.attempt_started = True
+    selected._terminal()
+    assert sum(len(provider.items) for provider in case.providers.values()) == len(ROLES)
+    assert selected.state.status()["credential_cleanup"] == "pending"
+    selected.state.cancel()
+    selected._terminal()
+    assert all(not provider.items for provider in case.providers.values())
+    assert selected.state.status()["qualification"] == "failed"

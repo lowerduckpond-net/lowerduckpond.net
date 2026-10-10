@@ -19,10 +19,8 @@ from scripts.check_m3_7_production_edge import CloudflareClient, verify_active_a
 from scripts.check_m3_10_provider import check_caddy_token
 from scripts.m3_11_private_inputs import write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
-from scripts.m3_11_unattended.connect_api import Connect
 from scripts.m3_11_unattended.connect_diagnostics import retain_failure
 from scripts.m3_11_unattended.inputs import BINDING, PRODUCTION_FORMAT, PRODUCTION_RESULT
-from scripts.m3_11_unattended.journal import OnePassword
 from scripts.m3_11_unattended.model import LifecycleError, Targets, stamp, strings
 from scripts.m3_11_unattended.state import private_directory
 from scripts.production_qualification_inputs import current_candidate, fingerprint, revision
@@ -92,8 +90,7 @@ def _request() -> dict[str, object]:
 
 def bootstrap(request: dict[str, object], repository: Path) -> int:
     """Provisioning credentials are not accepted here; only the production reader."""
-    authority = "connect" if "connect" in request else "service_account"
-    value = fields(request, {authority, "references", "targets", "binding", "fixture", "output"})
+    value = fields(request, {"connect", "references", "targets", "binding", "fixture", "output"})
     references = strings(value["references"])
     if set(references) != REFERENCES:
         raise LifecycleError("production-check references are incomplete")
@@ -101,22 +98,15 @@ def bootstrap(request: dict[str, object], repository: Path) -> int:
     fixture = strings(
         fields(value["fixture"], {"audit", "observer", "archive_id", "backup_id", "caddy_id"})
     )
-    op: OnePassword | Connect
-    if authority == "connect":
-        from scripts.m3_11_unattended.connect_configuration import (  # noqa: PLC0415
-            reader,
-            reader_access,
-        )
+    from scripts.m3_11_unattended.connect_configuration import (  # noqa: PLC0415
+        reader,
+        reader_access,
+    )
 
-        configured, _access = reader_access(value["connect"])
-        if configured["role"] != "production":
-            raise LifecycleError("production checking requires its isolated Connect reader")
-        op = reader(value["connect"])
-    else:
-        token = value["service_account"]
-        if not isinstance(token, str):
-            raise LifecycleError("production-check reader is unavailable")
-        op = OnePassword(token)
+    configured, _access = reader_access(value["connect"])
+    if configured["role"] != "production":
+        raise LifecycleError("production checking requires its isolated Connect reader")
+    op = reader(value["connect"])
     environment = {
         key: os.environ[key]
         for key in ("PATH", "HOME", "TMPDIR", "SSL_CERT_FILE")
@@ -127,7 +117,7 @@ def bootstrap(request: dict[str, object], repository: Path) -> int:
     environment.update(
         M3_10_TOKEN_AUDIT_TOKEN=fixture["audit"], CLOUDFLARE_API_TOKEN=fixture["observer"]
     )
-    # Do not forward the service account or any bootstrap reference to the state
+    # Do not forward the Connect reader or any bootstrap reference to the state
     # reader. The pipe holds only the non-secret binding/identities/output path.
     safe = {key: value[key] for key in ("targets", "binding", "output")}
     safe["fixture_ids"] = {role: fixture[role + "_id"] for role in ("archive", "backup", "caddy")}

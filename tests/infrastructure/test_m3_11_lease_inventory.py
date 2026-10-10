@@ -1,0 +1,764 @@
+"""Explicit synthetic lease policies and complete pre-creation obligations."""
+
+from __future__ import annotations
+
+import dataclasses
+import uuid
+from copy import deepcopy
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import override
+
+import pytest
+
+from scripts.m3_11_unattended.connect_api import Connect, Response
+from scripts.m3_11_unattended.inventory import (
+    ConnectInventory,
+    LocalInventory,
+    fact,
+    require_confirmation,
+)
+from scripts.m3_11_unattended.lifecycle import CreationRecorder, LeaseLifecycle
+from scripts.m3_11_unattended.model import (
+    PROVIDERS,
+    ROLES,
+    AuthorityGeneration,
+    Credential,
+    Intent,
+    LeaseManifest,
+    LeasePolicy,
+    LifecycleError,
+    ProviderKind,
+    Targets,
+    digest,
+    stamp,
+)
+from scripts.m3_11_unattended.state import LeaseState
+
+from .test_m3_11_unattended_lifecycle import ProviderDouble
+
+NOW = datetime(2026, 10, 10, tzinfo=UTC)
+TARGETS = Targets("nyc3", "test-archive", "test-backup", "a" * 32, "b" * 32, "c" * 32, "d" * 32)
+SOURCE = "1" * 40
+
+
+def policy() -> LeasePolicy:
+    return LeasePolicy(
+        approved_at=stamp(NOW - timedelta(hours=1)),
+        start_before=stamp(NOW + timedelta(hours=1)),
+        issuance_before=stamp(NOW + timedelta(hours=3)),
+        credential_lifetime_seconds=7 * 24 * 3600,
+        cleanup_reserve_seconds=2 * 24 * 3600,
+        retain_after_failure=True,
+        approval_reference="SYNTHETIC-TEST-ONLY-no-live-approval",
+    )
+
+
+def generation(role: str, generation_id: str) -> AuthorityGeneration:
+    return AuthorityGeneration(
+        generation_id=generation_id,
+        role=role,
+        targets_sha256=digest(dataclasses.asdict(TARGETS)),
+        principals={
+            "spaces": "synthetic-team-a",
+            "cloudflare-account": TARGETS.account_id,
+            "cloudflare-user": TARGETS.user_id,
+        },
+        fingerprints={provider: digest([role, provider]) for provider in PROVIDERS},
+        expires_at={provider: stamp(NOW + timedelta(days=30)) for provider in PROVIDERS},
+        connect_expires_at=stamp(NOW + timedelta(days=30)),
+        introduced_at=stamp(NOW),
+        rotation_due_at=stamp(NOW.replace(month=11)),
+    )
+
+
+def manifest() -> LeaseManifest:
+    selected_policy = policy()
+    lease_id, generation_id = str(uuid.uuid7()), str(uuid.uuid7())
+    creator, cleanup = generation("provision", generation_id), generation("cleanup", generation_id)
+    intents = []
+    for role in sorted(ROLES):
+        provider: ProviderKind = (
+            "spaces"
+            if role in {"archive", "backup", "operator"}
+            else "cloudflare-user"
+            if role == "page-rules"
+            else "cloudflare-account"
+        )
+        intents.append(
+            Intent(
+                run_id=lease_id,
+                role=role,
+                source_revision=SOURCE,
+                helper_revision=SOURCE,
+                provider=provider,
+                cleanup_authority_sha256=cleanup.fingerprints[provider],
+                name=f"ldp-m311-{uuid.UUID(lease_id).hex}-{role}",
+                requested_at=stamp(NOW),
+                create_before=selected_policy.issuance_before,
+                deadline=stamp(selected_policy.deadline(NOW)),
+                scope={"synthetic_role": role},
+                baseline_ids=(),
+                targets=TARGETS,
+                policy=selected_policy,
+            )
+        )
+    return LeaseManifest(
+        lease_id,
+        SOURCE,
+        SOURCE,
+        stamp(NOW),
+        selected_policy,
+        creator,
+        cleanup,
+        TARGETS,
+        tuple(intents),
+    )
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "issuance_before",
+        "cleanup_reserve_seconds",
+        "credential_lifetime_seconds",
+        "approval_reference",
+    ],
+)
+def test_missing_policy_value_never_receives_a_default(field: str) -> None:
+    raw = policy().document()
+    del raw[field]
+    with pytest.raises((ValueError, LifecycleError)):
+        LeasePolicy.parse(raw)
+
+
+def test_synthetic_policy_requires_separate_exact_approval_binding() -> None:
+    selected = policy()
+    with pytest.raises(LifecycleError, match="unapproved"):
+        selected.require_start(now=NOW, approved_sha256="0" * 64)
+    selected.require_start(now=NOW, approved_sha256=selected.sha256)
+    with pytest.raises(LifecycleError, match="elapsed"):
+        selected.require_start(now=NOW + timedelta(hours=2), approved_sha256=selected.sha256)
+
+
+@pytest.mark.parametrize("value", [True, False, 0, -1, 1.2, "172800"])
+def test_reserve_must_be_an_explicit_positive_integer(value: object) -> None:
+    raw = policy().document()
+    raw["cleanup_reserve_seconds"] = value
+    with pytest.raises(LifecycleError):
+        LeasePolicy.parse(raw)
+
+
+def test_policy_parsing_preserves_original_approval_document() -> None:
+    raw = policy().document()
+    before = digest(raw)
+    assert LeasePolicy.parse(raw).document() == raw
+    assert digest(raw) == before
+
+
+def test_whole_manifest_includes_all_roles_and_exact_lifetimes() -> None:
+    original = manifest()
+    restored = LeaseManifest.parse(original.document())
+    assert restored.sha256 == original.sha256
+    assert {entry.role for entry in restored.intents} == ROLES
+    assert len({entry.deadline for entry in restored.intents}) == 1
+    assert all(entry.policy == original.policy for entry in restored.intents)
+
+
+def test_partial_manifest_cannot_authorize_any_creation() -> None:
+    original = manifest()
+    with pytest.raises(LifecycleError, match="incomplete"):
+        dataclasses.replace(original, intents=original.intents[:-1])
+
+
+def test_missing_provider_expiry_has_no_inherited_default() -> None:
+    raw = manifest().cleanup.document()
+    raw["expires_at"] = {"spaces": stamp(NOW + timedelta(days=30))}
+    with pytest.raises(LifecycleError, match="incomplete"):
+        AuthorityGeneration.parse(raw)
+
+
+def test_cleanup_must_cover_the_explicit_reserve() -> None:
+    original = manifest()
+    expiry = stamp(original.policy.deadline(NOW) + timedelta(days=1))
+    short = dataclasses.replace(original.cleanup, expires_at=dict.fromkeys(PROVIDERS, expiry))
+    with pytest.raises(LifecycleError, match="cover"):
+        dataclasses.replace(original, cleanup=short)
+
+
+def test_wrong_team_authentication_cannot_establish_handover() -> None:
+    previous = manifest().cleanup
+    wrong = dataclasses.replace(
+        previous,
+        generation_id=str(uuid.uuid7()),
+        principals={**previous.principals, "spaces": "synthetic-team-b"},
+    )
+    with pytest.raises(LifecycleError, match="principal"):
+        wrong.require_same_principal(previous)
+
+
+def test_same_principal_is_independent_of_secret_fingerprint() -> None:
+    previous = manifest().cleanup
+    replacement = dataclasses.replace(
+        previous,
+        generation_id=str(uuid.uuid7()),
+        fingerprints={provider: digest(["replacement", provider]) for provider in PROVIDERS},
+    )
+    replacement.require_same_principal(previous)
+    assert replacement.fingerprints != previous.fingerprints
+    # Positive native readback is still required by the later handover operation;
+    # this metadata comparison alone is not permission to delete or issue.
+
+
+def test_legacy_intent_bytes_and_hash_do_not_acquire_lease_fields() -> None:
+    original = manifest().intents[0]
+    legacy = dataclasses.replace(
+        original,
+        policy=None,
+        create_before=stamp(NOW + timedelta(minutes=5)),
+        deadline=stamp(NOW + timedelta(hours=14)),
+    )
+    assert "policy" not in legacy.document()
+    restored = Intent.parse(legacy.document())
+    assert restored.document() == legacy.document()
+    assert restored.sha256 == legacy.sha256
+
+
+class ConnectDouble(Connect):
+    def __init__(self, vault: str = "v" * 26) -> None:
+        super().__init__("https://connect.example.invalid", "synthetic-client-canary")
+        self.items: dict[str, dict[str, object]] = {}
+        self.vault = vault
+        self.posts = 0
+        self.lose_reply = False
+        self.hidden = False
+        self.fail_list = False
+
+    @override
+    def request(self, method: str, path: str, body: dict[str, object] | None = None) -> Response:
+        if method == "GET":
+            assert path == "/v1/vaults/" + self.vault + "/items"
+            if self.fail_list:
+                return Response(503, {})
+            return Response(200, [] if self.hidden else list(self.items.values()))
+        assert method == "POST" and body is not None
+        self.posts += 1
+        item_id = f"{self.posts:026d}"
+        self.items[item_id] = {**deepcopy(body), "id": item_id}
+        if self.lose_reply:
+            raise LifecycleError("synthetic lost response")
+        return Response(201, self.items[item_id])
+
+    @override
+    def item(self, vault: str, item: str) -> dict[str, object]:
+        assert vault == self.vault
+        return deepcopy(self.items[item])
+
+
+def confirmation(selected: LeaseManifest) -> dict[str, object]:
+    return fact(
+        selected,
+        "confirmed",
+        {
+            "helper_revision": SOURCE,
+            "independent_server_id": "s" * 26,
+            "observed_at": stamp(NOW),
+            "github_run_id": 12345,
+            "github_run_attempt": 1,
+            "cleanup_access_expires_at": stamp(NOW + timedelta(days=30)),
+        },
+    )
+
+
+def test_local_manifest_visibility_is_not_independent_confirmation(tmp_path: Path) -> None:
+    selected = manifest()
+    inventory = LocalInventory(tmp_path / "facts")
+    inventory.publish(fact(selected, "manifest", selected.document()))
+    with pytest.raises(LifecycleError, match="confirmation is unavailable"):
+        require_confirmation(inventory, selected, independent_server_id="s" * 26)
+    inventory.publish(confirmation(selected))
+    require_confirmation(inventory, selected, independent_server_id="s" * 26)
+    with pytest.raises(LifecycleError, match="wrong binding"):
+        require_confirmation(inventory, selected, independent_server_id="t" * 26)
+
+
+def test_confirmation_cannot_authorize_a_changed_manifest(tmp_path: Path) -> None:
+    selected = manifest()
+    inventory = LocalInventory(tmp_path / "facts")
+    inventory.publish(fact(selected, "manifest", selected.document()))
+    changed = dataclasses.replace(
+        selected,
+        policy=dataclasses.replace(
+            selected.policy, approval_reference="different-synthetic-approval"
+        ),
+        intents=tuple(
+            dataclasses.replace(
+                i,
+                policy=dataclasses.replace(
+                    selected.policy, approval_reference="different-synthetic-approval"
+                ),
+            )
+            for i in selected.intents
+        ),
+    )
+    inventory.publish(confirmation(changed))
+    with pytest.raises(LifecycleError, match="wrong binding"):
+        require_confirmation(inventory, selected, independent_server_id="s" * 26)
+
+
+def test_lost_connect_reply_is_reconciled_without_another_post(tmp_path: Path) -> None:
+    selected = manifest()
+    client = ConnectDouble()
+    inventory = ConnectInventory(client, "v" * 26, spool=tmp_path / "spool")
+    record = fact(selected, "manifest", selected.document())
+    client.lose_reply = True
+    with pytest.raises(LifecycleError, match="lost response"):
+        inventory.publish(record)
+    restarted = ConnectInventory(client, "v" * 26, spool=tmp_path / "spool")
+    restarted.publish(record)
+    assert restarted.records() == [record]
+    assert client.posts == 1
+
+
+def test_delayed_visibility_preserves_uncertainty_without_reposting(tmp_path: Path) -> None:
+    selected = manifest()
+    client = ConnectDouble()
+    inventory = ConnectInventory(client, "v" * 26, spool=tmp_path / "spool")
+    record = fact(selected, "manifest", selected.document())
+    client.lose_reply = True
+    with pytest.raises(LifecycleError):
+        inventory.publish(record)
+    client.hidden = True
+    with pytest.raises(LifecycleError, match="unobserved"):
+        inventory.publish(record)
+    assert client.posts == 1
+    client.hidden = False
+    inventory.publish(record)
+    assert client.posts == 1
+
+
+def test_failed_listing_is_never_an_empty_inventory(tmp_path: Path) -> None:
+    client = ConnectDouble()
+    client.fail_list = True
+    inventory = ConnectInventory(client, "v" * 26, spool=tmp_path / "spool")
+    selected = manifest()
+    with pytest.raises(LifecycleError, match="incomplete or unavailable"):
+        inventory.publish(fact(selected, "manifest", selected.document()))
+    assert client.posts == 0
+
+
+def test_repeat_facts_are_bounded_and_conflicting_identity_is_rejected(tmp_path: Path) -> None:
+    selected = manifest()
+    inventory = LocalInventory(tmp_path / "facts")
+    intent = selected.intents[0]
+    record = fact(
+        selected,
+        "created:" + intent.role,
+        {"intent_sha256": intent.sha256, "credential_id": "synthetic-key-one"},
+    )
+    for _ in range(5):
+        inventory.publish(record)
+    assert inventory.records() == [record]
+    changed = fact(
+        selected,
+        "created:" + intent.role,
+        {"intent_sha256": intent.sha256, "credential_id": "synthetic-key-two"},
+    )
+    with pytest.raises(LifecycleError, match="cannot be replaced"):
+        inventory.publish(changed)
+
+
+def test_secret_field_cannot_enter_inventory(tmp_path: Path) -> None:
+    selected = manifest()
+    inventory = LocalInventory(tmp_path / "facts")
+    record = fact(
+        selected,
+        "created:archive",
+        {"intent_sha256": selected.intents[0].sha256, "credential_id": "synthetic-key-one"},
+    )
+    record["secret"] = "synthetic-export-canary-9fe8"  # noqa: S105 - deliberate export canary
+    with pytest.raises((ValueError, LifecycleError)) as raised:
+        inventory.publish(record)
+    assert "synthetic-export-canary-9fe8" not in str(raised.value)
+    assert inventory.records() == []
+
+
+class LeaseProviderDouble(ProviderDouble):
+    def __init__(self, kind: ProviderKind, authority: str) -> None:
+        super().__init__()
+        self.kind, self.authority_sha256 = kind, authority
+
+    @override
+    def create(self, intent: Intent, *, record: CreationRecorder) -> Credential:
+        self.on_create()
+        self.creates += 1
+        selected = "synthetic-" + intent.role
+        secret = "SYNTHETIC-PRIVATE-CANARY-" + intent.role
+        metadata: dict[str, object] = {
+            "id": selected,
+            "name": intent.name,
+            "created_at": intent.requested_at,
+            "scope": {} if self.wrong_scope else intent.scope,
+            "status": "active",
+            "expires_at": intent.deadline if intent.provider != "spaces" else None,
+        }
+        self.items[selected] = metadata
+        if self.lose_response:
+            raise LifecycleError("synthetic provider lost creation response")
+        record(selected, secret)
+        return Credential(selected, secret, metadata)
+
+
+class LeaseCase:
+    def __init__(self, root: Path) -> None:
+        self.manifest = manifest()
+        self.inventory = LocalInventory(root / "facts")
+        self.state = LeaseState(root / "private-lease")
+        self.providers = {
+            kind: LeaseProviderDouble(kind, self.manifest.creator.fingerprints[kind])
+            for kind in PROVIDERS
+        }
+        self.cleanup_providers = {
+            kind: LeaseProviderDouble(kind, self.manifest.cleanup.fingerprints[kind])
+            for kind in PROVIDERS
+        }
+        for kind, cleanup_provider in self.cleanup_providers.items():
+            cleanup_provider.items = self.providers[kind].items
+        self.lifecycle = LeaseLifecycle(
+            self.manifest, self.inventory, self.state, providers=self.providers, clock=lambda: NOW
+        )
+        self.lifecycle.prepare()
+
+    def confirm(self) -> None:
+        self.inventory.publish(confirmation(self.manifest))
+
+    def issue(self) -> dict[str, Credential]:
+        return self.lifecycle.issue(
+            writer_sha256="a" * 64,
+            approved_policy_sha256=self.manifest.policy.sha256,
+            independent_server_id="s" * 26,
+        )
+
+
+def test_no_provider_create_until_whole_manifest_is_independently_confirmed(tmp_path: Path) -> None:
+    case = LeaseCase(tmp_path)
+    with pytest.raises(LifecycleError, match="confirmation is unavailable"):
+        case.issue()
+    assert sum(provider.creates for provider in case.providers.values()) == 0
+    case.confirm()
+    credentials = case.issue()
+    assert set(credentials) == ROLES
+    assert sum(provider.creates for provider in case.providers.values()) == len(ROLES)
+    assert "issuer-stopped" in case.lifecycle.records()
+    assert "SYNTHETIC-PRIVATE-CANARY" not in str(case.inventory.records())
+
+
+def test_completed_or_interrupted_issuer_cannot_be_replayed(tmp_path: Path) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    case.issue()
+    restarted = LeaseLifecycle(
+        case.manifest, case.inventory, case.state, providers=case.providers, clock=lambda: NOW
+    )
+    with pytest.raises(LifecycleError, match="replayed"):
+        restarted.issue(
+            writer_sha256="b" * 64,
+            approved_policy_sha256=case.manifest.policy.sha256,
+            independent_server_id="s" * 26,
+        )
+    assert sum(provider.creates for provider in case.providers.values()) == len(ROLES)
+
+
+def test_death_after_durable_claim_never_adopts_the_interrupted_issuer(tmp_path: Path) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    case.state.claim_issuer(writer_sha256="b" * 64)
+    with pytest.raises(LifecycleError, match="replayed"):
+        case.issue()
+    assert sum(provider.creates for provider in case.providers.values()) == 0
+    assert "issuer-stopped" not in case.lifecycle.records()
+
+
+def test_lost_creation_response_retains_uncertainty_and_stops_the_remaining_roles(
+    tmp_path: Path,
+) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    case.providers["spaces"].lose_response = True
+    with pytest.raises(LifecycleError, match="lost creation response"):
+        case.issue()
+    records = case.lifecycle.records()
+    assert sum(provider.creates for provider in case.providers.values()) == 1
+    assert "created:archive" not in records
+    assert "not-submitted:archive" not in records
+    assert "close-provisioning-failed" in records
+    assert sum(slot.startswith("not-submitted:") for slot in records) == len(ROLES) - 1
+    assert "issuer-stopped" in records
+    with pytest.raises(LifecycleError):
+        case.issue()
+    assert sum(provider.creates for provider in case.providers.values()) == 1
+
+
+def test_scope_mismatch_retains_the_returned_id_for_cleanup(tmp_path: Path) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    case.providers["spaces"].wrong_scope = True
+    with pytest.raises(LifecycleError, match="scope or status"):
+        case.issue()
+    assert "created:archive" in case.lifecycle.records()
+    assert case.state.credential(case.manifest.intents[0]) is not None
+    assert "close-provisioning-failed" in case.lifecycle.records()
+
+
+@pytest.mark.parametrize("boundary", range(1, len(ROLES) + 1))
+def test_cancellation_during_each_inflight_create_keeps_writer_unresolved_until_return(
+    tmp_path: Path, boundary: int
+) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    entered = 0
+
+    def suspended_create() -> None:
+        nonlocal entered
+        entered += 1
+        if entered == boundary:
+            case.lifecycle.request_close("cancel")
+            # The current call can still create when it resumes. Provider absence
+            # while suspended cannot close this lease, even after earlier deletion.
+            assert all(
+                row.status == "unresolved"
+                for row in case.lifecycle.reconcile(case.cleanup_providers)
+            )
+            assert "issuer-stopped" not in case.lifecycle.records()
+
+    for provider in case.providers.values():
+        provider.on_create = suspended_create
+    if boundary < len(ROLES):
+        with pytest.raises(LifecycleError, match="cancelled"):
+            case.issue()
+    else:
+        case.issue()
+    assert sum(provider.creates for provider in case.providers.values()) == boundary
+    assert "close-cancel" in case.lifecycle.records()
+    assert "issuer-stopped" in case.lifecycle.records()
+    assert all(row.status == "verified" for row in case.lifecycle.reconcile(case.cleanup_providers))
+    assert all(not provider.items for provider in case.providers.values())
+
+
+def test_unreadable_inventory_cannot_declare_cold_lease_not_due(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    case.issue()
+    cold = LeaseLifecycle(
+        case.manifest,
+        case.inventory,
+        LeaseState(tmp_path / "cold"),
+        providers={},
+        clock=lambda: NOW,
+    )
+
+    def unavailable() -> list[dict[str, object]]:
+        raise LifecycleError("synthetic unavailable inventory")
+
+    monkeypatch.setattr(case.inventory, "records", unavailable)
+    assert all(row.status == "unresolved" for row in cold.reconcile(case.cleanup_providers))
+    assert all(not provider.deletes for provider in case.cleanup_providers.values())
+
+
+def test_duplicate_role_submission_requires_a_new_lease_not_a_new_writer(tmp_path: Path) -> None:
+    case = LeaseCase(tmp_path)
+    case.state.claim_issuer(writer_sha256="a" * 64)
+    case.state.submitting(case.manifest.intents[0], writer_sha256="a" * 64)
+    with pytest.raises(LifecycleError, match="already have been submitted"):
+        case.state.submitting(case.manifest.intents[0], writer_sha256="a" * 64)
+
+
+def test_cleanup_reads_back_every_removal_and_checks_retained_authentication(
+    tmp_path: Path,
+) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    case.issue()
+    case.lifecycle.request_close("finish")
+    results = case.lifecycle.reconcile(case.cleanup_providers)
+    assert all(
+        result.status == "verified" and result.negative_authentication == "denied"
+        for result in results
+    )
+    assert sum(len(provider.deletes) for provider in case.cleanup_providers.values()) == len(ROLES)
+    assert not any(provider.items for provider in case.cleanup_providers.values())
+    assert case.lifecycle.reconcile(case.cleanup_providers) == results
+    assert sum(len(provider.deletes) for provider in case.cleanup_providers.values()) == len(ROLES)
+
+
+@pytest.mark.parametrize("wrong_scope", [False, True])
+def test_lost_reply_only_revokes_a_strictly_owned_match(tmp_path: Path, wrong_scope: bool) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    case.providers["spaces"].lose_response = True
+    case.providers["spaces"].wrong_scope = wrong_scope
+    with pytest.raises(LifecycleError):
+        case.issue()
+    results = case.lifecycle.reconcile(case.cleanup_providers)
+    assert results[0].status == ("unresolved" if wrong_scope else "verified")
+    assert case.cleanup_providers["spaces"].deletes == (
+        [] if wrong_scope else ["synthetic-archive"]
+    )
+    if not wrong_scope:
+        assert results[0].negative_authentication == "unavailable"
+        assert "created:archive" in case.lifecycle.records()
+
+
+@pytest.mark.parametrize(
+    "failure", ["keep_deleted", "fail_delete", "fail_read", "still_authenticates"]
+)
+def test_failed_removal_or_negative_probe_survives_retry(tmp_path: Path, failure: str) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    case.issue()
+    case.lifecycle.request_close("cancel")
+    setattr(case.cleanup_providers["spaces"], failure, True)
+    assert any(
+        result.status == "unresolved" for result in case.lifecycle.reconcile(case.cleanup_providers)
+    )
+    setattr(case.cleanup_providers["spaces"], failure, False)
+    assert all(
+        result.status == "verified" for result in case.lifecycle.reconcile(case.cleanup_providers)
+    )
+
+
+def test_independent_cleanup_cannot_erase_a_failed_negative_probe(tmp_path: Path) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    case.issue()
+    case.lifecycle.request_close("cancel")
+    case.cleanup_providers["spaces"].still_authenticates = True
+    assert any(
+        result.status == "unresolved" for result in case.lifecycle.reconcile(case.cleanup_providers)
+    )
+    independent = LeaseLifecycle(
+        case.manifest,
+        case.inventory,
+        LeaseState(tmp_path / "independent-host"),
+        providers=case.cleanup_providers,
+        clock=lambda: NOW,
+    )
+    assert any(
+        result.status == "unresolved" for result in independent.reconcile(case.cleanup_providers)
+    )
+    case.cleanup_providers["spaces"].still_authenticates = False
+    assert all(
+        result.status == "verified" for result in case.lifecycle.reconcile(case.cleanup_providers)
+    )
+    assert all(
+        result.status == "verified" for result in independent.reconcile(case.cleanup_providers)
+    )
+
+
+def test_unfenced_writer_blocks_closure_even_after_owned_key_removal(tmp_path: Path) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    intent = case.manifest.intents[0]
+    case.state.claim_issuer(writer_sha256="a" * 64)
+    case.state.submitting(intent, writer_sha256="a" * 64)
+    case.providers["spaces"].create(
+        intent, record=lambda key, secret: case.state.remember(intent, key, secret)
+    )
+    case.lifecycle.request_close("cancel")
+    assert all(
+        result.status == "unresolved" for result in case.lifecycle.reconcile(case.cleanup_providers)
+    )
+    assert case.cleanup_providers["spaces"].deletes == ["synthetic-archive"]
+    assert "issuer-stopped" not in case.lifecycle.records()
+
+
+def test_publication_failure_does_not_suppress_provider_deletion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    case.issue()
+
+    def unavailable(_record: dict[str, object]) -> None:
+        raise LifecycleError("synthetic Connect outage")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(case.inventory, "publish", unavailable)
+        with pytest.raises(LifecycleError, match="Connect outage"):
+            case.lifecycle.request_close("cancel")
+        assert all(
+            result.status == "unresolved"
+            for result in case.lifecycle.reconcile(case.cleanup_providers)
+        )
+        assert not any(provider.items for provider in case.cleanup_providers.values())
+    assert all(
+        result.status == "verified" for result in case.lifecycle.reconcile(case.cleanup_providers)
+    )
+
+
+def test_wrong_cleanup_generation_cannot_treat_empty_inventory_as_absence(tmp_path: Path) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    case.issue()
+    case.lifecycle.request_close("cancel")
+    wrong = dict(case.cleanup_providers)
+    wrong["spaces"] = LeaseProviderDouble("spaces", "0" * 64)
+    assert any(result.status == "unresolved" for result in case.lifecycle.reconcile(wrong))
+    assert wrong["spaces"].deletes == []
+
+
+@pytest.mark.parametrize("fault", ["scope", "expiry", "principal", "empty", "none"])
+def test_handover_requires_positive_exact_policy_and_principal_readback(
+    tmp_path: Path, fault: str
+) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    case.issue()
+    replacement = dataclasses.replace(
+        case.manifest.cleanup,
+        generation_id=str(uuid.uuid7()),
+        fingerprints={kind: digest(["replacement", kind]) for kind in PROVIDERS},
+    )
+    providers = {
+        kind: LeaseProviderDouble(kind, replacement.fingerprints[kind]) for kind in PROVIDERS
+    }
+    for kind, provider in providers.items():
+        provider.items = deepcopy(case.cleanup_providers[kind].items)
+    if fault == "principal":
+        replacement = dataclasses.replace(
+            replacement, principals={**replacement.principals, "spaces": "synthetic-other-team"}
+        )
+    elif fault == "empty":
+        providers["spaces"].items.clear()
+    elif fault == "scope":
+        providers["spaces"].items["synthetic-archive"]["scope"] = {"wrong": True}
+    elif fault == "expiry":
+        providers["cloudflare-account"].items["synthetic-audit"]["expires_at"] = stamp(
+            NOW + timedelta(days=8)
+        )
+    if fault != "none":
+        with pytest.raises(LifecycleError):
+            case.lifecycle.handover(replacement, providers, case.cleanup_providers)
+        affected = "audit" if fault == "expiry" else "archive"
+        assert not any(slot.startswith("handover:" + affected) for slot in case.lifecycle.records())
+        return
+    case.lifecycle.handover(replacement, providers, case.cleanup_providers)
+    case.lifecycle.request_close("finish")
+    results = case.lifecycle.reconcile({}, generations={replacement.generation_id: providers})
+    assert all(result.status == "verified" for result in results)
+    assert not any(provider.deletes for provider in case.cleanup_providers.values())
+    assert sum(len(provider.deletes) for provider in providers.values()) == len(ROLES)
+
+
+def test_lost_response_obligation_does_not_transfer_to_empty_replacement(tmp_path: Path) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    case.providers["spaces"].lose_response = True
+    with pytest.raises(LifecycleError):
+        case.issue()
+    replacement = dataclasses.replace(case.manifest.cleanup, generation_id=str(uuid.uuid7()))
+    with pytest.raises(LifecycleError, match="unknown credential"):
+        case.lifecycle.handover(replacement, case.cleanup_providers, case.cleanup_providers)
+    assert not any(slot.startswith("handover:") for slot in case.lifecycle.records())

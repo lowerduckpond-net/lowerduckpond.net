@@ -5,20 +5,20 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import sys
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
-from scripts.m3_11_unattended import approval, cleanup, historical_absence, setup
-from scripts.m3_11_unattended.config import Configuration
-from scripts.m3_11_unattended.connect_control import await_witness, launch_evidence
+from scripts.m3_11_unattended import approval, historical_absence, setup
+from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.docker import (
+    CLEANUP_VOLUME,
     EVIDENCE_VOLUME,
     OWNER,
     ROOT,
+    SOCKET,
     Docker,
     admission,
     controller_name,
@@ -29,8 +29,14 @@ from scripts.m3_11_unattended.docker import (
     require_current_watchdogs,
     source_volume,
 )
-from scripts.m3_11_unattended.model import LifecycleError, Targets, digest, identity
-from scripts.production_qualification_inputs import current_candidate, fingerprint, git, revision
+from scripts.m3_11_unattended.model import (
+    AuthorityGeneration,
+    LifecycleError,
+    Targets,
+    digest,
+    identity,
+)
+from scripts.production_qualification_inputs import current_candidate, fingerprint, revision
 
 
 def start(  # noqa: PLR0913 - all approval and host bindings are explicit
@@ -40,7 +46,14 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
     value = approval.validate(approved, mode=mode, now=datetime.now(UTC))
     prepared = fields(value["prepared"], approval.PREPARED)
     current_candidate(ROOT, source)
-    configuration = Configuration.load(config)
+    configuration = LeaseConfiguration.load(config)
+    if (
+        configuration.mode != "controller"
+        or value["policy_sha256"] != configuration.approved_policy_sha256
+    ):
+        raise LifecycleError("attempt approval differs from the lease policy")
+    if value["lease_id"] is None:
+        configuration.require_issuance(now=datetime.now(UTC))
     if (
         prepared["source_revision"] != source
         or prepared["helper_revision"] != source
@@ -71,6 +84,17 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
             previous = identity(str(uuid.UUID(name.removeprefix("ldp-m311-controller-"))))
             status = json.loads(operate(docker, previous, "status"))
             progress = status.get("status", {})
+            retained = status.get("lease", {})
+            if (
+                value["lease_id"] is not None
+                and isinstance(retained, dict)
+                and retained.get("lease_id") == value["lease_id"]
+                and retained.get("policy_sha256") == configuration.approved_policy_sha256
+                and retained.get("use_released") is True
+                and progress.get("phase") == "finished"
+                and progress.get("qualification") in {"failed", "interrupted"}
+            ):
+                continue
             if (
                 progress.get("credential_cleanup") != "verified"
                 or progress.get("phase") != "finished"
@@ -81,7 +105,8 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
         require_current_watchdogs(docker, source=source, image=image)
         run_id = str(uuid.uuid7())
         request = {
-            "format": "lowerduckpond-m3-11-unattended-request-v1",
+            "format": "lowerduckpond-m3-11-unattended-request-v2",
+            "lease_id": value["lease_id"] or run_id,
             "binding": {
                 "managed_run_id": run_id,
                 "source_revision": source,
@@ -95,20 +120,6 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
             "controller_image": prepared["controller_image"],
             "daemon": prepared["daemon"],
         }
-        if configuration.cleanup.connect_settings is not None:
-            try:
-                await_witness(
-                    configuration,
-                    request,
-                    directory=config.parent / "connect-dispatch" / run_id,
-                )
-            except Exception:
-                print(
-                    f"Controller launch failed for attempt {run_id}; "
-                    "retrieve launch-evidence with the same private configuration.",
-                    file=sys.stderr,
-                )
-                raise
         initialize_run(
             docker, image=image, request=canonical_bytes(request), run_id=run_id, config=config
         )
@@ -126,11 +137,43 @@ def operate(docker: Docker, run_id: str, action: str) -> bytes:
     image = value["Image"]
     if not isinstance(image, str):
         raise LifecycleError("controller image is unavailable")
+    extra: list[str] = []
+    if action in {"cancel", "quiesce"}:
+        mounts = value.get("Mounts")
+        sources = (
+            [
+                row.get("Source")
+                for row in mounts
+                if isinstance(row, dict)
+                and row.get("Destination") == SOCKET
+                and row.get("Type") == "bind"
+            ]
+            if isinstance(mounts, list)
+            else []
+        )
+        if (
+            len(sources) != 1
+            or not isinstance(sources[0], str)
+            or not sources[0].startswith("/")
+            or "," in sources[0]
+        ):
+            raise LifecycleError("original controller socket binding is unavailable")
+        extra = [
+            "--env",
+            "DOCKER_HOST=unix://" + SOCKET,
+            "--mount",
+            f"type=bind,source={sources[0]},target={SOCKET}",
+        ]
+        if action == "cancel":
+            extra.extend(
+                ["--mount", f"type=volume,source={CLEANUP_VOLUME},target=/cleanup,readonly"]
+            )
     return docker.command(
         "run",
         "--rm",
         "--network",
-        "none",
+        "host" if action == "cancel" else "none",
+        *extra,
         "--label",
         OWNER + "=true",
         "--mount",
@@ -139,7 +182,7 @@ def operate(docker: Docker, run_id: str, action: str) -> bytes:
         f"type=volume,source={source_volume(source)},target=/work/source,readonly",
         "--mount",
         f"type=volume,source={EVIDENCE_VOLUME},target=/evidence"
-        + ("" if action == "cancel" else ",readonly"),
+        + ("" if action in {"cancel", "stop-attempt", "quiesce"} else ",readonly"),
         image,
         "uv",
         "run",
@@ -153,6 +196,7 @@ def operate(docker: Docker, run_id: str, action: str) -> bytes:
         "/evidence/runs/" + run_id,
         "--source",
         "/work/source",
+        *(["--config", "/cleanup/cleanup.json"] if action == "cancel" else []),
     )
 
 
@@ -163,21 +207,15 @@ def argument_parser() -> argparse.ArgumentParser:
     initialize = subparsers.add_parser("setup")
     initialize.add_argument("--manifest", type=Path, required=True)
     initialize.add_argument("--output", type=Path, required=True)
-    initialize.add_argument("--service-accounts-file", type=Path)
     attest = subparsers.add_parser("attest-digitalocean")
     attest.add_argument("--token-reference", required=True)
-    attest.add_argument("--expires-at", required=True)
-    attest.add_argument("--role", choices=("provision", "cleanup"), required=True)
+    attest.add_argument("--generation", type=Path, required=True)
+    attest.add_argument("--reader-config", type=Path, required=True)
+    attest.add_argument("--observed-principal", required=True)
+    attest.add_argument("--attested-by", required=True)
+    attest.add_argument("--principal-context", required=True)
     attest.add_argument("--output", type=Path, required=True)
     attest.add_argument("--attest-provider-console", action="store_true", required=True)
-    github = subparsers.add_parser("install-github-cleanup")
-    github.add_argument("--config", type=Path, required=True)
-    github.add_argument("--helper-revision", required=True)
-    remote = subparsers.add_parser("cleanup-status")
-    remote.add_argument("--config", type=Path, required=True)
-    launcher = subparsers.add_parser("launch-evidence")
-    launcher.add_argument("run_id")
-    launcher.add_argument("--config", type=Path, required=True)
     build = subparsers.add_parser("prepare")
     build.add_argument("revision")
     build.add_argument("--output", type=Path, required=True)
@@ -187,7 +225,7 @@ def argument_parser() -> argparse.ArgumentParser:
     run.add_argument("--config", type=Path, required=True)
     run.add_argument("--mode", choices=("rehearsal", "qualification"), required=True)
     run.add_argument("--daemon-socket", required=True)
-    for name in ("status", "cancel", "evidence"):
+    for name in ("status", "cancel", "stop-attempt", "quiesce", "evidence"):
         selected = subparsers.add_parser(name)
         selected.add_argument("run_id")
     return parser
@@ -201,49 +239,19 @@ def main() -> int:
         if args.action == "setup-template":
             print(json.dumps(setup.template(), indent=2))
         elif args.action == "setup":
-            setup.configure(args.manifest, args.output, token_file=args.service_accounts_file)
+            setup.configure(args.manifest, args.output)
             print("Dedicated bootstrap configuration validated; no provider credential created.")
         elif args.action == "attest-digitalocean":
             setup.attest_digitalocean(
                 reference=args.token_reference,
-                expires=args.expires_at,
-                provisioning=args.role == "provision",
+                generation=AuthorityGeneration.parse(read_private(args.generation)),
+                reader_config=read_private(args.reader_config),
+                observed_principal=args.observed_principal,
+                attested_by=args.attested_by,
+                principal_context=args.principal_context,
                 output=args.output,
             )
             print("Bound metadata written privately; import it into the dedicated metadata item.")
-        elif args.action == "install-github-cleanup":
-            setup.install_github(args.config, args.helper_revision)
-            print(
-                "Protected main-only cleanup environment configured; verify its workflow execution."
-            )
-        elif args.action == "cleanup-status":
-            configured = Configuration.load(args.config)
-            journal = configured.cleanup.journal(
-                configured.journal_vault,
-                directory=args.config.parent / "connect-journal" / "cleanup",
-            )
-            print(
-                json.dumps(
-                    cleanup.status_document(
-                        journal,
-                        helper=revision(git(ROOT, "rev-parse", "HEAD").decode().strip()),
-                        now=datetime.now(UTC),
-                    ),
-                    sort_keys=True,
-                )
-            )
-        elif args.action == "launch-evidence":
-            run_id = identity(args.run_id)
-            print(
-                json.dumps(
-                    launch_evidence(
-                        args.config.parent / "connect-dispatch" / run_id,
-                        run_id=run_id,
-                        helper=revision(git(ROOT, "rev-parse", "HEAD").decode().strip()),
-                    ),
-                    sort_keys=True,
-                )
-            )
         elif args.action == "prepare":
             write_private(args.output, prepare(Docker(), revision(args.revision)))
             print("Clean committed controller and qualification artifact prepared.")

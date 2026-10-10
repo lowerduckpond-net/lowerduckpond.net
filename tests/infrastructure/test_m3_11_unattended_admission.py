@@ -14,7 +14,7 @@ import pytest
 
 from scripts.m3_11_unattended import __main__ as cli
 from scripts.m3_11_unattended import approval, docker
-from scripts.m3_11_unattended.config import Configuration
+from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.model import LifecycleError, stamp
 
 from .test_m3_11_unattended_controller import DAEMON, configuration
@@ -67,12 +67,13 @@ def test_concurrent_starts_fail_before_initialization_and_cannot_queue_an_attemp
         "modes": ["rehearsal"],
         "approved_at": stamp(now - timedelta(seconds=1)),
         "expires_at": stamp(now + timedelta(hours=1)),
-        "credential_lifetime_hours": 14,
+        "policy_sha256": config.policy.sha256,
+        "lease_id": None,
         "approval_reference": "concurrency fixture",
     }
     monkeypatch.setattr(cli, "current_candidate", lambda *_args: None)
     monkeypatch.setattr(cli, "fingerprint", lambda *_args: "d" * 64)
-    monkeypatch.setattr(Configuration, "load", lambda _path: config)
+    monkeypatch.setattr(LeaseConfiguration, "load", lambda _path: config)
     entered, release = threading.Event(), threading.Event()
     requests: list[dict[str, object]] = []
 
@@ -90,6 +91,7 @@ def test_concurrent_starts_fail_before_initialization_and_cannot_queue_an_attemp
 
     monkeypatch.setattr(cli, "initialize_run", initialize)
     monkeypatch.setattr(cli, "launch", launch)
+    monkeypatch.setattr(cli, "require_current_watchdogs", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(cli, "operate", lambda *_args: b'{"status":{"phase":"starting"}}')
 
     def start() -> str:

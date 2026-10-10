@@ -5,9 +5,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import hashlib
-import json
 import subprocess
-import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -20,17 +18,16 @@ from scripts import check_m3_10_provider as production
 from scripts import m3_11_fixture_tokens as fixture
 from scripts.check_m3_7_production_edge import ProductionEdgePreflightError
 from scripts.m3_11_private_inputs import write_private
-from scripts.m3_11_unattended import cleanup, cloudflare, config
+from scripts.m3_11_unattended import cloudflare, config, connect_configuration
 from scripts.m3_11_unattended import production as isolated
 from scripts.m3_11_unattended.cloudflare import Cloudflare
-from scripts.m3_11_unattended.config import Bootstrap
 from scripts.m3_11_unattended.http import Api, Response
-from scripts.m3_11_unattended.journal import OnePassword, OpJournal, event
-from scripts.m3_11_unattended.lifecycle import Lifecycle
+from scripts.m3_11_unattended.journal import _note_content
 from scripts.m3_11_unattended.model import ROLES, Credential, LifecycleError, stamp
 from scripts.m3_11_unattended.spaces import Spaces
 
 from .test_m3_10_runtime_token import _ACCOUNT, _AUDIT, _RUNTIME, _SECRETS, _ZONES, TokenFixture
+from .test_m3_11_lease_configuration import reader_document
 from .test_m3_11_unattended_lifecycle import CANARY, TARGETS, Case
 
 
@@ -225,141 +222,31 @@ def test_cloudflare_negative_authentication_is_not_a_missing_endpoint(
     assert client.denied(intent, credential) == (status in {401, 403})
 
 
-class JournalCli:
-    def __init__(self) -> None:
-        self.items: dict[str, dict[str, object]] = {}
-        self.creates = 0
-        self.lose_response = False
-
-    def command(self, *arguments: str, stdin: bytes | None = None) -> bytes:
-        assert CANARY not in " ".join(arguments)
-        if arguments[:2] == ("item", "create"):
-            assert stdin is not None
-            self.creates += 1
-            item = json.loads(stdin)
-            # op 2.33 adds its empty built-in note when the template only
-            # supplies a custom field, even when both IDs are notesPlain.
-            if not any(field.get("purpose") == "NOTES" for field in item["fields"]):
-                item["fields"].insert(
-                    0,
-                    {
-                        "id": "notesPlain",
-                        "type": "STRING",
-                        "purpose": "NOTES",
-                        "label": "notesPlain",
-                    },
-                )
-            selected = str(self.creates).zfill(26)
-            item["id"], item["version"] = selected, 1
-            self.items[selected] = item
-            if self.lose_response:
-                raise LifecycleError("lost creation response")
-            return json.dumps(item).encode()
-        if arguments[:2] == ("item", "get"):
-            return json.dumps(self.items[arguments[2]]).encode()
-        assert arguments[:2] == ("item", "list")
-        return json.dumps(
-            [
-                {key: value for key, value in item.items() if key != "fields"}
-                for item in self.items.values()
-            ]
-        ).encode()
-
-
-def test_journal_creation_populates_the_builtin_note(tmp_path: Path) -> None:
-    cli = JournalCli()
-    journal = OpJournal(cast(OnePassword, cli), "a" * 26)
-    record = event("result", Case(tmp_path).run_id, {"setup": "independent-journal-read-write"})
-    journal.append(record)
-    assert journal.records() == [record]
-    fields = next(iter(cli.items.values()))["fields"]
-    assert isinstance(fields, list) and len(fields) == 1
-    assert fields[0]["purpose"] == "NOTES"
-
-
-@pytest.mark.parametrize("blank_value", [None, ""])
+@pytest.mark.parametrize("blank", [None, ""])
 @pytest.mark.parametrize("reverse", [False, True])
-def test_old_journal_notes_remain_readable_without_rewriting(
-    tmp_path: Path, blank_value: str | None, reverse: bool
-) -> None:
-    cli = JournalCli()
-    journal = OpJournal(cast(OnePassword, cli), "a" * 26)
-    record = event("result", Case(tmp_path).run_id, {"setup": "independent-journal-read-write"})
-    # Preserve the exact old writer input and the real CLI's synthesized field.
-    item = {
-        "title": journal._title(record),
-        "category": "SECURE_NOTE",
-        "vault": {"id": "a" * 26},
-        "tags": ["ldp-m3-11-credential-obligations-v1"],
-        "fields": [
-            {
-                "id": "notesPlain",
-                "type": "STRING",
-                "label": "notesPlain",
-                "value": json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n",
-            }
-        ],
-    }
-    cli.command("item", "create", stdin=json.dumps(item).encode())
-    stored = next(iter(cli.items.values()))
-    fields = cast(list[dict[str, object]], stored["fields"])
-    if blank_value is not None:
-        fields[0]["value"] = blank_value
+def test_legacy_duplicate_builtin_note_remains_readable(blank: str | None, reverse: bool) -> None:
+    fields = [
+        {"id": "notesPlain", "type": "STRING", "purpose": "NOTES", "value": blank},
+        {"id": "notesPlain", "type": "STRING", "value": "original-obligation"},
+    ]
     if reverse:
         fields.reverse()
-    original = copy.deepcopy(cli.items)
-    assert journal.records() == [record]
-    journal.refresh()
-    assert journal.records() == [record]
-    assert cli.items == original
-    assert cli.creates == 1
+    original = copy.deepcopy(fields)
+    assert _note_content(fields) == "original-obligation"
+    assert fields == original
 
 
-@pytest.mark.parametrize(
-    "defect",
-    ["two-values", "same-value", "two-custom", "two-default", "whitespace", "wrong-purpose"],
-)
-def test_journal_duplicate_note_ambiguity_still_fails_closed(tmp_path: Path, defect: str) -> None:
-    cli = JournalCli()
-    journal = OpJournal(cast(OnePassword, cli), "a" * 26)
-    record = event("result", Case(tmp_path).run_id, {"test": "safe"})
-    journal.append(record)
-    item = next(iter(cli.items.values()))
-    fields = cast(list[dict[str, object]], item["fields"])
-    payload = fields[0]
-    payload.pop("purpose")
-    extra: dict[str, object] = {"id": "notesPlain", "type": "STRING", "purpose": "NOTES"}
-    if defect == "two-values":
-        extra["value"] = '{"another":"obligation"}\n'
-    elif defect == "same-value":
-        extra["value"] = cast(str, payload["value"])
-    elif defect == "two-custom":
-        extra.pop("purpose")
-    elif defect == "two-default":
-        payload["purpose"] = "NOTES"
-    elif defect == "whitespace":
-        extra["value"] = " "
+@pytest.mark.parametrize("defect", ["value", "purpose", "type", "section", "duplicate"])
+def test_legacy_note_ambiguity_remains_rejected(defect: str) -> None:
+    blank: dict[str, object] = {"id": "notesPlain", "type": "STRING", "purpose": "NOTES"}
+    custom: dict[str, object] = {"id": "notesPlain", "type": "STRING", "value": "original"}
+    fields = [blank, custom]
+    if defect == "duplicate":
+        fields.append(copy.deepcopy(custom))
     else:
-        extra["purpose"] = "USERNAME"
-    fields.insert(0, extra)
+        blank[defect] = "changed"
     with pytest.raises(LifecycleError, match="content"):
-        journal.records()
-
-
-def test_lost_op_item_creation_is_reconciled_once_and_edits_fail_closed(tmp_path: Path) -> None:
-    cli = JournalCli()
-    cli.lose_response = True
-    journal = OpJournal(cast(OnePassword, cli), "a" * 26)
-    record = event("result", Case(tmp_path).run_id, {"test": "safe"})
-    journal.append(record)
-    assert cli.creates == 1
-    assert journal.records() == [record]
-    journal.refresh()
-    assert journal.records() == [record]
-    next(iter(cli.items.values()))["version"] = 2
-    journal.refresh()
-    with pytest.raises(LifecycleError, match="edited"):
-        journal.records()
+        _note_content(fields)
 
 
 class FixtureTokens(TokenFixture):
@@ -441,52 +328,11 @@ def test_expiring_caddy_passes_only_fixture_validator(
         production.check_caddy_token(environment, account_id=_ACCOUNT, now=now)
 
 
-def test_actual_independent_cleanup_entrypoint_recovers_after_failure_without_host(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    case = Case(tmp_path)
-    journal = OpJournal(cast(OnePassword, JournalCli()), "a" * 26)
-    case.lifecycle = Lifecycle(journal, {"spaces": case.provider}, clock=lambda: case.now)
-    case.create()
-    case.lifecycle.request_revocation(case.run_id)
-    case.provider.fail_delete = True
-    monkeypatch.setattr(
-        cleanup, "cleanup_configuration", lambda _path: (TARGETS, "a" * 26, Bootstrap({}))
-    )
-    monkeypatch.setattr(cleanup, "connect_cleanup", lambda *_args, **_kwargs: case.lifecycle)
-    monkeypatch.setattr(
-        sys, "argv", ["cleanup", "--actor", "github", "--config", "/unused/private.json"]
-    )
-    for key, value in {
-        "GITHUB_ACTIONS": "true",
-        "GITHUB_REF": "refs/heads/main",
-        "GITHUB_REPOSITORY": "lowerduckpond-net/lowerduckpond.net",
-    }.items():
-        monkeypatch.setenv(key, value)
-    assert cleanup.main() == 1
-    assert CANARY not in capsys.readouterr().out
-    case.provider.fail_delete = False
-    assert cleanup.main() == 0
-    output = json.loads(capsys.readouterr().out)
-    assert output["results"][0]["status"] == "verified"
-    assert output["results"][0]["negative_authentication"] == "unavailable"
-    assert not case.provider.items
-    monkeypatch.setenv("GITHUB_REF", "refs/heads/untrusted")
-    with pytest.raises(SystemExit) as stopped:
-        cleanup.main()
-    assert stopped.value.code == 1
-
-
 def test_production_bootstrap_and_state_passphrase_stay_in_the_short_check_process(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class Reader:
-        def __init__(self, token: str) -> None:
-            assert token == CANARY + "service-account"
-
         def read(self, reference: str) -> str:
             return CANARY + reference
 
@@ -497,11 +343,11 @@ def test_production_bootstrap_and_state_passphrase_stay_in_the_short_check_proce
         assert command[:3] == ["/bin/bash", "--noprofile", "--norc"]
         return SimpleNamespace(returncode=0)
 
-    monkeypatch.setattr(isolated, "OnePassword", Reader)
+    monkeypatch.setattr(connect_configuration, "reader", lambda _value: Reader())
     monkeypatch.setattr(subprocess, "run", execute)
     monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", CANARY + "ambient")
     request: dict[str, object] = {
-        "service_account": CANARY + "service-account",
+        "connect": reader_document("production", now=datetime.now(UTC).replace(microsecond=0)),
         "references": dict(zip(isolated.REFERENCES, isolated.REFERENCES, strict=True)),
         "targets": dataclasses.asdict(TARGETS),
         "binding": {},

@@ -377,8 +377,14 @@ for name in ('/configuration', '/cleanup'):
     Path(name).chmod(0o700)
 raw = sys.stdin.buffer.read()
 value = json.loads(raw)
-selected = {'format':'lowerduckpond-m3-11-cleanup-config-v1',
-    **{key:value[key] for key in ('targets','journal_vault','cleanup')}}
+selected = dict(value)
+if selected.get('format') != 'lowerduckpond-m3-11-lease-config-v1':
+    raise ValueError('obsolete controller configuration cannot be delivered')
+selected['mode'] = 'cleanup-only'
+selected['production'] = None
+selected['generations'] = {
+    key: {'cleanup': role['cleanup']} for key, role in value['generations'].items()
+}
 for path, content in (
     (Path('/configuration/controller.json'), raw),
     (Path('/cleanup/cleanup.json'),
@@ -461,8 +467,6 @@ def launch(docker: Docker, *, source: str, image: str, run_id: str, daemon_socke
             "--watch",
             "--runs",
             "/evidence/runs",
-            "--journal-cache",
-            "/evidence/cleanup-journal-cache.json",
         )
     docker.command(
         "run",

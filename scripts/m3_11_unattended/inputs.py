@@ -14,6 +14,7 @@ from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended.model import (
     ROLES,
+    LeasePolicy,
     LifecycleError,
     Targets,
     digest,
@@ -27,6 +28,8 @@ MANAGED_ENV = "LDP_M3_11_MANAGED_INPUTS"
 FORMAT = "lowerduckpond-m3-11-managed-inputs-v1"
 PRODUCTION_FORMAT = "lowerduckpond-m3-11-production-credentials-v1"
 FIXTURE_FORMAT = "lowerduckpond-m3-11-fixture-credentials-v1"
+LEASE_FIXTURE_FORMAT = "lowerduckpond-m3-11-fixture-credentials-v2"
+LEASE_BINDING = {"lease_id", "lease_manifest_sha256", "lease_policy", "lease_issued_at"}
 BINDING = {
     "managed_run_id",
     "source_revision",
@@ -82,12 +85,26 @@ def validate_receipt(
 ) -> dict[str, object]:
     expected = PRODUCTION_RESULT if kind == "production" else FIXTURE_RESULT
     extra = {"deadline"} if kind == "fixture" else set()
+    lease = (
+        kind == "fixture"
+        and isinstance(value, dict)
+        and value.get("format") == LEASE_FIXTURE_FORMAT
+    )
+    if lease:
+        extra |= LEASE_BINDING
     receipt = fields(
         value,
         BINDING | {"format", "started_at", "completed_at", "checks", "identities_sha256"} | extra,
     )
     if (
-        receipt["format"] != (PRODUCTION_FORMAT if kind == "production" else FIXTURE_FORMAT)
+        receipt["format"]
+        != (
+            PRODUCTION_FORMAT
+            if kind == "production"
+            else LEASE_FIXTURE_FORMAT
+            if lease
+            else FIXTURE_FORMAT
+        )
         or any(receipt[key] != binding[key] for key in BINDING)
         or receipt["checks"] != expected
     ):
@@ -118,10 +135,20 @@ def validate_receipt(
         or completed - started > MAX_PRODUCTION_CHECK
     ):
         raise LifecycleError("credential receipt is stale or has invalid chronology")
-    if kind == "fixture" and not completed < instant(receipt["deadline"]) <= started + timedelta(
-        hours=14
-    ):
-        raise LifecycleError("fixture receipt exceeded its approved lifetime")
+    if kind == "fixture":
+        if lease:
+            identity(receipt["lease_id"])
+            if re.fullmatch(r"[0-9a-f]{64}", str(receipt["lease_manifest_sha256"])) is None:
+                raise LifecycleError("fixture lease manifest binding is invalid")
+            policy = LeasePolicy.parse(receipt["lease_policy"])
+            issued = instant(receipt["lease_issued_at"])
+            policy.require_start(now=issued, approved_sha256=policy.sha256)
+            if issued > started or instant(receipt["deadline"]) != policy.deadline(issued):
+                raise LifecycleError("fixture lease lifetime differs from its approved policy")
+        elif instant(receipt["deadline"]) > started + timedelta(hours=14):
+            raise LifecycleError("fixture receipt exceeded its approved lifetime")
+        if instant(receipt["deadline"]) <= completed:
+            raise LifecycleError("fixture validation completed after credential expiry")
     return receipt
 
 
@@ -184,11 +211,7 @@ def load(
     ):
         if hashlib.sha256(credentials[variable].encode()).hexdigest() != issued_ids[role]:
             raise LifecycleError("delivered Spaces credential differs from its creation receipt")
-    fixture = fields(
-        pair["fixture"],
-        BINDING
-        | {"format", "started_at", "completed_at", "checks", "identities_sha256", "deadline"},
-    )
+    fixture = pair["fixture"]
     if now >= instant(fixture["deadline"]):
         raise LifecycleError("managed runtime credential delivery has expired")
     for names in (

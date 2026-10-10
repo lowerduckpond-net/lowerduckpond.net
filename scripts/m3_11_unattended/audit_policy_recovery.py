@@ -192,6 +192,8 @@ def inspect(api: Api, approved: dict[str, object]) -> dict[str, object]:
 
 
 def update(api: Api, approved: dict[str, object], *, restore: bool) -> None:
+    if not restore:
+        raise LifecycleError("obsolete audit grants are permanently disabled")
     # Dedicated transport entry point permits only the pinned account/token and
     # the two reviewed bodies. Generic provider request() still refuses PUT.
     api.audit_policy_update(
@@ -313,24 +315,4 @@ def grant(
     *,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> None:
-    value = plan(record)
-    approved = candidate(value["candidate"])
-    if not instant(record["recorded_at"]) <= clock() < instant(value["grant_before"]):
-        raise LifecycleError("audit access grant window elapsed")
-    if api.credential_sha256 != approved["credential_sha256"]:
-        raise LifecycleError("audit access bootstrap fingerprint differs")
-    response = api.request("GET", f"/accounts/{approved['account_id']}/tokens/verify")
-    verified = result(response.status, response.body)
-    if (
-        not isinstance(verified, dict)
-        or verified.get("id") != approved["credential_id"]
-        or verified.get("status") != "active"
-    ):
-        raise LifecycleError("audit access bootstrap identity is unproven")
-    if inspect(api, approved) != body(approved["before"]):
-        raise LifecycleError("audit access prestate changed; grant refused")
-    if not instant(record["recorded_at"]) <= clock() < instant(value["grant_before"]):
-        raise LifecycleError("audit access grant window elapsed before provider invocation")
-    update(api, approved, restore=False)
-    if inspect(api, approved) != body(approved["candidate_after"]):
-        raise LifecycleError("audit access grant was not verified")
+    raise LifecycleError("obsolete audit grants are permanently disabled")

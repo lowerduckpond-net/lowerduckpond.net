@@ -148,152 +148,51 @@ only. It introduces no production rotation, data retirement or deployment
 authority. Native Cloudflare expiry and Spaces deletion deadlines are distinct;
 scheduler/provider availability precludes an exact-time Spaces expiry guarantee.
 
-Service-account cleanup also depends on 1Password's shared account request quota. Admission
-requires observed request headroom; it cannot reserve that quota. Local death
-checks remain independent of hourly remote polling. Terminal cleanup is immediate;
-persistent failures back off from a five-minute first retry to hourly retries.
-Encrypted immutable journal read caches reduce repeated reads, but every sweep
-requires live vault inventory
-and exact metadata/content-hash agreement, followed by fresh provider readback.
-Neither a cached receipt nor exhausted quota resolves an outstanding obligation.
-Invalid cache inputs require a cold live read; cache write failures or size bounds
-do not prevent credential reconciliation. Only newly validated encrypted cache
-output may be saved for reuse, including after a provider revocation failure.
+The accepted [credential lifecycle simplification](../plans/m3-11-credential-lifecycle-simplification.md)
+uses one compact inventory in the existing Connect journal vault. The independent
+cleanup identity must observe and confirm the complete seven-role manifest before
+any provider CREATE. Later immutable facts record returned IDs, original
+non-submission outcomes, issuer stop, removal, negative probes, closure and
+verified generation handover. Per-event acknowledgements, genesis/checkpoint
+artifacts, service-account quota handling and automatic takeover are retired.
+The original uninterrupted issuer submits each role at most once. Restarts and
+restored volumes only reconcile; missing outcomes remain uncertain and a writer
+that could resume prevents terminal closure.
 
-The explicit Connect backend keeps the same vault separation, credential policy,
-production checks and report bindings. A shared cache is not independent durable
-storage. Before provider creation, a separate cleanup-only Connect identity on
-GitHub must acknowledge the exact run and intent after retaining the complete
-journal in encrypted artifacts with an append-only commit-status registry. Both
-servers' immutable native authors are demonstrated during activation, including
-attempted author impersonation. The approved genesis binds the full inventory,
-manifest, full provider targets, server identities and trusted helper. A reviewed
-helper upgrade preserves that genesis and all historical obligations, and requires
-fresh independent readiness at the successor helper. It never reinitializes an
-existing journal or revives an old attempt's provisioning window.
+Approved policy separately binds issuance cutoff, child lifetime, cleanup reserve,
+retention and upstream expiries. There are no live defaults. Upstream authority
+generations rotate by calendar month. Cleanup capability must outlive the lease
+and reserve. Provider principals and exact token fingerprints are distinct bindings;
+authenticated empty inventory cannot establish DigitalOcean team identity.
+Handover positively reads each known child with old and new authority, checking
+exact ownership, scope, status and lifetime. Unknown IDs retain original access.
+During staged delivery the old verified authority remains usable for cleanup.
 
-Explicitly authorized cleanup-client renewal retains both server identities,
-vault grants and the original epoch. The independent job keeps the original
-client value solely as checkpoint encryption material and authenticates with
-its new client; the controller never receives that key. The setup helper proves
-original-genesis decryption before issuance. Fresh native cleanup evidence binds
-the new client and current usable lifetime before controller installation;
-the historical genesis receipt is not rewritten. Approved Cloudflare bootstrap
-expiry changes preserve token IDs, values and exact policies, with durable
-intent and provider readback after interruption. Renewal neither discards
-unresolved obligations nor extends any existing qualification attempt.
+A lease can serve a fresh approved attempt only after exact prior consumers are
+verified quiescent on their original Docker daemon, including disabled restart
+and a fresh stopped-container readback. Ownership is acquired before credential
+probes or delivery. Diagnostics hold the same exclusion. Each attempt has new
+bound production and fixture receipts; previous failed results remain immutable.
+Success finishes the lease. Explicit cancellation closes it, while an ordinary
+failed started attempt may retain it only under its original approved policy.
+Preparation failures cannot acquire that retention privilege.
 
-Checkpoint lineage follows the append-only registry's publication order, never
-the numeric magnitude of opaque GitHub artifact IDs. Exact genesis, predecessor,
-logical sequence and retained-history extension are required before independent
-acknowledgement. Controllers verify the native independent author and exact
-genesis binding without receiving GitHub cleanup authority.
+Finish/cancel facts publish before the nonblocking provider-cleanup lock. Journal
+failure cannot suppress deletion or establish durable closure. Controller,
+watchdog and independent GitHub cleanup require authenticated provider absence
+and negative authentication when retained secrets are available. Missing secrets
+are unavailable evidence, never proof of denial. Cleanup preserves fixtures,
+private evidence and remote data. Hourly remote scheduling and provider availability
+do not provide exact-time deletion guarantees.
 
-Connect cache inventory is established by two stable unfiltered item lists,
-native metadata and all retained event hashes, not equality with its aggregate
-vault count. Accepted writes can precede that stable inventory. The same ledger
-used by activation, controllers and independent cleanup therefore polls only
-readback for a bounded period after POST, preserving the original intent and
-returned ID across interruption. It never retries POST, accepts an incomplete
-snapshot, or treats cache visibility as independent persistence.
-A Connect GET may repeat hostname resolution twice within its original process
-deadline; the retry does not apply to HTTP errors, invalid responses or POSTs.
-This preserves the single-submission boundary during intermittent resolver failures.
-Typed transport timeouts may repeat GET observations within the same sixty-second
-snapshot/readback cap. Run-reservation recovery includes initial canonicalization
-and post-publication readback, while keeping the original ten-minute deadline.
-The first POST's allowlisted transport diagnostic survives later readback failures;
-it never establishes publication, permits replay, or substitutes for an independent ACK.
-A reviewed pre-discovery helper correction preserves the original initializing marker's
-bindings, probe identities, spool and inventory in an immutable private upgrade
-record; any started discovery or credential intent prevents that migration.
-After discovery starts, a reviewed successor coordinator may recover the original
-ceremony using its original merged helper, immutable requests and dispatches.
-It records both revisions and the retained evidence hashes before proceeding.
-That recovery publishes the successor active helper only after the original
-genesis completes; fresh independent readiness is still required.
-
-A separate explicit replacement is permitted for failed genesis whose
-original executable cannot complete, only while its authoritative registry has
-no entries and both complete journal views contain no credential creation or
-cleanup activity. An empty attempt's exact terminal-path revocation request may
-remain when its full hash is already bound in the original initial history;
-any intent, created, cleanup or resolved event still blocks replacement globally.
-The retained request is not revocation evidence. It requires unchanged bootstrap
-bindings, both helpers merged, retained
-original evidence and a separate private attempt directory. An immutable transition
-links old and new epochs, executable revisions, failed execution and orphan
-artifacts before mutation. A non-admitting protected marker fences old genesis
-requests, then all pending cleanup executions are drained and the complete old
-registry is checked again. Missing, ambiguous or changed evidence blocks progress.
-Discovery is frozen against the original revocation allowlist before initialization
-is published, so later requests cannot enter the new initial history on retry.
-The new attempt retains every prior logical record and repeats full independent
-discovery, provenance, genesis and readiness. Interrupted replacement resumes its
-recorded epoch. It preserves the original failure and artifacts, cannot replace an
-active or registered genesis, and never replays a qualification attempt.
-
-GitHub receipt acceptance binds
-the successful current attempt and Connect job to its native artifact metadata,
-digest and observation interval. Legacy same-name artifacts require an
-unambiguous upload within that job; earlier failed artifacts remain retained.
-
-The launcher binds a running GitHub witness to the exact approved attempt before
-detaching the controller. Creation acknowledgements require current deletion
-authority and a bounded capacity reservation; cleanup remains available after
-that window closes. GitHub artifact reads and checkpoint status writes require
-explicit additional access approval. Missing/expired artifacts, incomplete
-registry history, insufficient capacity or stale readiness block new starts and
-remain visible independently of the qualification result. Connect avoids native
-service-account quota on this path but introduces these recovery dependencies;
-the live independent path must be demonstrated before issuing child credentials.
-
-Initial run-reservation confirmation consumes the original ten-minute creation
-window, bounded also by the controller deadline. Its fixed deadline covers
-canonicalization, staging and complete native readback; a retained run cannot
-receive a renewed window. Typed snapshot-budget expiry may retry observation
-only, retaining the sixty-second bound on each complete snapshot. Credential
-events keep their separate 120-second confirmation budgets. No acknowledgement
-extends provider submission, credential lifetime or qualification deadlines.
-Local cleanup actors use nonblocking lock acquisition so waiting watchdogs can
-continue process/deadline checks. Contention remains unresolved until the owner or
-a later actor verifies cleanup. Retaining a controller's validated Connect item
-details across cleanup retries does not remove fresh inventory and metadata checks.
-Local cleanup may use a created/resolved record or terminal result's independent
-acknowledgement from staging's just-completed complete readback, before further
-journal I/O. This does not change run or creation-intent admission.
-
-Informational heartbeat publication in an independent witness has a ten-second
-observation budget. A missing heartbeat or failed Connect exchange can trigger
-another full sweep, with bounded backoff, within that witness's original
-deadline; the uncertain POST is never resubmitted and
-the controller journey is never restarted. This recovery cannot admit creation
-from an incomplete sweep or bypass native authorship, checkpoint persistence,
-cleanup authority, or the original reservation cutoff. Its first sanitized
-failure remains available separately from the final cleanup receipt.
-
-A completed cleanup sweep may service an already reserved attempt before publishing
-its informational heartbeat. This ordering preserves all provider, authority,
-restoration and checkpoint checks. ACK publication revalidates completed cleanup
-coverage against its newly retained snapshot; earlier readiness cannot override
-new adverse obligations. The exact active run's unexpired intent may enter the
-not-due frontier, while foreign or invalidated obligations remain blocking. This
-does not create a reservation, renew a deadline or turn local timing evidence into
-a successful live lifecycle.
-
-The independent witness's initial twelve-minute wait includes controller
-preparation, so it must not substitute for the admitted creation window. After
-the exact native reservation is durable, the witness arms once from that
-reservation's immutable cutoff plus a five-minute acknowledgement drain. It
-never renews the creation cutoff or an event's confirmation budget. Creation
-witnessing is capped at 27 minutes from reconciliation entry within the existing
-30-minute job ceiling, including bootstrap; slow operations can still require
-later cleanup sweeps. Ordinary reconciliation does not gain a creation wait.
-
-Restart is reconciliation of one immutable attempt, not a retry of qualification.
-Changed executable inputs require a new correctly bound attempt. Complete live
-Spaces/public-CA qualification, a demonstrated credential rehearsal and verified
-revocation remain operational acceptance requirements beyond component tests.
+Cutover imports all original events and retained local facts with reviewed hashes,
+including audit restoration and historical expiry-update obligations. Old issuers
+must be stopped and their restart/start routes disabled. Versioned activation
+checks cleanup coverage before delivery. Rollback is cleanup-only and understands
+both imported and new obligations; it cannot revive old issuance or grant/expiry
+updates. Operational cutover, credential replacement, delivery, live lifecycle
+validation and full qualification still require separate approval and evidence.
+Local implementation and component checks do not complete those gates.
 
 On October 6, 2026 the operator authorized one immediate historical exception for
 the missing creation outcome of Page Rules intent
