@@ -155,7 +155,19 @@ class ConnectJournal(_Canonical):
 
     def persist(self, record: dict[str, object]) -> dict[str, object]:
         original, _ = self._stage(record)
-        return self._wait_for(original, until=time.monotonic() + self.wait_seconds)
+        until = time.monotonic() + self.wait_seconds
+        self.check_cancelled()
+        # Staging just completed a full native readback. Historical cleanup
+        # records often already have their independent ACK in that same view.
+        # Use its matching native metadata before any further ledger I/O; a
+        # missing ACK still takes the ordinary bounded observation path.
+        if original["kind"] in {"created", "resolved", "result"} and self.confirmed(
+            original, observed=self.ledger.observed_records()
+        ):
+            self.check_cancelled()
+            if not self.wait_seconds or time.monotonic() < until:
+                return original
+        return self._wait_for(original, until=until)
 
     def persist_creation(self, created: dict[str, object], marker: dict[str, object]) -> None:
         original, related, until = self.stage_creation(created, marker)

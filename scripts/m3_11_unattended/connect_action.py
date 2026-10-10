@@ -33,7 +33,7 @@ from scripts.m3_11_unattended.connect_checkpoint import FORMAT as CHECKPOINT_FOR
 from scripts.m3_11_unattended.connect_checkpoint import Checkpoint, Stored
 from scripts.m3_11_unattended.connect_checkpoint_key import credential as checkpoint_credential
 from scripts.m3_11_unattended.connect_configuration import PROVIDER_REFERENCES, _references
-from scripts.m3_11_unattended.connect_diagnostics import failure
+from scripts.m3_11_unattended.connect_diagnostics import failure, failure_chain
 from scripts.m3_11_unattended.connect_host import independent_server
 from scripts.m3_11_unattended.connect_journal import IndependentJournal, Witness
 from scripts.m3_11_unattended.connect_ledger import ConnectLedger
@@ -679,7 +679,7 @@ def main() -> int:
         receipt = {"format": RECEIPT_FORMAT, "status": "unresolved", "phase": phase}
         # No exception text, arguments, locals, arbitrary names or provider output.
         with suppress(Exception):
-            receipt["failure"] = failure(error)
+            receipt.update(failure_chain(error, describe=failure))
     finally:
         for name, previous in timing_environment.items():
             if previous is None:
