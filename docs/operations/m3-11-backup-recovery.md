@@ -28,9 +28,10 @@ Use the existing dedicated provisioning, cleanup, production-input and journal
 vaults through isolated native Connect readers. The shared server has separate
 provisioning, cleanup and production clients. The existing independent cleanup
 server has its own cleanup client and native server credentials; GitHub starts
-that server without the issuance host's endpoint or volumes. No service-account
-fallback, quota admission, per-event witness, encrypted checkpoint registry or
-new datastore is used.
+that server without the issuance host's endpoint or volumes. The replacement uses
+no service-account fallback, quota admission, per-event witness, encrypted
+checkpoint registry or new datastore. Until approved cutover, the workflow
+preserves the installed legacy cleaner and its pinned helper as described below.
 
 The versioned `lowerduckpond-m3-11-lease-config-v1` bundle binds exact targets,
 helper revision, approved policy digest, legacy import digest and authority
@@ -88,6 +89,30 @@ no provisioning or production reader. Retrying identical staging preserves bytes
 changed inputs require a new private staging directory.
 
 ### Migration, activation and cleanup-only rollback
+
+Merging the implementation does not switch scheduled cleanup. The temporary
+workflow bridge preserves `M3_11_CLEANUP_BACKEND`: an empty value or
+`service-account` uses `M3_11_CLEANUP_REVISION` and `M3_11_CLEANUP_CONFIG`;
+`connect-initializing` retains that cleaner with the configured `active_helper`
+and quiet-empty behavior. With `connect`, the existing
+`lowerduckpond-m3-11-connect-bootstrap-v1` secret still uses
+`M3_11_CONNECT_CONFIGURATION`, its `active_helper`, the pinned legacy JavaScript
+action, checkpoint permissions/transport and the `reconcile` operation. Preserve
+these settings and old cleanup access while preparing migration. The bridge
+offers no legacy discovery, genesis or issuance-witness dispatch.
+
+For `connect`, the separately approved replacement of the single
+`M3_11_CONNECT_BOOTSTRAP` secret with a validated
+`lowerduckpond-m3-11-independent-lease-bundle-v1` bundle is the explicit switch.
+That bundle selects its own helper and cleanup-only configuration; it does not
+reuse the old selection document. Scheduled/default `reconcile` then maps to
+`cleanup`; `confirm` is an explicit lease-only dispatch. Unknown backends,
+unsupported formats, missing pins and incompatible operations fail closed;
+the selected pinned helper validates the full private configuration before
+accessing providers. A malformed replacement never falls back to legacy cleanup.
+Remove this temporary bridge in the separately reviewed cutover/removal change
+only after the replacement has verified all retained obligations; it is not a
+second supported runtime.
 
 Before cutover, inventory every original journal event and retained local ID,
 abort, secret, audit-restoration and expiry-update file. The reviewed
