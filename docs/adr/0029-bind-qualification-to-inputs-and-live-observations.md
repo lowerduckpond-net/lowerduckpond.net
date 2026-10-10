@@ -259,6 +259,18 @@ Local cleanup actors use nonblocking lock acquisition so waiting watchdogs can
 continue process/deadline checks. Contention remains unresolved until the owner or
 a later actor verifies cleanup. Retaining a controller's validated Connect item
 details across cleanup retries does not remove fresh inventory and metadata checks.
+Local cleanup may use a created/resolved record or terminal result's independent
+acknowledgement from staging's just-completed complete readback, before further
+journal I/O. This does not change run or creation-intent admission.
+
+Informational heartbeat publication in an independent witness has a ten-second
+observation budget. A missing heartbeat or failed Connect exchange can trigger
+another full sweep, with bounded backoff, within that witness's original
+deadline; the uncertain POST is never resubmitted and
+the controller journey is never restarted. This recovery cannot admit creation
+from an incomplete sweep or bypass native authorship, checkpoint persistence,
+cleanup authority, or the original reservation cutoff. Its first sanitized
+failure remains available separately from the final cleanup receipt.
 
 A completed cleanup sweep may service an already reserved attempt before publishing
 its informational heartbeat. This ordering preserves all provider, authority,

@@ -10,9 +10,15 @@ from dataclasses import dataclass
 from functools import partial
 
 from scripts.m3_11_private_inputs import read_private, write_private
+from scripts.m3_11_unattended.connect_api import ConnectExchangeError
 from scripts.m3_11_unattended.connect_auth import identity as account_identity
 from scripts.m3_11_unattended.connect_checkpoint import Checkpoint, Stored
-from scripts.m3_11_unattended.connect_ledger import ACK_FORMAT, ConnectLedger, SnapshotChangedError
+from scripts.m3_11_unattended.connect_ledger import (
+    ACK_FORMAT,
+    ConnectLedger,
+    ReadbackExpiredError,
+    SnapshotChangedError,
+)
 from scripts.m3_11_unattended.journal import event, validate
 from scripts.m3_11_unattended.model import LifecycleError, digest, identity
 from scripts.m3_11_unattended.state import cleanup_lock
@@ -22,6 +28,11 @@ from scripts.qualification_timing import measure
 ACK_WAIT_SECONDS = 120
 ACK_POLL_SECONDS = 5
 OBSERVATION_SECONDS = 5
+RECEIPT_SECONDS = 10
+
+
+class ReceiptPendingError(LifecycleError):
+    """An informational receipt was not published; no admission result is implied."""
 
 
 def acknowledgement(record: dict[str, object]) -> bool:
@@ -155,7 +166,19 @@ class ConnectJournal(_Canonical):
 
     def persist(self, record: dict[str, object]) -> dict[str, object]:
         original, _ = self._stage(record)
-        return self._wait_for(original, until=time.monotonic() + self.wait_seconds)
+        until = time.monotonic() + self.wait_seconds
+        self.check_cancelled()
+        # Staging just completed a full native readback. Historical cleanup
+        # records often already have their independent ACK in that same view.
+        # Use its matching native metadata before any further ledger I/O; a
+        # missing ACK still takes the ordinary bounded observation path.
+        if original["kind"] in {"created", "resolved", "result"} and self.confirmed(
+            original, observed=self.ledger.observed_records()
+        ):
+            self.check_cancelled()
+            if not self.wait_seconds or time.monotonic() < until:
+                return original
+        return self._wait_for(original, until=until)
 
     def persist_creation(self, created: dict[str, object], marker: dict[str, object]) -> None:
         original, related, until = self.stage_creation(created, marker)
@@ -369,11 +392,22 @@ class IndependentJournal(_Canonical):
         # Do not select an arbitrary equal-payload checkpoint row here: that
         # could relabel a controller's forged receipt as independently authored.
         with self._fresh():
-            self.ledger.stage(record)
-            self.records()
-            if not self.ledger.authored(record, self.witness.author):
-                raise LifecycleError("independent receipt awaits native author readback")
-            self.persist(record)
+            try:
+                # Informational publication must leave time to service returned
+                # credential IDs while the controller's ACK clocks keep running.
+                with self.ledger.read_budget(
+                    deadline=time.monotonic() + RECEIPT_SECONDS,
+                    check_cancelled=lambda: None,
+                ):
+                    self.ledger.stage(record)
+                self.records()
+                if not self.ledger.authored(record, self.witness.author):
+                    raise LifecycleError("independent receipt awaits native author readback")
+                self.persist(record)
+            except (ReadbackExpiredError, ConnectExchangeError) as error:
+                # A failed GET before or after the POST is also an unresolved
+                # observation. Content and native-author violations remain fatal.
+                raise ReceiptPendingError("independent receipt publication is pending") from error
 
     def readiness(self) -> dict[str, object]:
         with self._fresh():

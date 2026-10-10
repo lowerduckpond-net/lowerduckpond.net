@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import subprocess
+from collections.abc import Callable
 from contextlib import suppress
 from pathlib import Path
 
@@ -103,6 +104,27 @@ def failure(error: Exception) -> dict[str, object]:
     return value
 
 
+def failure_chain(
+    error: Exception, *, describe: Callable[[Exception], dict[str, object]] = failure
+) -> dict[str, object]:
+    """Retain bounded transport causes using the same closed fields as the primary error."""
+    value: dict[str, object] = {"failure": describe(error)}
+    related: list[dict[str, object]] = []
+    seen = {id(error)}
+    secondary = error.__cause__ or error.__context__
+    while (
+        isinstance(secondary, Exception)
+        and id(secondary) not in seen
+        and len(related) < MAX_RELATED_FAILURES
+    ):
+        seen.add(id(secondary))
+        related.append(describe(secondary))
+        secondary = secondary.__cause__ or secondary.__context__
+    if related:
+        value["related_failures"] = related
+    return value
+
+
 def retain_failure(path: Path, *, binding: dict[str, object], stage: str, error: Exception) -> None:
     """A failed diagnostic can never prevent revocation or replace earlier evidence."""
     try:
@@ -110,21 +132,8 @@ def retain_failure(path: Path, *, binding: dict[str, object], stage: str, error:
             value: dict[str, object] = {
                 "binding": binding,
                 "stage": stage,
-                "failure": failure(error),
+                **failure_chain(error),
             }
-            related: list[dict[str, object]] = []
-            seen = {id(error)}
-            secondary = error.__cause__ or error.__context__
-            while (
-                isinstance(secondary, Exception)
-                and id(secondary) not in seen
-                and len(related) < MAX_RELATED_FAILURES
-            ):
-                seen.add(id(secondary))
-                related.append(failure(secondary))
-                secondary = secondary.__cause__ or secondary.__context__
-            if related:
-                value["related_failures"] = related
             write_private(path, value)
     except Exception:
         return  # Exception text can contain secrets; failure never blocks cleanup.

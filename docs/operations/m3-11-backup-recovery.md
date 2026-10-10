@@ -271,6 +271,17 @@ contents fail immediately. This wait only settles cache visibility: provider
 creation still requires independent encrypted persistence and acknowledgement,
 and no provisioning or qualification deadline is extended.
 
+The independent witness limits informational heartbeat publication to ten
+seconds so a missing write cannot consume most of a credential's acknowledgement
+window. During a dispatched witness, an expired heartbeat observation or failed
+Connect exchange triggers another full cleanup and admission check within the
+original witness deadline, with a bounded five-second backoff between attempts.
+It does not restart the controller or repeat any provider credential creation.
+The original uncertain journal POST is retained without resubmission; each new
+sweep produces its own informational receipt. Invalid metadata and author
+mismatches remain fatal. A one-shot cleanup execution still reports unresolved
+if its receipt cannot be published.
+
 A reviewed helper correction can resume an unchanged `initializing` selection
 before discovery has started. It requires the original private inputs, both probe
 records and shared-probe spool, and rejects any credential intent or independent
@@ -428,6 +439,10 @@ Spaces retains its two ordered complete inventory observations. Changed identiti
 new authentication markers and provider failures still prevent clearance. A cleanup
 sweep already due after acknowledgement processing starts without another poll
 sleep; this does not extend any acknowledgement or creation deadline.
+For historical created/resolved records and terminal results, local cleanup can
+use an independent acknowledgement already present in staging's just-completed
+full native readback. Missing acknowledgements still take the normal bounded
+wait. Run and creation-intent confirmation remain unchanged.
 
 The independent job also exports `m3-11-cleanup-timing-RUN-attempt-N`, containing
 only the existing allowlisted monotonic timing-event format. It separates
