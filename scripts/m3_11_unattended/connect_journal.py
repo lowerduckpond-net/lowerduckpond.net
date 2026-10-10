@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from functools import partial
 
 from scripts.m3_11_private_inputs import read_private, write_private
+from scripts.m3_11_unattended.connect_api import ConnectExchangeError
 from scripts.m3_11_unattended.connect_auth import identity as account_identity
 from scripts.m3_11_unattended.connect_checkpoint import Checkpoint, Stored
 from scripts.m3_11_unattended.connect_ledger import (
@@ -399,12 +400,14 @@ class IndependentJournal(_Canonical):
                     check_cancelled=lambda: None,
                 ):
                     self.ledger.stage(record)
-            except ReadbackExpiredError as error:
+                self.records()
+                if not self.ledger.authored(record, self.witness.author):
+                    raise LifecycleError("independent receipt awaits native author readback")
+                self.persist(record)
+            except (ReadbackExpiredError, ConnectExchangeError) as error:
+                # A failed GET before or after the POST is also an unresolved
+                # observation. Content and native-author violations remain fatal.
                 raise ReceiptPendingError("independent receipt publication is pending") from error
-            self.records()
-            if not self.ledger.authored(record, self.witness.author):
-                raise LifecycleError("independent receipt awaits native author readback")
-            self.persist(record)
 
     def readiness(self) -> dict[str, object]:
         with self._fresh():

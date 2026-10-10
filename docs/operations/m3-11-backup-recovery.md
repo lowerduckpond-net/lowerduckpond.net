@@ -273,8 +273,9 @@ and no provisioning or qualification deadline is extended.
 
 The independent witness limits informational heartbeat publication to ten
 seconds so a missing write cannot consume most of a credential's acknowledgement
-window. During a dispatched witness, an expired heartbeat observation triggers
-another full cleanup and admission check within the original witness deadline.
+window. During a dispatched witness, an expired heartbeat observation or failed
+Connect exchange triggers another full cleanup and admission check within the
+original witness deadline, with a bounded five-second backoff between attempts.
 It does not restart the controller or repeat any provider credential creation.
 The original uncertain journal POST is retained without resubmission; each new
 sweep produces its own informational receipt. Invalid metadata and author

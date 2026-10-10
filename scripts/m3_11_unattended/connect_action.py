@@ -274,7 +274,13 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
         # A fresh full sweep must succeed before any further creation ACK.
         with suppress(Exception):
             journal_failure(error)
-        if not request_sha256 or time.monotonic() >= until:
+        remaining = until - time.monotonic()
+        if not request_sha256 or remaining <= 0:
+            raise error
+        # Transport failures can return immediately. Bound repeated full sweeps
+        # without extending this witness's existing deadline.
+        time.sleep(min(POLL_SECONDS, remaining))
+        if time.monotonic() >= until:
             raise error
         next_sweep = 0.0
 
