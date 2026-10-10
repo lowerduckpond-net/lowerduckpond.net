@@ -8,659 +8,289 @@ unstarted and production publication stays disabled.
 
 ## Unattended qualification on the dedicated Docker host
 
-The explicitly approved dedicated Coder/Docker host may run M3.11 without the
-operator workstation staying online. This is an exception for qualification,
-not production deployment. Processing actual production credentials makes that
-Docker host trusted. Docker access and sibling containers are not a hard security
-boundary. Do not transfer old virtual environments, private configuration, logs
-or credentials from another workspace.
+The dedicated Coder/Docker host is a trusted credential-processing host. Docker
+access and sibling containers are not a security boundary. The controller runs
+the existing complete M3.11 runner, production/storage checks, Molecule phases,
+combined recovery and report packager. Preparation consumes the original
+600-minute ceiling; the runner still requires at least 12 hours of credential
+validity at startup. Restart reconciles the original attempt and cannot replay
+issuance or turn a diagnostic continuation into a passing qualification.
 
-`just m3-11-unattended` prepares and operates a detached controller. It calls the
-existing `just m3-11-spaces-qualification`, deadline supervisor, live wrapper,
-provider/storage checks, Molecule phases, combined recovery and report packager.
-The start operation counts provisioning and the short production check against
-the original 600-minute ceiling, with the existing bounded diagnostic allowance.
-Provisioning has a separate 14-hour credential deadline; it cannot extend
-qualification. Neither controller
-restart nor diagnostic continuation reruns or promotes an interrupted attempt.
+The [credential lifecycle plan](../plans/m3-11-credential-lifecycle-simplification.md)
+defines the approved local replacement. Its runtime cutoff, credential lifetime,
+cleanup reserve, native upstream expiries, configuration delivery, cutover and live
+runs require separate explicit authorization. The seven-day examples used in local
+tests grant no live authority. Missing policy inputs fail closed.
 
-The controller joins the **daemon's host network** and receives the daemon-side
-Unix socket. A forwarded Unix socket by itself does not establish the network
-topology needed for published SSH ports. On the dedicated Coder template inspected
-for this implementation, the workspace and Docker daemon have different network
-namespaces. Docker's data directory is in the template's persistent Docker volume;
-qualification code, private evidence, configuration and storage leases use inner
-named volumes. Controller and watchdog use `unless-stopped` restart policies.
-Before provisioning, the controller verifies that its mounted socket reaches
-the exact Docker-host identity recorded in the approved preparation.
+### Authority, policy and private setup
 
-Preparation also initializes the owned storage-lease volume with the runner's
-required private permissions and installs the repository-pinned Ansible
-collections in a revision-specific volume. The controller mounts those
-collections read-only; qualification does not depend on a first-use Galaxy
-download. A progress-write failure drains the qualification process group before
-credential revocation, and cleanup still attempts revocation when local status
-storage fails. Such persistence failures keep local closure unresolved.
+Use the existing dedicated provisioning, cleanup, production-input and journal
+vaults through isolated native Connect readers. The shared server has separate
+provisioning, cleanup and production clients. The existing independent cleanup
+server has its own cleanup client and native server credentials; GitHub starts
+that server without the issuance host's endpoint or volumes. The replacement uses
+no service-account fallback, quota admission, per-event witness, encrypted
+checkpoint registry or new datastore. Until approved cutover, the workflow
+preserves the installed legacy cleaner and its pinned helper as described below.
 
-The short production check retains `production-state.log` and
-`production-storage.log` privately. Sanitized diagnostics expose the bound source
-location and process exit status, never child output. Before the production and
-rehearsal storage probes write an object, they persist their unique prefix, both
-buckets, run ID and source revision in `production-storage-ownership.json` and
-`fixture-storage-ownership.json`. These ownership records survive interruption;
-they do not authorize destructive retirement. Credential revocation leaves them
-and any failed-run remote data intact.
-
-Terminal disconnection does not own these containers. A workspace-agent exit
-does not intrinsically stop a sibling daemon container. Coder stop/rebuild can
-stop/recreate that daemon: persistence depends on retaining the template's Docker
-volume and mounting it back at `/var/lib/docker`. A Docker-host restart interrupts
-qualification; restart reconciles its immutable attempt and revokes credentials.
-Deleting the Coder/Docker volume loses private evidence, not the independent
-1Password obligations. Do not claim an actual Coder stop/rebuild or host restart
-survival test solely from mount inspection; retain the observed lifecycle results
-with the implementation's qualification record.
-
-### Initial setup and authority
-
-First install the locked repository dependencies and prepare a clean, exact commit:
+The versioned `lowerduckpond-m3-11-lease-config-v1` bundle binds exact targets,
+helper revision, approved policy digest, legacy import digest and authority
+generations. Each generation records provider principal IDs, token fingerprints,
+provider/client expiries and a calendar-month rotation date. The policy explicitly
+records start and issuance cutoffs, child lifetime, cleanup reserve, failed-attempt
+retention and approval reference. Cleanup authority must cover the full lease
+plus reserve. Provider expiry and a Spaces deletion deadline are different:
+Spaces removal depends on cleanup execution and provider availability.
 
 ```console
-mise install
-mise exec -- just setup
-mise exec -- just m3-11-unattended prepare FULL_COMMIT_SHA --output /private/prepared.json
 mise exec -- just m3-11-unattended setup-template > /private/setup.json
-```
-
-Fill the non-secret manifest with the approved region, production archive/backup
-buckets, Cloudflare account, both production zone IDs, and the Page Rules user's
-ID. Coordinates come from approved configuration, never decrypted state. The
-manifest uses immutable `op://VAULT_ID/ITEM_ID/FIELD_ID` references. Create four
-dedicated 1Password vaults: provisioning bootstrap, cleanup bootstrap, production
-reader inputs, and the append-only obligation journal. No unrelated items belong
-in those vaults. Use three separate service accounts:
-
-| Role | Vault access and provider authority |
-| --- | --- |
-| Provisioning | Read provisioning bootstrap; read/write obligation journal. DigitalOcean `spaces_key:create_credentials`, `spaces_key:delete`, `spaces_key:read`, `spaces:read`, `regions:read`, `sizes:read`, `actions:read`. Separate Cloudflare account Account API Tokens Write on the approved account and user API Tokens Write on the approved user. |
-| Cleanup | Read cleanup bootstrap; read/write obligation journal. A distinct DigitalOcean token with deletion and the same reads, without credential creation. Distinct Cloudflare account/user token-write authorities. No production-state passphrase or production vault access. |
-| Production checking | Read only the dedicated production-reader vault containing references for state access, state bucket, state decryption passphrase and the existing production Caddy token. No provisioning or journal authority. |
-
-Record the service-account expiry from its creation ceremony. Bootstrap authority
-must outlive every child deadline by at least two days; seven days is a practical
-initial bootstrap lifetime. The helper never rolls or extends existing credentials.
-Cloudflare's user-token bootstrap uses its **Create additional tokens** template;
-the User/API Tokens permission is not available in the ordinary custom builder.
-Its policy must bind the approved `com.cloudflare.api.user.USER_ID` resource.
-Provisioning and cleanup Cloudflare authorities must have no token conditions,
-including IP restrictions that could prevent the independent cleanup actor from
-using them. Expiry alone must bound their availability.
-
-DigitalOcean's public Spaces API does not expose PAT scope/expiry introspection.
-After inspecting the exact scopes and expiry in the provider console, run
-`attest-digitalocean --token-reference op://... --expires-at UTC_TIMESTAMP
---role provision|cleanup --attest-provider-console --output /private/metadata.json`.
-The helper reads the token through a hidden service-account prompt and writes
-metadata bound to its SHA-256, without exporting the token. Import this JSON into
-the dedicated metadata item's `notesPlain` field and set `digitalocean_metadata`
-to that reference. This is an explicit operator attestation, not provider-side
-expiry verification. Child Spaces grants are read back from the provider.
-
-```console
 mise exec -- just m3-11-unattended setup \
   --manifest /private/setup.json --output /private/controller.json
-mise exec -- just m3-11-unattended install-github-cleanup \
-  --config /private/controller.json --helper-revision FULL_COMMIT_SHA
 ```
 
-Setup asks for the three **new** service-account tokens using hidden terminal
-prompts, or accepts a mode-0600 `--service-accounts-file` delivered privately.
-Never paste secrets into chat, arguments or reports. It checks separated vault
-visibility, bootstrap metadata, live provider reads and independent journal
-write/readback. It does not decrypt production state or create provider credentials.
-Start delivers the private configuration over stdin and atomically creates
-mode-0600 files owned by the container user. Workspace file ownership is not
-carried across Docker; the strict private-file ownership checks remain active.
-The explicit GitHub setup operation creates a main-only environment named
-`m3-11-credential-cleanup`, with no per-execution human approver, installs only
-the cleanup subset as `M3_11_CLEANUP_CONFIG`, and pins
-`M3_11_CLEANUP_REVISION`. It refuses to weaken an existing environment's protection
-policy. Review changes to that protected workflow and its pinned helper as
-credential-deletion authority.
-
-The cleanup workflow must be present on **main** before scheduling works. If the
-implementation PR is still open, arrange a reviewed bootstrap of that workflow
-on main and pin its explicitly approved helper commit; a branch-only scheduled
-workflow is insufficient. Dispatch it once and inspect its result. Every new
-start requires a ready GitHub heartbeat no older than 90 minutes, for the exact
-helper, and no outstanding credential obligations. No live provisioning is
-authorized by successful setup alone.
-
-Provider contracts used by setup are documented by
-[DigitalOcean Spaces keys](https://docs.digitalocean.com/products/spaces/reference/api/spaces-keys/),
-[Cloudflare token creation](https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/),
-[1Password service accounts](https://developer.1password.com/docs/service-accounts/), and
-[GitHub environments](https://docs.github.com/en/rest/deployments/environments).
-
-### Staging Connect bootstrap
-
-The operator can stage Connect access using a normal 1Password login on the
-**secure workstation**. This setup step does not use service-account quota.
-Sign in to the operator's normal 1Password account before running the helper.
-The shared Connect server belongs in the existing Unraid `services` Compose
-project; workspaces receive scoped clients. The server credentials file stays
-on Unraid. Keep its API behind the private HTTPS route and retain its persistent
-encrypted cache.
-
-The setup helper reads the previously approved, non-secret setup manifest from
-an immutable 1Password item reference and verifies the supplied digest of the
-whole journal record. It grants the shared server access to the same four
-dedicated vaults and creates three native seven-day clients: provisioning and
-cleanup each read their own bootstrap vault and read/write the journal;
-production checking reads only its production-input vault. It separately creates
-a Connect server identity and client limited to cleanup and the journal for
-GitHub. That identity allows the cleanup job to start its own Connect
-instance without depending on Unraid being available.
-
-From a checkout of the exact committed setup revision, with locked dependencies
-installed, preview the operation on the **secure workstation**:
+Fill the template only from reviewed provider/operator metadata. Use immutable
+`op://VAULT_ID/ITEM_ID/FIELD_ID` references and private mode-0600 files in owned
+mode-0700 directories. Setup performs capability checks, creates no milestone
+children and supplies no expiry default. DigitalOcean principal metadata must be
+attested from the operator's approved provider context and bound to the exact token
+hash and generation. An authenticated empty Spaces inventory is never team proof;
+this procedure adds no `account:read` permission.
 
 ```console
-mise exec -- uv run --no-sync --frozen python -m scripts.m3_11_unattended.connect_setup \
-  --revision FULL_COMMIT_SHA \
-  --manifest-reference op://JOURNAL_VAULT_ID/SETUP_ITEM_ID/notesPlain \
-  --manifest-sha256 APPROVED_SETUP_RECORD_SHA256 \
-  --shared-url https://op-connect.example.net \
-  --shared-server 'Unraid services' \
-  --output "$HOME/.config/lowerduckpond/m3-11-connect-bootstrap"
+mise exec -- just m3-11-unattended attest-digitalocean \
+  --token-reference op://VAULT/ITEM/FIELD \
+  --generation /private/generation.json --reader-config /private/provision-reader.json \
+  --observed-principal APPROVED_TEAM_ID --attested-by OPERATOR \
+  --principal-context APPROVED_PROVIDER_CONTEXT --attest-provider-console \
+  --output /private/digitalocean-metadata.json
 ```
 
-Add `--apply` to create the bootstrap. To deliver it in the same operation, add
-`--unraid root@UNRAID_HOST --workspace CODER_CONTAINER_NAME
---workspace-id APPROVED_WORKSPACE_UUID`. Delivery checks the workspace ID,
-container identity and persistent home volume through the parent `coder_dind`
-daemon before streaming only the three client tokens to
-`/home/coder/.config/lowerduckpond/m3-11/connect-bootstrap.json`. The independent
-server credentials and cleanup client go only to the existing main-only GitHub
-environment, in a new `M3_11_CONNECT_BOOTSTRAP` secret. No credential value enters
-arguments or terminal output. The operation retains mode-0600 creation intents,
-returned credentials and provider metadata on the workstation. Repeating it
-reuses completed issuance; a lost token response records inventory and stops
-without creating another token. Keep those private files for reconciliation.
-If a step fails, its message identifies the operation and a sanitized failure
-category. Replace `--apply` with `--diagnose` and omit the delivery arguments for
-read-only checks of sign-in, the approved manifest and shared server lookup.
-Diagnosis lists only the presence of fixed setup files and never retries an
-uncertain credential creation or prints their contents.
+The same bound metadata procedure applies to cleanup's separate token. Import the
+result into its dedicated metadata item through the operator's normal private
+workflow. The production reader remains isolated: only the short production-check
+process can read encrypted state and verify the existing non-expiring, exact-policy
+production Caddy credential and production storage capabilities. Fixture credentials
+cannot replace production proof or enter production state.
 
-**Staging is not activation.** The staging bundle cannot be used as controller
-configuration. Activation authenticates each client, checks its native and
-signed vault policy, and proves independent cleanup before installing a separate
-Connect controller configuration. It never falls back to service accounts.
-
-See the official [Connect CLI reference](https://www.1password.dev/cli/reference/management-commands/connect)
-and [Connect authorization model](https://www.1password.dev/connect/security).
-
-### Activating independently recoverable Connect cleanup
-
-Run activation in the **Coder workspace**, after the exact runtime revision has
-passed review and required CI and reached main. The protected cleanup environment
-must allow only main and require no human approval for each cleanup execution.
-The Connect job uses `actions: read` to verify retained artifacts and
-`statuses: write` to append checkpoint references on one fixed commit. These are
-additional GitHub permissions requiring operator approval before workflow
-activation. No additional provider authority or production-vault access is given
-to GitHub. The GitHub token grants apply across this repository; the helper's
-code confines their use to the cleanup workflow and fixed checkpoint commit/context.
-
-The helper uses the bootstrap bundle already delivered to the workspace and the
-existing GitHub login. Keep the same private activation directory when resuming:
+Stage the independent bundle using its verified native reader document. Its URL
+placeholder is `https://independent.invalid`; the action substitutes only the
+endpoint of its own freshly started server.
 
 ```console
-mise exec -- uv run --no-sync --frozen python -m scripts.m3_11_unattended.connect_activate \
-  --revision FULL_COMMIT_SHA \
-  --bootstrap /home/coder/.config/lowerduckpond/m3-11/connect-bootstrap.json \
-  --manifest-reference op://JOURNAL_VAULT_ID/SETUP_ITEM_ID/notesPlain \
-  --manifest-sha256 APPROVED_SETUP_RECORD_SHA256 \
-  --directory /home/coder/.config/lowerduckpond/m3-11/connect-activation \
-  --output /home/coder/.config/lowerduckpond/m3-11/controller.json
+uv run --frozen python -m scripts.m3_11_unattended.connect_setup \
+  --configuration /private/controller.json \
+  --independent-reader /private/independent-reader.json \
+  --server-credentials /private/independent-server.json --output /private/staged
 ```
 
-This operation creates provenance records and encrypted journal checkpoints;
-it creates no provider child credentials and launches no qualification. It reads
-the non-secret setup manifest and authenticates the production reader without
-reading production secrets. Existing controller configuration is retained privately
-before an approved conversion or helper update.
+Staging retains separate `controller-connect.json` and `github-connect.json`
+files. Only the second contains the independent native server credentials; it has
+no provisioning or production reader. Retrying identical staging preserves bytes;
+changed inputs require a new private staging directory.
 
-Activation first records immutable probe identities. The shared and independent
-Connect servers each attempt to claim the other's native author. Both native
-readbacks must reject that impersonation. The independent GitHub instance then
-captures the exact complete initial journal in an encrypted genesis artifact,
-publishes its immutable reference, and reads it back. Activation binds both
-servers, actual authors, the full target selection, approved manifest, original
-helper and complete initial inventory. Existing credential intents prevent a new
-genesis; an existing epoch is never reset to work around incomplete history.
+### Migration, activation and cleanup-only rollback
 
-Before freezing that inventory, activation selects `connect-initializing` and
-waits for older queued or running cleanup executions to finish. Native cleanup
-remains enabled using the reviewed helper from the same protected selection.
-It suppresses only an idle heartbeat after a fresh complete read proves there
-are no credential intents. Any intent, including a historical resolved one,
-takes the normal cleanup/proof path and blocks new genesis. Read failures remain
-unresolved. Quiet execution emits no admission heartbeat. This does not require
-successful service-account access while its quota is exhausted: independent
-Connect discovery supplies the complete inventory barrier. It may learn a final
-empty legacy heartbeat beyond the shared cache's initial snapshot; the shared
-cache must synchronize that exact complete map before genesis. No event is
-discarded and final genesis inventory checks remain exact.
+Merging the implementation does not switch scheduled cleanup. The temporary
+workflow bridge preserves `M3_11_CLEANUP_BACKEND`: an empty value or
+`service-account` uses `M3_11_CLEANUP_REVISION` and `M3_11_CLEANUP_CONFIG`;
+`connect-initializing` retains that cleaner with the configured `active_helper`
+and quiet-empty behavior. With `connect`, the existing
+`lowerduckpond-m3-11-connect-bootstrap-v1` secret still uses
+`M3_11_CONNECT_CONFIGURATION`, its `active_helper`, the pinned legacy JavaScript
+action, checkpoint permissions/transport and the `reconcile` operation. Preserve
+these settings and old cleanup access while preparing migration. The bridge
+offers no legacy discovery, genesis or issuance-witness dispatch.
 
-Connect's vault item count may lag its item list after a successful write. The
-ledger compares two complete unfiltered item inventories, validates every native
-item binding and retains all known event hashes. The aggregate count remains a
-conservative lower bound; neither matching cache reads nor HTTP 200 creation
-readback establishes independent persistence. Returned item IDs are saved before
-further inspection, including when inspection fails.
-After a journal POST, the helper polls for its exact event in a complete stable
-inventory within a 60-second monotonic readback window. It stops scheduling polls
-at that deadline, caps each exchange to the remaining budget and refuses late
-success. Controller cancellation is checked between reads; independent cleanup
-keeps its own uncancelled reader. A restart with the retained creation intent uses
-the same readback path and never resends that POST. Missing events or a moving
-snapshot stay unresolved at the deadline; invalid metadata and conflicting
-contents fail immediately. This wait only settles cache visibility: provider
-creation still requires independent encrypted persistence and acknowledgement,
-and no provisioning or qualification deadline is extended.
+For `connect`, the separately approved replacement of the single
+`M3_11_CONNECT_BOOTSTRAP` secret with a validated
+`lowerduckpond-m3-11-independent-lease-bundle-v1` bundle is the explicit switch.
+That bundle selects its own helper and cleanup-only configuration; it does not
+reuse the old selection document. Scheduled/default `reconcile` then maps to
+`cleanup`; `confirm` is an explicit lease-only dispatch. Unknown backends,
+unsupported formats, missing pins and incompatible operations fail closed;
+the selected pinned helper validates the full private configuration before
+accessing providers. A malformed replacement never falls back to legacy cleanup.
+Remove this temporary bridge in the separately reviewed cutover/removal change
+only after the replacement has verified all retained obligations; it is not a
+second supported runtime.
 
-The independent witness limits informational heartbeat publication to ten
-seconds so a missing write cannot consume most of a credential's acknowledgement
-window. During a dispatched witness, an expired heartbeat observation or failed
-Connect exchange triggers another full cleanup and admission check within the
-original witness deadline, with a bounded five-second backoff between attempts.
-It does not restart the controller or repeat any provider credential creation.
-The original uncertain journal POST is retained without resubmission; each new
-sweep produces its own informational receipt. Invalid metadata and author
-mismatches remain fatal. A one-shot cleanup execution still reports unresolved
-if its receipt cannot be published.
+Before cutover, inventory every original journal event and retained local ID,
+abort, secret, audit-restoration and expiry-update file. The reviewed
+`lowerduckpond-m3-11-legacy-import-v1` mapping pins event/file hashes, every intent's
+original status and provider ID, required generation, exact stopped original issuer
+IDs, daemon identity and disabled restart/issuance state. Preserve the source
+files, private volumes, failed results and pinned historical source.
 
-A reviewed helper correction can resume an unchanged `initializing` selection
-before discovery has started. It requires the original private inputs, both probe
-records and shared-probe spool, and rejects any credential intent or independent
-probe for that epoch. It retains the old/new marker, inventory and evidence hashes
-before publishing the helper change. Retrying that same upgrade preserves its
-epoch and reconciles either publication outcome. Missing evidence, a prior
-different upgrade or any started discovery/genesis prevents this migration;
-retain the activation directory and diagnose without resetting it.
+The operator must separately stop old issuance and disable its restart/start
+routes before import. Import only inspects those original containers. It publishes
+exact original locally retained creation/abort events before the mapping, preserves
+lost-publication uncertainty and never invents an abort or retries CREATE. Every
+existing restoration obligation remains active; historical expiry updates are
+read-only observations. Old audit grants and expiry-extension routes are disabled.
 
-Once discovery or genesis has started, a reviewed and merged successor can act
-as the workspace coordinator while the independent ceremony keeps its original
-helper. Recovery requires the unchanged private inputs, requests, probes,
-dispatches and protected selection, both helpers merged, and no credential
-intents. Before continuing, it retains an immutable recovery record of both
-revisions and every existing private JSON evidence hash. It completes the
-original ceremony, then changes the active helper and requires fresh independent
-readiness before installing the controller. It never rebinds a pending request
-or starts a replacement epoch.
-If the pending stage was published before its private dispatch/submission records
-were retained, successor recovery refuses it as indistinguishable from lost
-evidence. Retain the directory and resume that boundary with the original helper.
+```console
+uv run --frozen python -m scripts.m3_11_unattended.connect_activate import \
+  --configuration /private/controller.json --approved-import /private/legacy-import.json \
+  --spool /private/import-pending
+uv run --frozen python -m scripts.m3_11_unattended.connect_activate preflight \
+  --output /private/staged
+```
 
-If a defect in the original executable prevents genesis completion, an explicit
-`--replace-failed-activation /private/original-activation` option permits a new
-activation attempt **only before any registered genesis or credential lifecycle
-activity**, after the original genesis execution has failed. Use the reviewed,
-merged correction with unchanged bootstrap inputs
-and a new `--directory` beside the original private directory. Both attempts share
-the same parent lock. Keep that replacement directory and the option when retrying.
+Preflight reconciles legacy obligations and verifies that staged configuration
+retains every active lease's required cleanup generation. Its private activation
+receipt binds both bundle byte digests. It authorizes no live qualification.
+Delivery checks the exact workspace identity, persistent home and main-only GitHub
+cleanup environment, then uses private stdin and immutable destination filenames.
+After separately authorizing that concrete delivery, use:
 
-Replacement verifies the original failed GitHub execution and all retained inputs,
-requests, probes and dispatch records. Before changing protected configuration it
-records the old selection, execution, evidence hashes, orphan artifact identities,
-new epoch and transition record. It publishes a non-admitting transition marker,
-drains all pending cleanup executions and checks the original registry again.
-Any registry entry, incomplete read, changed binding or credential creation/cleanup
-history blocks replacement. A terminal-path revocation request from an attempt
-that never provisioned is retained only when its exact event hash was already in
-the original approved history and both complete replicas contain no intent,
-created, cleanup or resolved events. This exception does not prove revocation;
-new or changed revocation requests still block replacement.
-Replacement freezes the discovery request against that original history before
-publishing initialization; an arrival after the snapshot cannot be adopted on retry.
-Old files, uploaded artifacts and the failed result remain
-intact. The new attempt preserves every prior logical journal record and repeats
-independent discovery, both native author-forgery checks, genesis persistence and
-fresh cleanup readiness. A hidden obligation in the independent replica blocks
-genesis. An interrupted transition resumes only its retained new epoch; it never
-allocates another automatically. This exception does not apply to an active or
-registered genesis, and it does not qualify or replay a failed qualification run.
+```console
+uv run --frozen python -m scripts.m3_11_unattended.connect_delivery \
+  --output /private/staged --destination root@APPROVED_HOST \
+  --workspace APPROVED_WORKSPACE --workspace-id APPROVED_WORKSPACE_UUID --apply
+```
 
-Cleanup receipts are named by GitHub run and attempt. Readback verifies the
-successful native Connect job, workflow/repository/revision metadata, artifact
-digest and receipt observation time, and retains `receipt-source.json` with the
-run, attempt, job and artifact identities. For older workflows whose reruns used
-the same artifact name, exactly one upload must fall strictly after the current
-job started and no later than it completed. Stale, ambiguous or invalid results
-remain unresolved. Failed attempts and their artifacts are preserved; a rerun
-does not turn the original failed result into a pass.
+Omitting `--apply` checks the destination only. The independent protected environment
+receives the single `M3_11_CONNECT_BOOTSTRAP` secret. Enable the replacement cleanup
+path and demonstrate independent access before enabling new issuance; retain old
+cleanup until that handoff is verified. Do not operate two active issuance paths.
 
-The pinned checkpoint uploader receives a private, pre-created Actions output file.
-An uploaded artifact alone is insufficient: encrypted readback and append-only
-registry publication must also succeed before the journal acknowledges durability.
+Rollback retains the new helper's inventory reader and all required cleanup access:
 
-`M3_11_CONNECT_CONFIGURATION` holds those non-secret protected bindings and the
-active executable helper in one atomic publication. The workflow captures that
-one value for both checkout and execution. `M3_11_CLEANUP_BACKEND=connect` selects
-Connect explicitly; the legacy `M3_11_CLEANUP_REVISION` is left unchanged for the
-service-account backend. A later reviewed helper keeps
-the original epoch, genesis, registry and historical obligations while changing
-the active helper. Fresh independent readiness at that helper is required before
-the controller configuration is installed. Older failed results stay failed.
+```console
+uv run --frozen python -m scripts.m3_11_unattended.connect_recovery \
+  --configuration /private/controller.json --output /private/cleanup-only.json
+uv run --frozen python -m scripts.m3_11_unattended.cleanup \
+  --config /private/cleanup-only.json --actor watchdog --runs /evidence/runs
+```
 
-Each independent job starts pinned API/sync containers on GitHub's Docker host
-with its cleanup-only master and client. It recovers the genesis and latest full
-encrypted checkpoint, waits for its own replica, and reconciles provider removal.
-Only its exactly owned ephemeral Connect resources are removed at job exit.
-Neither the Unraid endpoint nor this workspace is required to recover outstanding
-credential identities. A timeout, missing checkpoint, invalid history or failed
-provider read remains unresolved.
+The cleanup-only bundle cannot start qualification or provision children. Never
+restore an obsolete issuer, discard obligations or roll back provider deletion.
+If required access is unavailable, retain unresolved status and obtain separate
+authorization for recovery.
 
-The launcher dispatches one uniquely identified witness job for the exact
-approved attempt, initially waiting up to twelve minutes for its reservation.
-It waits for a fresh, natively authored and durably
-acknowledged readiness record from that running GitHub execution before starting
-the detached controller. Run and creation-intent acknowledgements additionally
-require fresh provider authority, no unresolved credentials, sufficient checkpoint
-capacity and the original ten-minute provisioning window. Admission time is
-rechecked after acknowledgement I/O. The controller independently enforces that
-original cutoff immediately before each provider CREATE, so a delayed or retained
-acknowledgement cannot reopen it. The separate five-minute provider-response
-settlement range remains available for ownership and cleanup. Lost dispatch replies
-are reconciled by the saved execution identity, never by blind resubmission.
-No GitHub token enters the detached controller or fixture.
+### Manifest confirmation, start and reuse
 
-Once the exact reservation is independently durable, that execution stays
-available through the reservation's original creation cutoff plus a five-minute
-drain for returned IDs and cleanup acknowledgements. This deadline is armed once
-from the immutable run timestamp; repeated reads, delayed readiness and restarts
-cannot renew the creation window. The creation witness is capped at 27 minutes
-from reconciliation entry, and the workflow's 30-minute job ceiling includes
-bootstrap. The drain is bounded best effort: slow provider or journal operations
-can still leave cleanup unresolved for subsequent independent sweeps. It neither
-extends an event's acknowledgement budget nor permits a provider CREATE after
-the original cutoff. Ordinary cleanup runs do not acquire this creation wait.
+One immutable complete manifest records all seven roles, exact scope, baseline IDs,
+unique names, source/helper, original generations, policy and deadline before any
+CREATE. The independent action authenticates its own cleanup access, observes that
+manifest and confirms it once. A local write acknowledgement cannot substitute.
+The protected workflow's hourly schedule can confirm a pending approved manifest;
+an explicit request avoids waiting for the next schedule:
 
-The initial run-reservation acknowledgement may use the time remaining in that
-same ten-minute window, also bounded by the controller deadline. Cleanup and
-replica delivery can consume most of a two-minute wait before any credential is
-issued. Canonicalization, staging and observation consume one fixed budget;
-retained run timestamps cannot renew it. Typed snapshot-read expiry can retry
-observation during initial canonicalization, the first write's readback, and
-subsequent acknowledgement polling. A timed-out GET can repeat within that same
-sixty-second observation cap; it cannot reset the cap. Journal POSTs and provider
-calls are never replayed. A late acknowledgement leaves less
-time to provision and cannot reopen the original cutoff. The independent
-two-minute freshness gate remains unchanged. Witness availability through the
-reserved window does not guarantee that a slow attempt will finish provisioning.
+```console
+uv run --frozen python -m scripts.m3_11_unattended.connect_control confirm
+```
 
-Each acknowledgement pass waits within the existing bounded snapshot-read budget
-and checks prior acknowledgements against one complete native-author snapshot
-before publishing new ones. Journal growth does not require a full vault scan for
-every historical event. New entries are considered on the next pass; changed
-immutable records still fail closed. Neither snapshot settling nor acknowledgement
-batching extends the original provisioning cutoff.
+Dispatch itself grants no issuance authority. The original uninterrupted controller
+waits until the explicit cutoff and submits each role once. Returned IDs are retained
+locally and externally before policy validation. Lost responses remain obligations;
+restarted/restored controllers only reconcile. An issuer that could resume blocks
+terminal closure, even if a provider currently lists no matching child.
 
-During cleanup, the independent witness may reuse a complete Connect observation
-and verified checkpoint for five seconds when persisting an identical historical
-record. New IDs and proofs still require full persistence, and readiness and ACK
-publication always refresh the complete registry, recoverable artifact and native
-Connect observation. A completed ACK publication can supply a new cleanup
-observation only when its final native snapshot exactly matches the verified
-checkpoint's non-ACK records. Its five seconds start at checkpoint verification,
-not at the end of ACK delivery. Errors, later obligations and expiry require
-ordinary recovery. Admission and readiness still perform their fresh checks.
-An ACK poll that finds no eligible unconfirmed event and exactly the already
-retained non-ACK obligations returns without rereading the registry or artifact.
-It emits no ACK or readiness claim. New obligations still take the full retention
-path even when their creation ACK is prohibited. Admission and actual ACK
-publication retain their fresh independent recovery checks.
+The seven roles retain their original policies: separate archive/backup bucket
+`readwrite` keys, a controller-only Spaces `fullaccess` operator, account-owned
+fixture Caddy Zone Read + DNS Write, observer Zone Read + DNS Read, account-owned
+Account API Tokens Read audit, and user-owned Page Rules Read on exactly both zones.
+Scope, ownership, status and applicable native expiry must match exactly. Bucket
+and DNS permissions cover whole approved targets; a run prefix is not an IAM boundary.
 
-Immediately after recovering the latest encrypted checkpoint, publication may
-consume that exact complete registry observation once within five seconds of the
-registry read. Payload recovery and workflow checks consume the same window. This
-removes only the duplicate scan before upload. A slow workflow-authority check
-uses the ordinary scan; failed recovery cannot supply the observation. The fresh
-workflow fence, parent binding, uploaded plaintext verification, complete registry
-comparison after upload and exact append confirmation after registration remain
-required. Standalone publication and genesis use the ordinary scans.
+Prepare a clean reviewed commit and obtain explicit live approval of source/helper,
+artifact, controller image, daemon, targets, scopes, policy digest and independent
+cleanup access. A `lowerduckpond-m3-11-live-approval-v2` document has `lease_id: null`
+for new issuance or the exact existing lease UUID for approved reuse. Its own expiry
+is at most one day; it does not renew a lease deadline.
 
-Historical Cloudflare token readbacks run in waves of at most four exact-ID GETs.
-Each wave finishes before journal progress, the final complete provider inventory,
-or ordinary deletion begins, including after a failed read or interruption.
-Spaces retains its two ordered complete inventory observations. Changed identities,
-new authentication markers and provider failures still prevent clearance. A cleanup
-sweep already due after acknowledgement processing starts without another poll
-sleep; this does not extend any acknowledgement or creation deadline.
-For historical created/resolved records and terminal results, local cleanup can
-use an independent acknowledgement already present in staging's just-completed
-full native readback. Missing acknowledgements still take the normal bounded
-wait. Run and creation-intent confirmation remain unchanged.
+```console
+mise exec -- just m3-11-unattended prepare FULL_COMMIT_SHA --output /private/prepared.json
+mise exec -- just m3-11-unattended start FULL_COMMIT_SHA \
+  --mode rehearsal --approval /private/live-approval.json \
+  --config /private/controller.json --daemon-socket /docker-sock/docker.sock
+mise exec -- just m3-11-unattended status RUN_UUID
+mise exec -- just m3-11-unattended evidence RUN_UUID
+```
 
-The independent job also exports `m3-11-cleanup-timing-RUN-attempt-N`, containing
-only the existing allowlisted monotonic timing-event format. It separates
-credential reconciliation, authority checks, reservation, ACK processing, native
-journal reads, and checkpoint recovery/publication. Nested spans overlap; their
-sums are not total elapsed time. Timings never establish cleanup or qualification
-success, and a missing diagnostic cannot suppress revocation or alter a deadline.
+Start reserves the daemon-wide admission container before allocating an attempt.
+A concurrent start fails. A stale reservation requires inspection of its exact
+owner and outstanding obligations before separately authorized removal; never
+prune the daemon. The controller uses the daemon's host network and exact approved
+Unix socket. Source/helper and Ansible collection volumes are revision-bound.
+Private evidence and storage leases remain on the persistent Docker volume.
+Mount inspection alone does not demonstrate actual stop/rebuild survival.
 
-Cleanup yields between credentials to publish returned-ID and cleanup ACKs;
-creation ACKs remain gated until reconciliation and admission finish. Admission
-may consume the just-completed clearance once, within thirty seconds, only when
-every obligation was verified and a fresh complete observation after capacity
-checks proves all relevant journal records remain identical. Failed or incomplete
-admission observations cannot fall back to checkpoint-only history.
-Reservation freshness uses a clock sampled after the journal observation, so a
-run arriving during that read is not compared with an earlier timestamp. Capacity
-and clearance checks consume the same budget: freshness and authority are checked
-again after those operations. The two-minute initial freshness limit and the
-original ten-minute creation cutoff remain unchanged. Sanitized source locations
-distinguish incomplete recovery, timestamp refusal and insufficient capacity.
-An unresolved final cleanup receipt, including a later provider health failure,
-blocks run and creation-intent acknowledgements; cleanup ACKs continue.
-Other clearance checks still perform a fresh sweep, including historical provider
-inventory checks that detect late creations.
+Successful qualification finishes and revokes its lease. A failed started attempt
+may retain it only under the explicit approved retention policy and before its
+original deadline. Preparation/delivery failures, rehearsal cancellation and
+explicit lease cancellation trigger cleanup. `stop-attempt` stops the current
+journey while allowing approved failure retention; `cancel` closes the entire lease:
 
-After a complete successful sweep, the witness services the dispatched run's
-reservation and eligible creation ACKs before publishing its informational
-heartbeat. Provider health, policy restoration, authority and recoverable
-checkpoint checks must all have finished successfully. A new reservation still
-checks fresh capacity, exact obligation coverage and the original two-minute
-request freshness. This ordering avoids spending that window on receipt
-publication and then repeating cleanup. The unfinished-sweep callback still
-handles only cleanup and returned-ID records; neither opportunity can admit an
-unrelated run or extend a deadline.
-Both the earlier opportunity and ordinary ACK processing revalidate completed
-cleanup coverage against the latest complete observation, including later reads
-during ACK canonicalization and staging. An incomplete read blocks creation;
-the guard cannot substitute an older checkpoint. Staging repeats the guard after
-its own preflight read and immediately before POST, and samples the admission
-clock after all history, policy, reservation and intent validation. New
-revocations, conflicting IDs, invalidated historical proofs and uncovered foreign
-intents block creation. Only the exact active run's new, unexpired intent may use
-the existing not-due path, subject to its original binding and reservation checks.
+```console
+mise exec -- just m3-11-unattended stop-attempt RUN_UUID
+mise exec -- just m3-11-unattended cancel RUN_UUID
+mise exec -- just m3-11-unattended quiesce RUN_UUID
+```
 
-Local readiness evidence must account for the whole ten-minute creation window,
-including reservation, scope discovery, activity probes and concurrent cleanup.
-An individual event's 120-second ACK margin does not establish remaining time to
-create every credential. Provider doubles and timing profiles remain diagnostic;
-successful live rehearsal and full qualification are separate required outcomes.
+Reuse requires a fresh approval and attempt, fresh provider/production receipts and
+exclusive runtime ownership before the first child probe. Diagnostic attachment
+holds that ownership. Quiescence verifies the original daemon and complete original
+host/archive/restore/ACME container graph, requires proof that the host process group was drained, disables
+restart, stops and rereads the exact containers. It preserves containers and data.
+A new consumer checks those stopped identities again before use. Missing evidence,
+a lingering process, changed image, restarted container or interrupted stop keeps
+ownership held. The previous failed result is immutable and cannot be promoted.
 
-Credential timing records distinguish each role and the inventory, intent
-persistence, provider creation and returned-ID persistence stages. They contain
-only fixed labels and monotonic durations. An elapsed creation window rejects a
-new role before another intent is opened; an intent already awaiting persistence
-still retains its original pre-provider abort for independent reconciliation.
+### Monthly generation handover and independent cleanup
 
-Canonicalization and staging may consume the same complete Connect observation
-once, within five seconds and before further ledger I/O. Post-write readback and
-the final admission check remain mandatory. A no-op ACK poll may preserve an
-unchanged cleanup observation only until its original expiry. Checkpoint
-publication can return its exact payload and registry verification to the caller,
-avoiding duplicate immediate reads; generic stores still require separate readback.
-Fresh admission also avoids persisting an identical checkpoint twice: it must
-first recover the complete native history and artifact, and match every non-ACK
-record in a complete Connect snapshot within the same five-second bound.
+Stage an explicitly approved successor generation while old cleanup access remains
+available. Bind the same logical provider principals and targets, new fingerprints,
+new native expiries and its next calendar-month rotation date. Do not extend an old
+bootstrap token's expiry. Verify handover with the previous and replacement bundles:
 
-When the persistent watchdog completes revocation, sanitized evidence includes
-its retained receipts and complete local intent coverage. The qualification
-outcome remains separate from successful credential cleanup.
+```console
+uv run --frozen python -m scripts.m3_11_unattended.connect_renewal_setup \
+  --previous /private/previous.json --replacement /private/replacement.json \
+  --evidence /private/handover
+```
 
-Each provider HTTP exchange has a thirty-second total process deadline, including
-DNS, TLS, response headers and a slowly arriving body. Credentials cross private
-pipes; error bodies and child diagnostics are discarded. A timeout retains an
-uncertain creation obligation and never repeats CREATE.
+Both generations must positively read every transferred child by exact ID and
+policy while the old authority is usable. Unknown IDs retain their original
+generation; authenticated absence never proves transfer. The staged replacement
+retains old access until verified delivery and coverage permit removal. During
+staging, old cleanup still works along its explicitly verified handover chain.
+Active leases do not require new issuance or replacement child credentials.
 
-After a provider returns a credential, the controller immediately retains its ID
-and private secret locally. With Connect, it stages the ID and required
-negative-authentication marker before awaiting confirmation, allowing the same
-witness pass to retain both records. The first record's original acknowledgement
-deadline covers marker staging and both confirmations. Each record must be
-independently confirmed before continuing; a cache write cannot authorize runtime
-delivery. If private retention or marker staging fails, it still attempts to
-persist the ID and leaves the failed attempt available for cleanup. Other journal
-backends keep serial persistence. The original creation window remains unchanged.
+Controller, persistent watchdog and independent GitHub execution reconcile the same
+compact inventory. Local death/deadline checks run every minute. Newly terminal
+work triggers immediate cleanup; unresolved cleanup retries after five minutes,
+then 10, 20, 40 minutes and hourly. Routine remote reconciliation and GitHub schedules
+are hourly and may be delayed. Finish/cancel publication precedes the nonblocking
+local provider-cleanup lock. Publication failure still permits exact-ID deletion,
+but cannot claim durable closure.
 
-The independent journal uses encrypted GitHub artifacts retained for 30 days and
-an append-only commit-status registry. Full history is checked for missing,
-replayed or reordered entries. New attempts require at least 384 remaining
-registry entries, reserving room for witnessing and cleanup below GitHub's
-1,000-status limit per commit/context. The launcher must refuse if capacity is
-insufficient; it never automatically replaces an epoch. Artifact expiry or lost
-registry history cannot be interpreted as an empty obligation list. Monitor
-cleanup receipts and unresolved/overdue counts even after qualification finishes.
-Checkpoint order follows GitHub's chronological status history, with exact genesis,
-predecessor and sequence checks. Artifact IDs and status IDs are opaque identities;
-a newer artifact may have a smaller ID. Workflow writer order uses the workflow's
-incrementing `run_number`. A helper upgrade reads the existing registry, including
-such lower-ID successors, without replacing genesis or replaying an attempt.
-Upload readback uses the exact ID and archive digest returned by the pinned
-uploader, then checks native workflow metadata and decrypted checkpoint contents.
-Temporary read failures share one bounded deadline; identity or integrity conflicts
-fail immediately. Readback retries never repeat uploads or acknowledge an
-unresolved checkpoint.
-After registry publication, a complete unchanged history or a temporary failure
-before any registry entries are read may be retried within the same bounded
-publication deadline. Only the exact expected append confirms publication.
-An identical status at an offset-page boundary restarts the complete scan within
-the original 90-second budget. Every observed status binding and relative order
-survives the retry; the completed scan must preserve all of them. Only a complete scan can supply
-checkpoint history or capacity. Duplicate IDs within a page, conflicting or
-malformed entries, lost observed entries, interrupted pagination after an observed
-entry and late readback remain failures; retries never repeat the status POST.
-Checkpoint writer selection likewise retries changed workflow totals or identical
-cross-page overlap within its original scan budget. It retains every observed run
-identity and any newer-started-run fence; queued observations cannot erase that
-fence. Run numbers determine writer order, never numeric run or artifact IDs.
-Startup may wait briefly for an otherwise valid native readiness receipt's ACK.
-It never skips a newer adverse receipt or extends the qualification deadline.
-The launcher and controller also retry a typed unstable-snapshot observation
-when valid journal updates arrive during a read. All reads and retries share
-the original readiness deadline. The launcher preserves its dispatch identity
-and rechecks that the same native witness attempt is still running before
-accepting readiness. Malformed records and adverse cleanup receipts still fail.
-Cleanup dispatch discovery and pending-execution inventory read 25 workflow runs
-per page, retaining the 1-MiB response limit. Each complete inventory has a
-90-second read budget. A changed total or identical cross-page overlap retries
-from page one within that same budget, retaining observed immutable identities.
-Within-page duplicates, conflicting bindings, incomplete pagination and GitHub's
-1,000-result search boundary remain failures. Dispatch discovery cannot discard
-an already observed run; status-filtered runs may leave their selected status.
-Malformed page entries fail even when the total changes. Discovery examines the whole
-bounded inventory before accepting a unique dispatch; it never resubmits a job.
-The original readiness or drain deadline also bounds inventory reads and waits.
-Connect GETs retry hostname-resolution failures at most twice, including short
-backoff within the original request deadline. HTTP errors, invalid responses and
-POSTs are not retried. Exhausted resolution failures retain a distinct sanitized
-transport outcome without exporting hostnames, credentials or exception text.
-Transport diagnostics include only the method, route category, outcome, HTTP
-status when available, elapsed time and effective time budget. A failed initial
-journal POST retains its first diagnostic beside its immutable stage intent, so
-later readback failure cannot erase the difference between a rejected request and
-a lost response. That diagnostic never proves whether an uncertain POST committed.
-Controller journal reads and acknowledgement polling use the same bounded
-snapshot stabilization, including reads before a write. Retries never repeat a
-write or provider creation. Both inventory passes validate immutable metadata,
-and an event already read cannot disappear from the next accepted snapshot.
-Validated item details survive an interrupted or unstable scan in that reader's
-memory. A retry compares each retained item against current native metadata and
-still requires the complete stable inventory before returning any records.
-The controller retains its cleanup reader across retries too; it must still
-refresh complete inventories and validate native metadata on every observation.
-Cold reads use at most eight concurrent item-detail GETs, each within its own
-remaining process budget. Inventory reads and writes remain sequential, and
-failed or cancelled scans stop queued reads and join active exchanges before
-restoring their enclosing deadline. This avoids rereading the whole history
-after growth without extending the 60-second snapshot window.
-Provisioning stages each returned credential ID and authentication obligation
-immediately. Their independent confirmations share a fresh observation with the
-next role's intent; that role cannot be created until all three are confirmed.
-The final pair is confirmed before any fixture receipt or runtime delivery.
-Each credential event retains its original 120-second acknowledgement deadline,
-and the ten-minute reservation and five-minute submission windows remain unchanged.
-Cleanup journals retain synchronous persistence; deferred confirmations exist
-only within one provisioning invocation.
+```console
+uv run --frozen python -m scripts.m3_11_unattended.connect_control cleanup
+```
 
-New attempts declare the pre-creation outcome protocol in their independently
-confirmed run record. If the original controller fails before invoking a provider,
-it can retain an immutable attestation bound to that run and exact intent event.
-Cleanup transports that original attestation, checks for contradictory identities
-or authentication obligations, and obtains fresh provider inventory before
-independently retaining a `not-submitted` resolution. This trusts the pinned
-controller's control flow; the independent actor does not directly observe it.
-No negative-authentication test is claimed for an unissued credential. A missing,
-partial, conflicting or legacy attestation leaves creation uncertain. Recovery
-never generates attestations from absent IDs, empty inventory or expired windows.
-Failures after provider invocation always use ordinary credential reconciliation.
+DELETE success alone is insufficient: require authenticated inventory/detail
+absence and denied authentication when the original secret remains available.
+A cold independent actor can delete without that secret, but cannot erase an
+outstanding retained-secret probe. Secret loss is reported as unavailable, never
+as denied. Changed scope with a known returned ID still requires deletion; ambiguous
+or unknown ownership remains unresolved. Cleanup removes credentials only, retaining
+failed logs, fixture volumes, backups, DNS records and remote objects. Retained
+storage ownership records do not authorize destructive retirement.
 
-One operator-approved historical exception applies only to Page Rules intent
+The only accepted historical uncertainty remains Page Rules intent
 `ccdc7926243530cf6dd6615745f8520440d29531f28869a226f432b31a64b574`
-from failed run `01a11021-76d1-775a-adb1-fe00b6fd6152`. On October 6, 2026 the
-operator accepted its unavailable original creation outcome after repeated
-complete provider inventories, dashboard inspection, and a same-process
-comparison token that was seen, revoked, independently verified absent with
-authentication denied, and confirmed gone in the dashboard. The acceptance is
-immediate; it does not depend on the requested expiry or assert that expiry was
-accepted by the provider.
+in failed run `01a11021-76d1-775a-adb1-fe00b6fd6152`. Fresh absence and the original
+exact exception checks remain required. It is not verified revocation, expiry or
+proof of non-creation; late discovery still requires cleanup. No later credential
+inherits that exception.
 
-The reviewed helper pins this complete intent and original attempt binding;
-there is no configurable waiver or prefix match. Fresh successful inventory
-absence yields `operator-accepted-uncertainty`, retained outside the runner as a
-separate receipt, never a `resolved` record. Independent readiness additionally
-requires a current native GitHub cleanup observation of that exact status and
-acknowledged acceptance. Provider errors, conflicting identities or retained
-authentication obligations still block admission. If a child appears later,
-ordinary ownership checks and deletion take over. The exception affects only
-aggregate admission and operational acceptance for this historical obligation;
-the old attempt stays failed with unresolved revocation evidence. Its containers,
-logs and records remain. New attempts still require verified revocation of every
-owned credential, a full rehearsal and complete live qualification. Read-only
-status and sanitized cleanup receipts expose the accepted uncertainty explicitly.
-
-Private retention and journal failures preserve their separate sanitized source
-locations, without exporting exception text or credentials.
-When independent reconciliation still reports uncertain creation, it may also
-publish a separate checkpoint membership diagnostic. This reads the original
-registry and encrypted history within a three-minute total budget, verifies
-cumulative events, and exports only intent digests, event IDs, checkpoint
-references and native publication times. It does not infer clock ordering or
-resolve a credential obligation. Missing history remains inconclusive and the
-cleanup result is preserved separately.
-The unchanged immediate cleanup, watchdog and hourly GitHub reconciliation paths
-continue to require provider removal and available negative-authentication proof.
-
-Connect avoids service-account request quota for this path. Same-cache readback
-alone never authorizes credential creation: an independent encrypted checkpoint
-and native acknowledgement are required first. Actual independent Connect startup,
-the live credential rehearsal, complete M3.11 and verified revocation still need
-operational evidence; local doubles do not establish those outcomes.
+Sanitized evidence binds attempt/source/helper, production and fixture receipts,
+cleanup status and the existing complete report checks. Raw provider responses,
+credentials and private diagnostics never enter exported evidence. Local component
+checks do not replace separately approved independent live cleanup, handover,
+complete M3.11 qualification or production acceptance.
 
 ### Authenticated public image downloads
 
@@ -726,295 +356,6 @@ gh secret delete DOCKERHUB_PUBLIC_READ_TOKEN --repo lowerduckpond-net/lowerduckp
 gh variable delete DOCKERHUB_EXPIRES_AT --repo lowerduckpond-net/lowerduckpond.net
 gh variable delete DOCKERHUB_EXPIRES_AT --repo lowerduckpond-net/lowerduckpond.net --env m3-11-credential-cleanup
 ```
-
-### Renewing cleanup access within the existing epoch
-
-Cleanup readiness can become unresolved even after every issued credential has
-been revoked: new issuance requires cleanup authority to outlive a fourteen-hour
-child by two days. Do not shorten that margin or reset the journal to regain
-readiness. Renewing bootstrap access requires explicit operator authorization;
-it does not renew an old attempt's approval, submission window or result.
-
-For a bounded new attempt while provisioning and production readers remain
-valid, renew only the shared and independent **cleanup** Connect clients and
-the two dedicated Cloudflare cleanup bootstraps. Existing production credentials
-are outside this operation. Verify all other runtime and provisioning lifetimes
-again before starting. This helper must run while the original role clients
-remain valid; it is not recovery from entirely expired bootstrap access.
-
-In the **Coder workspace**, `scripts.m3_11_unattended.cleanup_expiry` prepares a
-read-only proposal binding the actual Cloudflare token IDs, current policy,
-secret hashes, target and explicit new expiry. Review its digest and deadline
-with the operator before adding `--apply --plan-sha256 DIGEST --directory PRIVATE_DIR`.
-The preview uses `--revision FULL_COMMIT_SHA --config PRIVATE_CONTROLLER_JSON
---plan PRIVATE_PLAN_JSON --expires-at UTC_DEADLINE`; the apply operation omits
-`--expires-at`. Application records its intent before changing either token,
-changes only `expires_on`, and verifies activity, exact policy and expiry through
-provider readback. A lost response or partial update is reconciled against the
-same IDs on retry. Token values, provisioning authority and production credentials
-are unchanged. Native provider metadata is authoritative; a manually maintained
-1Password date field is not proof of the extension.
-
-Prepare a separate non-secret renewal request using
-`scripts.m3_11_unattended.connect_renewal.REQUEST_FIELDS`. It binds the previous
-bootstrap and installed controller digests, both existing server IDs, approved
-cleanup expiry, approval reference and an application window of at most one day.
-Retain it as a private file and give the operator its exact digest. Publish the
-reviewed, merged helper in the existing active GitHub selection **before** replacing
-its bootstrap secret; the earlier action does not understand retained checkpoint
-key material. Preserve the original genesis and all selection bindings.
-
-On the **secure workstation**, with normal `op` and `gh` logins and the original
-private bootstrap files retained, preview:
-
-```console
-mise exec -- uv run --no-sync --frozen python -m scripts.m3_11_unattended.connect_renewal_setup \
-  --revision FULL_MERGED_COMMIT_SHA \
-  --request PRIVATE_RENEWAL_REQUEST_JSON \
-  --request-sha256 APPROVED_REQUEST_SHA256 \
-  --original "$HOME/.config/lowerduckpond/m3-11-connect-bootstrap" \
-  --output "$HOME/.config/lowerduckpond/m3-11-connect-renewal-RENEWAL_UUID"
-```
-
-Add `--apply --unraid root@UNRAID_HOST --workspace CODER_CONTAINER_NAME
---workspace-id APPROVED_WORKSPACE_UUID` to issue and deliver. The helper first
-proves that the retained key decrypts the pinned original GitHub genesis. It
-then creates two seven-day cleanup clients with unchanged server identities and
-exact vault grants. Original bundles remain intact. Creation intents and returned
-secrets are retained privately; interrupted issuance never blindly creates a
-replacement. Repeating a completed step reuses its saved result.
-
-The independent bundle retains the original client value solely as checkpoint
-encryption material. Only the new client authenticates to Connect. That retained
-key and the independent server credentials go only to protected GitHub cleanup
-storage. The controller receives public identity hashes and the shared client in
-`/home/coder/.config/lowerduckpond/m3-11/connect-renewal-RENEWAL_UUID.json`;
-its original staging bundle is not overwritten.
-
-Finally, in the **Coder workspace**, run the existing activation command with
-that new staging bundle and a separate private activation directory. Activation
-requires a fresh native independent receipt proving the same provider authority,
-new client, extended usable lifetime and original checkpoint key. It retains the
-previous controller configuration and permits only the approved cleanup changes.
-Targets, production references, epoch and original genesis remain fixed. Finish
-the existing watchdog handoff and verify independent readiness before admitting
-a new source-bound attempt. Renewal never resolves an outstanding revocation or
-turns a failed qualification into a pass.
-
-### Diagnostic audit recovery requiring additional approval
-
-The October 6 uncertain Page Rules intent has a separate, narrowly pinned audit
-diagnostic in `scripts.m3_11_unattended.audit_diagnostic`. It requires **additional
-operator approval** of its prepared proposal digest. Existing live-qualification
-approval does not grant Account Settings Read. This recovery adds that permission
-to the already inspected dedicated provisioning bootstrap for the approved account;
-it creates no credential, changes no production credential and does not extend the
-bootstrap's native expiry. The candidate identity and original/proposed policies
-are immutable. A changed candidate needs a new implementation and approval.
-
-`prepare` takes the reviewed helper revision, private candidate and original intent
-documents, and a private output directory. It makes no provider changes and returns
-the proposal digest. After approval and merge, select that helper for protected
-cleanup using the existing activation procedure; an unresolved credential receipt
-must remain unresolved. `execute` takes the same directory, private controller
-configuration and `--approved-sha256`. It first persists a restoration obligation
-outside the Docker host and requires a fresh independently authored policy
-observation. A global submission marker beside the controller configuration and a
-private per-attempt marker prevent replay. Restart uses `restore` with that original
-directory and configuration; it never opens a new grant window.
-
-The immutable obligation permits a single permission update within ten minutes
-of staging and schedules restoration after fifteen minutes. Audit collection is
-bounded to three minutes, ten pages and the fixed original creation interval. Raw
-provider pages remain private; the constructed analysis exports only hashes,
-counts and fixed predicates. A positive audit identity is a lead requiring native
-ownership/removal verification. Empty, failed or incomplete audit results never
-resolve the original credential intent or unblock qualification.
-
-The controller restores the exact original policy in its terminal path. The
-independent cleanup execution stays present through the restoration deadline, and
-later watchdog/scheduled cleanup repeats native policy checks. Failed updates,
-missing responses, unexpected policy changes and failed readbacks remain unresolved.
-Restoration never deletes the bootstrap or overwrites an independently changed
-policy. Provider outages and missed GitHub schedules can delay restoration; the
-fifteen-minute deadline is **not provider-enforced expiry**. Every existing bearer
-copy gains the permission during that interval, potentially until the unchanged
-native expiry if restoration cannot be completed. New creation admission requires
-a fresh independent restoration result as well as all existing credential gates.
-
-These commands are diagnostic recovery only. They do not qualify the installation,
-promote a failed run, delete evidence or authorize a new qualification attempt.
-
-### Review, start and monitor
-
-Before the first live issuance, present the prepared source/helper commit,
-artifact digest, controller image ID, Docker-host identity, targets, credential
-scopes/deadlines and independent-cleanup readiness together. Obtain explicit live
-approval. Record its reference and exact bindings in a private
-`lowerduckpond-m3-11-live-approval-v1` document. Approval expires within one day and
-authorizes one rehearsal and one qualification attempt on that revision. A changed
-executable revision needs a new approval and correctly bound attempt.
-
-The seven fresh runtime credentials are separate: archive `readwrite` on its
-bucket, backup `readwrite` on its bucket, account-wide Spaces `fullaccess` operator,
-account-owned fixture Caddy Zone Read + DNS Write on both zones, account-owned
-observer Zone Read + DNS Read on both zones, account-owned Account API Tokens Read
-audit, and user-owned Page Rules Read on exactly both zones. Full policy, identity,
-activity and lifetime are verified; Page Rules activity alone is insufficient.
-Cloudflare children use native 14-hour expiry, with at least 12 hours remaining
-at startup. Existing audit eight-day and Page Rules 91-day **remaining-time**
-upper bounds are retained. Spaces has no documented native key expiry: its
-recorded deadline triggers deletion, not provider-enforced expiry.
-
-Bucket-scoped keys reach whole production buckets, and DNS Write reaches both
-whole zones. Run prefixes are ownership accounting, not an IAM boundary.
-The Spaces fullaccess operator stays controller-side. Spaces may omit the empty
-`bucket` field when returning a `fullaccess` grant; only that exact representation
-is normalized for policy comparison. Null, bucket-specific, additional or missing
-grants still have to match the approved policy exactly. Provisioning bootstrap
-never enters qualification or guests. A separate short production-check process
-alone reads encrypted state, verifies the existing non-expiring exact-policy
-production Caddy token and runs the existing production archive/backup
-`ldp-m3-archive credential-check`, including mutual denial. Its bound sanitized
-receipt is distinct from the fixture receipt. Managed qualification inputs must
-be complete; state cannot replace them or serve as a fallback.
-
-```console
-mise exec -- just m3-11-unattended start FULL_COMMIT_SHA \
-  --mode rehearsal --approval /private/live-approval.json \
-  --config /private/controller.json --daemon-socket /docker-sock/docker.sock
-mise exec -- just m3-11-unattended status RUN_UUID
-mise exec -- just m3-11-unattended evidence RUN_UUID
-mise exec -- just m3-11-unattended cancel RUN_UUID
-mise exec -- just m3-11-unattended cleanup-status --config /private/controller.json
-```
-
-If Connect witness startup fails before a controller exists, retain
-`connect-dispatch/RUN_UUID` beside the private controller configuration. From the
-same pinned helper checkout, retrieve the closed diagnostic with:
-
-```console
-mise exec -- just m3-11-unattended launch-evidence RUN_UUID --config /private/controller.json
-```
-
-This reads the saved request binding and failure category/static source location;
-it does not load bootstrap credentials or contact providers. Exception text,
-raw responses and private logs are excluded. The first failure remains immutable,
-and the launch request is consumed durably before dispatch, independently of
-diagnostic availability. A failed or interrupted dispatch cannot be reused as
-a successful launch. An absent
-diagnostic, including from an older helper or forced process death, leaves the
-original cause unproven. Retain the private launcher log separately.
-
-Start reserves the daemon-wide container name `ldp-m311-admission` before checking
-existing controllers or writing run inputs, and releases it after launch. A
-concurrent start fails immediately. If a launcher dies before releasing this
-inert reservation, new starts remain blocked. Confirm that no launcher is still
-running, inspect existing controllers and retained run state, and reconcile any
-credential obligations before removing that reservation by its inspected
-container ID. Never remove another launcher's reservation or prune the daemon.
-
-The rehearsal performs bounded real production/fixture probes, delivers private
-inputs, signals the controller's cancellation handler, revokes and records the
-interruption. Before `start --mode qualification`, GitHub must independently
-read back every rehearsal revocation. The full run uses the same start operation
-with that mode. Status and evidence work from another terminal; routine monitoring
-does not require operator log-pasting. Raw logs and any retained cleanup secrets
-stay private. `cleanup-status` reads external obligations without a Docker
-dependency and exposes overdue obligations and stale GitHub execution. Logs
-stay in `ldp-m311-evidence` under `/evidence/runs/RUN_UUID`. Named helper/source
-volumes retain the clean checkouts. `evidence` exports validated status and
-revocation receipts, and the existing strictly verified passing report.
-Worker, short production-check and cleanup failures retain separate bound
-diagnostics. Export accepts only fixed stages, error categories and locations in
-the pinned source; exception messages, locals and provider responses stay excluded.
-Diagnostic failure cannot prevent cleanup or change the original journey outcome.
-
-### Independent revocation and unresolved results
-
-Before each create request, an immutable external 1Password item records the
-run, unique provider name, exact scope, source/helper, baseline inventory and
-deadline.
-Each intent also pins its cleanup authority's secret hash: a different account's
-empty inventory or a replaced bootstrap token cannot manufacture removal proof.
-Changing that authority with outstanding obligations needs a separate reviewed
-authorization decision, not an automatic token roll.
-Returned IDs are immediately recorded locally and externally, before rejecting
-a missing secret or invalid metadata. Usable secrets remain private; an ID-only
-record does not claim that negative authentication was tested. Controller and
-watchdog recovery restore retained creation records before evaluating ownership,
-including when the original external acknowledgement failed. Lost
-responses reconcile exact intent metadata and provider inventory; no creation
-request is retried. Missing or ambiguous ownership remains unresolved.
-
-Terminal cleanup, a separate persistent watchdog, and the protected GitHub
-workflow independently reconcile those obligations. The watchdog checks local
-processes every minute and immediately reconciles a newly detected terminal path.
-Unresolved terminal cleanup first retries after five minutes, then backs off through
-10, 20 and 40 minutes to hourly retries. A newly detected terminal path still triggers
-immediate reconciliation. Routine remote reconciliation and GitHub scheduling are
-hourly; GitHub execution may be delayed. Stale execution,
-overdue obligations and provider failures remain visible. No exact-time Spaces
-deletion guarantee is made. A successful DELETE alone is insufficient: require
-fresh complete inventory and detail absence, plus negative authentication where
-the secret remains available. Failed negative probes retain the obligation and
-private cleanup material. Cleanup interruption resumes reconciliation, never
-qualification. Failed revocation blocks closure and new starts independently of
-the qualification outcome.
-After verifying every owned credential, the watchdog retains a private revocation
-receipt, clears only its temporary credential files, and finishes the local cleanup
-state. The original journey result and diagnostics remain unchanged; the dead
-controller leaves the fast retry queue.
-Local controller and watchdog reconciliation share a lock on the persistent
-evidence volume, separate from the journey lock. They refresh the journal only
-after acquiring it and hold it through probes and temporary-key removal. Process
-death releases the lock. An authentication failure also records an explicit
-obligation whose event ID must be covered by a denied-authentication proof;
-a concurrent independent readback without the secret cannot clear it. New proof
-coverage does not depend on the actors' clock ordering.
-Local reconciliation acquires this lock without blocking. A busy controller
-records unresolved cleanup for its persistent retry path; a waiting watchdog
-continues local death and deadline checks each minute. The lock holder's network
-work remains serialized, and independent GitHub cleanup does not use this lock.
-Before allocating a run or dispatching its witness, admission rejects any running
-watchdog from another helper revision, or ambiguous watchdog state. Stopped old
-watchdogs remain retained. An upgrade requires a verified operational handoff:
-reserve daemon admission, establish terminal local attempts and independently
-verified cleanup, verify the replacement process and fresh acknowledged readiness,
-then stop only the exact superseded owned processes. Preserve containers, volumes
-and the failed journey results. Incomplete handoff keeps admission reserved;
-ordinary start never stops another cleanup actor or removes its lock file.
-
-Revocation deletes credentials only. It never removes failed-run evidence,
-containers, backups, DNS records or remote data. Existing ownership and explicit
-approval requirements for destructive retirement remain in force. Diagnostic
-recovery after revocation needs newly authorized temporary credentials and cannot
-change the original failed qualification result.
-
-With the service-account backend, 1Password's account-wide daily request quota
-is shared by all service accounts.
-Before issuing credentials, the controller checks both provisioning and cleanup
-quota metadata, requiring headroom for the journey, retained journal history and
-cleanup. This observes capacity; it cannot reserve it against unrelated account
-activity. Quota exhaustion never clears an obligation or suppresses revocation.
-The hourly remote cadence avoids consuming the quota with idle one-minute reads.
-The controller and watchdog share an encrypted cache of immutable journal reads
-on the private evidence volume; GitHub retains its own cache independently. Each
-cache is keyed by its cleanup service account and vault. It contains no provider credentials or
-production inputs. Every sweep still lists the live vault and validates each
-cached record against its current metadata and content-hash title; new records
-are fetched, and changed or disappeared records fail closed. Provider removal
-and negative-authentication evidence are never replaced by cache observations.
-Cache loss requires fresh journal reads and may need more quota. See
-[1Password request limits](https://developer.1password.com/docs/service-accounts/rate-limits/).
-An invalid or unreadable cache triggers complete live journal reads. A cache that
-is too large or cannot be written is omitted without blocking credential cleanup.
-The GitHub workflow separates restored input from newly validated encrypted output
-and saves only the latter, including when provider revocation fails. Repeated failures
-reuse an outstanding negative-authentication obligation rather than appending identical
-markers. Every retry still requires fresh provider readback and authentication checks
-where credentials remain available; reduced journal traffic cannot turn a failure into
-verified cleanup.
 
 ## Repository identity and audit lineage
 

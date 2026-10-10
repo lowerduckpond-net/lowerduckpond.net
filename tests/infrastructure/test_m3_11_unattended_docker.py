@@ -206,11 +206,11 @@ def test_workspace_config_is_readable_by_container_user(
     program = """
 import os, sys
 from pathlib import Path
-from scripts.m3_11_unattended.config import Configuration, cleanup_configuration
+from scripts.m3_11_unattended.config import LeaseConfiguration
 assert os.geteuid() != int(sys.argv[1]), 'exercise distinct workspace/container owners'
-config = Configuration.load(Path('/configuration/controller.json'))
-targets, vault, cleanup = cleanup_configuration(Path('/cleanup/cleanup.json'))
-assert (targets, vault, cleanup) == (config.targets, config.journal_vault, config.cleanup)
+config = LeaseConfiguration.load(Path('/configuration/controller.json'))
+cleanup = LeaseConfiguration.load(Path('/cleanup/cleanup.json'))
+assert cleanup.document() == config.document(cleanup_only=True)
 print('private configuration accepted by container; cleanup authority remains separate')
 """
     output = docker.command(

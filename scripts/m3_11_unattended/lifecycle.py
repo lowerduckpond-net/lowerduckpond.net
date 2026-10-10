@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import signal
 import threading
@@ -13,18 +14,26 @@ from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Protocol
+from functools import partial
+from typing import Protocol, cast
 
 from scripts import qualification_deadline
+from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended import historical_absence
 from scripts.m3_11_unattended.creation_outcome import is_abort, select_abort, valid_resolution
+from scripts.m3_11_unattended.inventory import Inventory, fact, require_confirmation
 from scripts.m3_11_unattended.journal import CreationJournal, Journal, event
 from scripts.m3_11_unattended.model import (
     CREATION_SETTLE,
     LIFETIME,
+    PROVIDERS,
+    ROLES,
     Authority,
+    AuthorityGeneration,
     Credential,
     Intent,
+    LeaseManifest,
+    LeasePolicy,
     LifecycleError,
     ProviderKind,
     Targets,
@@ -33,6 +42,8 @@ from scripts.m3_11_unattended.model import (
     instant,
     stamp,
 )
+from scripts.m3_11_unattended.state import LeaseState
+from scripts.qualification_budget import MINIMUM_TOKEN_REMAINING
 from scripts.qualification_timing import measure
 
 CreationRecorder = Callable[[str, str | None], None]
@@ -860,3 +871,611 @@ def _authentication_marker(intent: Intent) -> dict[str, object]:
             "proof_binding": "event-id",
         },
     )
+
+
+def lease_manifest(  # noqa: PLR0913 - explicit approved authorities and inputs
+    *,
+    lease_id: str,
+    source: str,
+    helper: str,
+    targets: Targets,
+    policy: LeasePolicy,
+    approved_policy_sha256: str,
+    creator: AuthorityGeneration,
+    cleanup: AuthorityGeneration,
+    providers: Mapping[ProviderKind, Provider],
+    cleanup_providers: Mapping[ProviderKind, Provider],
+    scopes: Mapping[str, dict[str, object]],
+    now: datetime,
+) -> LeaseManifest:
+    """Read all ownership baselines before retaining the one complete manifest."""
+    now = now.replace(microsecond=0)
+    policy.require_start(now=now, approved_sha256=approved_policy_sha256)
+    if set(scopes) != ROLES or set(providers) != PROVIDERS or set(cleanup_providers) != PROVIDERS:
+        raise LifecycleError("lease preparation requires all approved roles and providers")
+    baseline: dict[ProviderKind, list[dict[str, object]]] = {}
+    for kind, client in providers.items():
+        if (
+            client.authority_sha256 != creator.fingerprints[kind]
+            or cleanup_providers[kind].authority_sha256 != cleanup.fingerprints[kind]
+        ):
+            raise LifecycleError("lease provider differs from its authority generation")
+        original = client.inventory()
+        independent = cleanup_providers[kind].inventory()
+        if sorted(identifier(item.get("id")) for item in original) != sorted(
+            identifier(item.get("id")) for item in independent
+        ):
+            raise LifecycleError("lease authorities observe different provider inventories")
+        baseline[kind] = original
+    selected = []
+    for role in sorted(ROLES):
+        kind = (
+            "spaces"
+            if role in {"archive", "backup", "operator"}
+            else "cloudflare-user"
+            if role == "page-rules"
+            else "cloudflare-account"
+        )
+        name = f"ldp-m311-{uuid.UUID(lease_id).hex}-{role}"
+        if any(item.get("name") == name for item in baseline[kind]):
+            raise LifecycleError("lease name already exists; no credential may be adopted")
+        selected.append(
+            Intent(
+                run_id=lease_id,
+                role=role,
+                source_revision=source,
+                helper_revision=helper,
+                provider=kind,
+                cleanup_authority_sha256=cleanup.fingerprints[kind],
+                name=name,
+                requested_at=stamp(now),
+                create_before=policy.issuance_before,
+                deadline=stamp(policy.deadline(now)),
+                scope=deepcopy(scopes[role]),
+                baseline_ids=tuple(sorted(identifier(item.get("id")) for item in baseline[kind])),
+                targets=targets,
+                policy=policy,
+            )
+        )
+    return LeaseManifest(
+        lease_id, source, helper, stamp(now), policy, creator, cleanup, targets, tuple(selected)
+    )
+
+
+class LeaseLifecycle:
+    """One uninterrupted issuer; immutable off-host facts and private child values."""
+
+    def __init__(
+        self,
+        manifest: LeaseManifest,
+        inventory: Inventory,
+        state: LeaseState,
+        *,
+        providers: Mapping[ProviderKind, Provider],
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        self.manifest, self.inventory, self.state = manifest, inventory, state
+        self.providers, self.clock = providers, clock
+        self.state.initialize(manifest)
+        self._original_writer: str | None = None
+        self._issue_entered = False
+
+    def prepare(self, *, writer_sha256: str | None = None) -> None:
+        if writer_sha256 is not None:
+            self.state.claim_issuer(writer_sha256=writer_sha256)
+            self._original_writer = writer_sha256
+        self.inventory.publish(fact(self.manifest, "manifest", self.manifest.document()))
+
+    def abandon_prepared(self) -> None:
+        """Only the uninterrupted original preparer can attest no submission."""
+        if self._original_writer is not None and not self._issue_entered:
+            self._end_issuance(self._original_writer, set())
+            self._original_writer = None
+
+    def credentials(
+        self, *, binding: dict[str, object]
+    ) -> tuple[dict[str, Credential], dict[str, object]]:
+        """Fresh validation binds a reused lease to a new immutable attempt."""
+        from scripts.m3_11_unattended import inputs  # noqa: PLC0415
+
+        observed = self.records()
+        started = self.clock()
+        deadline = self.manifest.policy.deadline(instant(self.manifest.created_at))
+        if (
+            "issuer-stopped" not in observed
+            or deadline - started < MINIMUM_TOKEN_REMAINING
+            or any(slot.startswith("close-") for slot in observed)
+            or any(self.state.directory.glob("close-*.json"))
+        ):
+            raise LifecycleError("lease is closing, incomplete or lacks remaining validity")
+        values: dict[str, Credential] = {}
+        for intent in self.manifest.intents:
+            credential = self.state.credential(intent)
+            created = observed.get("created:" + intent.role)
+            if (
+                credential is None
+                or created is None
+                or created["payload"]
+                != {"intent_sha256": intent.sha256, "credential_id": credential.identifier}
+            ):
+                raise LifecycleError("lease credential identity or private delivery is unavailable")
+            client = self.providers[intent.provider]
+            metadata = client.inspect(credential.identifier)
+            if (
+                metadata is None
+                or metadata.get("scope") != intent.scope
+                or metadata.get("status") != "active"
+            ):
+                raise LifecycleError("reused lease credential policy or status differs")
+            _owned(intent, metadata, known=credential.identifier)
+            client.verify(intent, credential, now=self.clock())
+            values[intent.role] = credential
+        if len({value.secret for value in values.values()}) != len(ROLES) or len(
+            {value.identifier for value in values.values()}
+        ) != len(ROLES):
+            raise LifecycleError("reused lease credential identities are not separated")
+        receipt = {
+            "format": inputs.LEASE_FIXTURE_FORMAT,
+            **fields(binding, inputs.BINDING),
+            "lease_id": self.manifest.lease_id,
+            "lease_manifest_sha256": self.manifest.sha256,
+            "lease_policy": self.manifest.policy.document(),
+            "lease_issued_at": self.manifest.created_at,
+            "started_at": stamp(started),
+            "completed_at": stamp(self.clock()),
+            "deadline": stamp(deadline),
+            "checks": inputs.FIXTURE_RESULT,
+            "identities_sha256": {
+                role: hashlib.sha256(value.identifier.encode()).hexdigest()
+                for role, value in values.items()
+            },
+        }
+        inputs.validate_receipt(receipt, binding=binding, kind="fixture", now=self.clock())
+        return values, receipt
+
+    def records(self) -> dict[str, dict[str, object]]:
+        records = {
+            str(record["slot"]): record
+            for record in self.inventory.records()
+            if record["lease_id"] == self.manifest.lease_id
+        }
+        if any(record["manifest_sha256"] != self.manifest.sha256 for record in records.values()):
+            raise LifecycleError("lease inventory contains a conflicting manifest binding")
+        return records
+
+    def request_close(self, reason: str) -> None:
+        record = fact(self.manifest, "close-" + reason, {})
+        self.state.retain("close-" + reason + ".json", record)
+        # This publication never takes the provider-cleanup lock. Its failure
+        # leaves the local request intact and cannot authorize another CREATE.
+        self.inventory.publish(record)
+
+    def _before_create(self, check_cancelled: Callable[[], None]) -> None:
+        check_cancelled()
+        now = self.clock()
+        if (
+            now >= instant(self.manifest.policy.issuance_before)
+            or self.manifest.policy.deadline(instant(self.manifest.created_at)) - now
+            < MINIMUM_TOKEN_REMAINING
+            or any(self.state.directory.glob("close-*.json"))
+            or any(slot.startswith("close-") for slot in self.records())
+        ):
+            raise LifecycleError("lease creation is cancelled or outside its approved bounds")
+
+    def _remember(self, intent: Intent, selected: str, secret: str | None) -> None:
+        self.state.remember(intent, identifier(selected), secret)
+        self.inventory.publish(
+            fact(
+                self.manifest,
+                "created:" + intent.role,
+                {
+                    "intent_sha256": intent.sha256,
+                    "credential_id": selected,
+                },
+            )
+        )
+
+    def _end_issuance(self, writer_sha256: str, submitted: set[str]) -> None:
+        errors: list[Exception] = []
+        for intent in self.manifest.intents:
+            if intent.role in submitted:
+                continue
+            record = fact(
+                self.manifest,
+                "not-submitted:" + intent.role,
+                {
+                    "intent_sha256": intent.sha256,
+                    "writer_sha256": writer_sha256,
+                },
+            )
+            try:
+                self.state.retain("not-submitted-" + intent.role + ".json", record)
+                self.inventory.publish(record)
+            except Exception as error:
+                errors.append(error)
+        # All synchronous provider exchanges have returned or their bounded
+        # subprocess was reaped. This invocation has no further CREATE path.
+        proof = self.state.finish_issuer(
+            writer_sha256=writer_sha256, stopped_at=stamp(self.clock())
+        )
+        try:
+            self.inventory.publish(fact(self.manifest, "issuer-stopped", proof))
+        except Exception as error:
+            errors.append(error)
+        if errors:
+            raise LifecycleError("lease issuance evidence remains unpublished") from errors[0]
+
+    def issue(
+        self,
+        *,
+        writer_sha256: str,
+        approved_policy_sha256: str,
+        independent_server_id: str,
+        check_cancelled: Callable[[], None] = lambda: None,
+    ) -> dict[str, Credential]:
+        self.manifest.policy.require_start(now=self.clock(), approved_sha256=approved_policy_sha256)
+        require_confirmation(
+            self.inventory, self.manifest, independent_server_id=independent_server_id
+        )
+        if set(self.providers) != PROVIDERS:
+            raise LifecycleError("issuance provider set is incomplete")
+        for kind, client in self.providers.items():
+            if (
+                client.kind != kind
+                or client.authority_sha256 != self.manifest.creator.fingerprints[kind]
+            ):
+                raise LifecycleError("issuance requires its original verified authority generation")
+        self._before_create(check_cancelled)
+        if self._original_writer is None:
+            self.state.claim_issuer(writer_sha256=writer_sha256)
+        elif self._original_writer != writer_sha256:
+            raise LifecycleError("issuance does not belong to its uninterrupted preparer")
+        self._issue_entered = True
+        submitted: set[str] = set()
+        credentials: dict[str, Credential] = {}
+        try:
+            for intent in self.manifest.intents:
+                self._before_create(check_cancelled)
+                self.state.submitting(intent, writer_sha256=writer_sha256)
+                # From this point, any interruption leaves this role uncertain.
+                # Never infer non-submission from absent provider inventory.
+                submitted.add(intent.role)
+                client = self.providers[intent.provider]
+                credential = client.create(
+                    intent,
+                    record=partial(self._remember, intent),
+                )
+                metadata = client.inspect(credential.identifier)
+                if metadata is None:
+                    raise LifecycleError("issued lease credential is absent from provider readback")
+                _owned(intent, metadata, known=credential.identifier)
+                if metadata.get("scope") != intent.scope or metadata.get("status") != "active":
+                    raise LifecycleError("issued lease credential scope or status differs")
+                client.verify(intent, credential, now=self.clock())
+                saved = self.state.credential(intent)
+                if (
+                    saved is None
+                    or saved.identifier != credential.identifier
+                    or saved.secret != credential.secret
+                ):
+                    raise LifecycleError("issued lease credential differs from private delivery")
+                credentials[intent.role] = credential
+            if len({entry.identifier for entry in credentials.values()}) != len(credentials) or len(
+                {entry.secret for entry in credentials.values()}
+            ) != len(credentials):
+                raise LifecycleError("issued lease credentials are not separate identities")
+            return credentials
+        except BaseException:
+            self.request_close("provisioning-failed")
+            raise
+        finally:
+            self._end_issuance(writer_sha256, submitted)
+
+    def _local_facts(self) -> list[dict[str, object]]:
+        from scripts.m3_11_private_inputs import read_private  # noqa: PLC0415 - private recovery
+
+        records = [read_private(path) for path in self.state.directory.glob("close-*.json")]
+        for intent in self.manifest.intents:
+            created = self.state.created(intent)
+            if created is not None:
+                records.append(fact(self.manifest, "created:" + intent.role, created))
+            path = self.state.directory / ("not-submitted-" + intent.role + ".json")
+            if path.exists():
+                records.append(read_private(path))
+        path = self.state.directory / "issuer-stopped.json"
+        if path.exists():
+            records.append(fact(self.manifest, "issuer-stopped", read_private(path)))
+        return records
+
+    def cleanup_generation(
+        self,
+        intent: Intent,
+        observed: dict[str, dict[str, object]],
+        available: Mapping[str, Mapping[ProviderKind, Provider]] | None = None,
+    ) -> AuthorityGeneration:
+        current = self.manifest.cleanup
+        chain = [current]
+        remaining = [
+            row
+            for slot, row in observed.items()
+            if slot.startswith("handover:" + intent.role + ":")
+        ]
+        while remaining:
+            matches = [
+                row
+                for row in remaining
+                if isinstance(row["payload"], dict)
+                and row["payload"]["previous_generation_sha256"] == digest(current.document())
+            ]
+            if len(matches) != 1:
+                raise LifecycleError("cleanup authority handover history is ambiguous")
+            row = matches[0]
+            payload = cast(dict[str, object], row["payload"])
+            created = observed.get("created:" + intent.role)
+            if (
+                payload["intent_sha256"] != intent.sha256
+                or created is None
+                or cast(dict[str, object], created["payload"])["credential_id"]
+                != payload["credential_id"]
+            ):
+                raise LifecycleError("cleanup handover lacks its exact known credential")
+            replacement = AuthorityGeneration.parse(payload["generation"])
+            replacement.require_same_principal(current)
+            current = replacement
+            chain.append(current)
+            remaining.remove(row)
+        if available is not None:
+            # During staged delivery, the old explicitly bound authority remains
+            # valid for cleanup. Never infer equivalence from authentication or
+            # an empty inventory; every fallback is in this verified chain.
+            for candidate in reversed(chain):
+                provider = available.get(candidate.generation_id, {}).get(intent.provider)
+                if (
+                    provider is not None
+                    and provider.authority_sha256 == candidate.fingerprints[intent.provider]
+                ):
+                    return candidate
+        return current
+
+    def handover(
+        self,
+        replacement: AuthorityGeneration,
+        providers: Mapping[ProviderKind, Provider],
+        previous: Mapping[ProviderKind, Provider],
+    ) -> None:
+        """Positively read known children with both principals before recording handover.
+
+        Unknown-ID obligations deliberately retain their original generation.
+        Empty inventory is never a cross-generation capability proof.
+        """
+        replacement.require_same_principal(self.manifest.cleanup)
+        replacement.require_coverage(
+            policy=self.manifest.policy,
+            deadline=self.manifest.policy.deadline(instant(self.manifest.created_at)),
+        )
+        observed = self.records()
+        for intent in self.manifest.intents:
+            selected = observed.get("created:" + intent.role)
+            if selected is None:
+                raise LifecycleError(
+                    "unknown credential identity retains its original cleanup generation"
+                )
+            payload = cast(dict[str, object], selected["payload"])
+            credential_id = identifier(payload["credential_id"])
+            current = self.cleanup_generation(intent, observed)
+            if current == replacement:
+                continue
+            for client, generation in (
+                (previous[intent.provider], current),
+                (providers[intent.provider], replacement),
+            ):
+                if client.authority_sha256 != generation.fingerprints[intent.provider]:
+                    raise LifecycleError("cleanup handover uses an unverified authority")
+                metadata = client.inspect(credential_id)
+                if metadata is None:
+                    raise LifecycleError(
+                        "replacement must positively read each outstanding credential"
+                    )
+                _owned(intent, metadata, known=credential_id)
+                if (
+                    metadata.get("scope") != intent.scope
+                    or metadata.get("status") != "active"
+                    or (
+                        intent.provider != "spaces"
+                        and instant(metadata.get("expires_at")) != instant(intent.deadline)
+                    )
+                ):
+                    raise LifecycleError("cleanup handover credential policy differs")
+            record = fact(
+                self.manifest,
+                "handover:" + intent.role + ":" + replacement.generation_id,
+                {
+                    "intent_sha256": intent.sha256,
+                    "credential_id": credential_id,
+                    "previous_generation_sha256": digest(current.document()),
+                    "generation": replacement.document(),
+                    "observed_at": stamp(self.clock()),
+                },
+            )
+            self.inventory.publish(record)
+
+    def reconcile(
+        self,
+        cleanup_providers: Mapping[ProviderKind, Provider],
+        *,
+        generations: Mapping[str, Mapping[ProviderKind, Provider]] | None = None,
+    ) -> list[CleanupResult]:
+        """Readback and negative probes, independently of the qualification result.
+
+        Publication failures do not suppress deletion of exactly owned children.
+        They do suppress successful closure until the same facts are observed.
+        """
+        durable = True
+        try:
+            observed = self.records()
+        except LifecycleError, OSError, ValueError:
+            observed, durable = {}, False
+        local = self._local_facts()
+        for record in local:
+            slot = str(record["slot"])
+            if slot in observed and observed[slot] != record:
+                raise LifecycleError("local lease recovery conflicts with the external inventory")
+            observed[slot] = record
+            try:
+                self.inventory.publish(record)
+            except LifecycleError, OSError, ValueError:
+                durable = False
+        due = self.clock() >= self.manifest.policy.deadline(
+            instant(self.manifest.created_at)
+        ) or any(slot.startswith("close-") for slot in observed)
+        if not due:
+            return [
+                CleanupResult(
+                    intent.sha256,
+                    "not-due" if durable else "unresolved",
+                    "not-tested" if durable else "unverified",
+                )
+                for intent in self.manifest.intents
+            ]
+        results = []
+        for intent in self.manifest.intents:
+            try:
+                generation = self.cleanup_generation(intent, observed, generations)
+                client = (
+                    generations[generation.generation_id]
+                    if generations is not None
+                    else cleanup_providers
+                )[intent.provider]
+                if (
+                    client.kind != intent.provider
+                    or client.authority_sha256 != generation.fingerprints[intent.provider]
+                ):
+                    raise LifecycleError("cleanup provider differs from the lease authority")
+                result = self._reconcile_role(intent, client, observed)
+            except LifecycleError, OSError, ValueError, KeyError:
+                result = CleanupResult(intent.sha256, "unresolved", "unverified")
+            if not durable or "issuer-stopped" not in observed:
+                result = CleanupResult(intent.sha256, "unresolved", result.negative_authentication)
+            results.append(result)
+        return results
+
+    def _reconcile_role(  # noqa: PLR0912 - positive ownership/readback and closure gates
+        self, intent: Intent, client: Provider, observed: dict[str, dict[str, object]]
+    ) -> CleanupResult:
+        known: str | None = None
+        created = observed.get("created:" + intent.role)
+        if created is not None:
+            payload = cast(dict[str, object], created["payload"])
+            if payload["intent_sha256"] != intent.sha256:
+                raise LifecycleError("recorded credential differs from the lease intent")
+            known = identifier(payload["credential_id"])
+        candidates = [
+            item
+            for item in client.inventory()
+            if item.get("name") == intent.name or item.get("id") == known
+        ]
+        if len(candidates) > 1:
+            raise LifecycleError("lease credential inventory is ambiguous")
+        if candidates:
+            known = _owned(intent, candidates[0], known=known)
+        unsent, stopped = (
+            observed.get("not-submitted:" + intent.role),
+            observed.get("issuer-stopped"),
+        )
+        conflict = unsent is not None and known is not None
+        if known is None:
+            if unsent is not None and stopped is not None:
+                proof, fence = (
+                    cast(dict[str, object], unsent["payload"]),
+                    cast(dict[str, object], stopped["payload"]),
+                )
+                if (
+                    proof["intent_sha256"] == intent.sha256
+                    and proof["writer_sha256"] == fence["writer_sha256"]
+                ):
+                    return CleanupResult(intent.sha256, "verified", "not-tested")
+            return CleanupResult(intent.sha256, "creation-uncertain", "unavailable")
+        # Retain a recovered ID locally before deleting. A failed off-host write
+        # leaves an explicit unresolved obligation, but cannot strand the key.
+        self.state.remember(intent, known, None)
+        identity_record = fact(
+            self.manifest,
+            "created:" + intent.role,
+            {"intent_sha256": intent.sha256, "credential_id": known},
+        )
+        durable = True
+        try:
+            self.inventory.publish(identity_record)
+        except LifecycleError, OSError, ValueError:
+            durable = False
+        current = client.inspect(known)
+        if current is not None:
+            _owned(intent, current, known=known)
+            client.delete(known)
+        if client.inspect(known) is not None or any(
+            item.get("id") == known or item.get("name") == intent.name
+            for item in client.inventory()
+        ):
+            raise LifecycleError("lease credential removal remains unverified")
+        self.inventory.publish(
+            fact(
+                self.manifest,
+                "removed:" + intent.role,
+                {"intent_sha256": intent.sha256, "credential_id": known},
+            )
+        )
+        credential = self.state.credential(intent)
+        negative = "unavailable"
+        if credential is not None:
+            if credential.identifier != known or not client.denied(intent, credential):
+                raise LifecycleError(
+                    "revoked lease credential still authenticates or denial is unproven"
+                )
+            negative = "denied"
+            self.inventory.publish(
+                fact(
+                    self.manifest,
+                    "denied:" + intent.role,
+                    {"intent_sha256": intent.sha256, "credential_id": known},
+                )
+            )
+        elif (denied := observed.get("denied:" + intent.role)) is not None:
+            if denied["payload"] != {"intent_sha256": intent.sha256, "credential_id": known}:
+                raise LifecycleError("lease authentication proof differs from its identity")
+            negative = "denied"
+        elif stopped is not None and intent.role in cast(
+            list[str], cast(dict[str, object], stopped["payload"])["retained_roles"]
+        ):
+            # A second actor cannot erase a failed or pending negative probe by
+            # omitting the host's credential. Actual permanent secret loss needs
+            # an explicit disposition; absence of a local file is not that proof.
+            return CleanupResult(intent.sha256, "unresolved", "unavailable")
+        if conflict or not durable:
+            return CleanupResult(intent.sha256, "unresolved", negative)
+        return CleanupResult(intent.sha256, "verified", negative)
+
+
+def fixture_scopes(
+    targets: Targets, providers: Mapping[ProviderKind, Provider]
+) -> dict[str, dict[str, object]]:
+    from scripts.m3_11_unattended.cloudflare import (  # noqa: PLC0415 - provider contracts
+        Cloudflare,
+    )
+
+    scopes: dict[str, dict[str, object]] = {}
+    for role in sorted(ROLES):
+        if role in {"archive", "backup", "operator"}:
+            scopes[role] = {
+                "grants": [
+                    {
+                        "bucket": "" if role == "operator" else getattr(targets, role + "_bucket"),
+                        "permission": "fullaccess" if role == "operator" else "readwrite",
+                    }
+                ]
+            }
+        else:
+            client = providers["cloudflare-user" if role == "page-rules" else "cloudflare-account"]
+            if not isinstance(client, Cloudflare):
+                raise LifecycleError("fixture token scope reader is unavailable")
+            scopes[role] = client.scope(role, targets)
+    return scopes

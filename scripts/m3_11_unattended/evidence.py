@@ -14,8 +14,8 @@ from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended import historical_absence
 from scripts.m3_11_unattended.connect_diagnostics import verified_failure
 from scripts.m3_11_unattended.inputs import BINDING
-from scripts.m3_11_unattended.model import Intent, LifecycleError, identity, instant, stamp
-from scripts.m3_11_unattended.state import PHASES, RunState
+from scripts.m3_11_unattended.model import Intent, LifecycleError, digest, identity, instant, stamp
+from scripts.m3_11_unattended.state import PHASES, LeaseState, RunState
 from scripts.production_qualification_inputs import revision
 
 
@@ -67,7 +67,7 @@ def watchdog_receipts(directory: Path, binding: dict[str, object]) -> list[dict[
     return receipts
 
 
-def export(  # noqa: PLR0912 - each evidence family has its own closed validation
+def export(  # noqa: PLR0912, PLR0915 - each evidence family has its own closed validation
     directory: Path, *, repository: Path, include_report: bool
 ) -> dict[str, object]:
     state = RunState(directory)
@@ -79,6 +79,21 @@ def export(  # noqa: PLR0912 - each evidence family has its own closed validatio
     for name in BINDING - {"managed_run_id", "source_revision", "helper_revision"}:
         sha256(binding[name])
     result: dict[str, object] = {"binding": binding, "status": state.status()}
+    if request.get("format") == "lowerduckpond-m3-11-unattended-request-v2":
+        lease_id = identity(request["lease_id"])
+        lease = LeaseState(directory.parent.parent / "leases" / lease_id)
+        released = False
+        if (lease.directory / "manifest.json").exists():
+            manifest = lease.manifest()
+            released = lease.released_use(
+                attempt_id=identity(binding["managed_run_id"]), binding_sha256=digest(binding)
+            )
+            result["lease"] = {
+                "lease_id": lease_id,
+                "manifest_sha256": manifest.sha256,
+                "policy_sha256": manifest.policy.sha256,
+                "use_released": released,
+            }
     for name in ("worker", "cleanup", "production"):
         path = directory / (name + "-failure.json")
         if path.exists():
@@ -164,14 +179,32 @@ def export(  # noqa: PLR0912 - each evidence family has its own closed validatio
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("status", "evidence", "cancel"))
+    parser.add_argument(
+        "action", choices=("status", "evidence", "cancel", "stop-attempt", "quiesce")
+    )
     parser.add_argument("--directory", type=Path, required=True)
     parser.add_argument("--source", type=Path, required=True)
+    parser.add_argument("--config", type=Path)
     args = parser.parse_args()
     try:
-        if args.action == "cancel":
+        if args.action == "quiesce":
+            from scripts.m3_11_unattended.docker import Docker  # noqa: PLC0415
+            from scripts.m3_11_unattended.watchdog import quiesce_runtime  # noqa: PLC0415
+
+            quiesce_runtime(args.directory, Docker())
+            print('{"runtime_use":"released"}')
+        elif args.action == "cancel":
             RunState(args.directory).cancel()
-            print('{"cancellation":"requested"}')
+            if args.config is None:
+                raise LifecycleError("lease cancellation requires its cleanup-only configuration")
+            from scripts.m3_11_unattended.watchdog import cancel_lease  # noqa: PLC0415
+
+            receipt = cancel_lease(args.directory, args.config)
+            print(json.dumps(receipt, sort_keys=True))
+            return 0 if receipt["status"] == "ready" else 1
+        elif args.action == "stop-attempt":
+            RunState(args.directory).stop_attempt()
+            print('{"attempt_stop":"requested"}')
         else:
             print(
                 json.dumps(

@@ -1,6 +1,6 @@
 ---
 name: Independent M3.11 Connect cleanup
-description: Keep artifact runtime access inside a bounded cleanup-only JavaScript action.
+description: Confirm one lease manifest and reconcile credentials through independent Connect.
 runs:
   using: node24
   main: index.js

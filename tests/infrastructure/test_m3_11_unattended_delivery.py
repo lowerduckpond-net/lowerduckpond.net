@@ -2,38 +2,25 @@
 
 from __future__ import annotations
 
-import dataclasses
 import os
 import subprocess
 import sys
 import uuid
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
 import pytest
 
 from scripts.m3_11_private_inputs import read_private, write_private
-from scripts.m3_11_unattended import docker, setup
-from scripts.m3_11_unattended.config import Configuration, cleanup_configuration
-from scripts.m3_11_unattended.model import stamp
+from scripts.m3_11_unattended import docker
+from scripts.m3_11_unattended.config import LeaseConfiguration
 
-from .test_m3_11_unattended_lifecycle import CANARY, TARGETS
+from .test_m3_11_lease_configuration import document
+from .test_m3_11_unattended_lifecycle import CANARY
 
 
 def delivery_configuration(path: Path) -> None:
-    manifest = setup.template()
-    manifest["targets"], manifest["journal_vault"] = dataclasses.asdict(TARGETS), "a" * 26
-    for role in ("provision", "cleanup", "production"):
-        section = manifest[role]
-        assert isinstance(section, dict)
-        section["service_account_expires_at"] = stamp(datetime.now(UTC) + timedelta(days=7))
-    write_private(
-        path,
-        setup.document(
-            manifest, {role: CANARY + role for role in ("provision", "cleanup", "production")}
-        ),
-    )
+    write_private(path, document())
 
 
 class LocalDelivery:
@@ -89,24 +76,16 @@ def test_private_delivery_and_replacement_use_container_owned_files(tmp_path: Pa
         )
         assert read_private(tmp_path / "evidence/runs" / run_id / "request.json") == {}
         installed = tmp_path / "configuration/controller.json"
-        selected = Configuration.load(installed)
-        targets, vault, authority = cleanup_configuration(tmp_path / "cleanup/cleanup.json")
-        assert (targets, vault, authority) == (
-            selected.targets,
-            selected.journal_vault,
-            selected.cleanup,
-        )
+        selected = LeaseConfiguration.load(installed)
+        cleanup = LeaseConfiguration.load(tmp_path / "cleanup/cleanup.json")
+        assert cleanup.document() == selected.document(cleanup_only=True)
         assert installed.read_bytes() == original == config.read_bytes()
         for path in (installed, tmp_path / "cleanup/cleanup.json"):
             assert not path.is_symlink()
             assert path.stat().st_uid == os.geteuid()
             assert path.stat().st_mode & 0o777 == 0o600  # noqa: PLR2004 - required private mode
-        assert set(read_private(tmp_path / "cleanup/cleanup.json")) == {
-            "format",
-            "targets",
-            "journal_vault",
-            "cleanup",
-        }
+        assert cleanup.production is None
+        assert all(set(roles) == {"cleanup"} for roles in cleanup.generations.values())
     assert host.removed
 
 

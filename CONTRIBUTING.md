@@ -19,6 +19,25 @@ and repository checks, then preview the installed groups CI will require using
 the reviewed selection policy below. Describe the checks run and any environment
 limitations in the pull request. Required CI must pass before merge.
 
+`just check-links` is a blocking, offline check of repository links extracted from
+Markdown. It verifies local file paths and Lychee-supported Markdown/HTML anchor
+fragments, including same-file headings, duplicate heading suffixes and explicit
+HTML IDs. It does not validate source-code line fragments such as `#L42`, PDF
+destinations, browser text fragments or dynamically generated anchors. Absolute
+HTTP(S) links, including pinned GitHub source citations, are external references;
+they are not remapped to the current checkout.
+
+External URL availability is informational. The separate **External link report**
+workflow runs weekly on Monday at 05:47 UTC and publishes a run summary plus a
+30-day Markdown artifact. It checks HTTP(S) URLs with the existing exclusions in
+`.lychee.toml`; it is not triggered by PRs and is not a dependency of **Gate**.
+HTTP failures remain in the report and are treated as informational. Tool/runner
+failures may leave the report unavailable and are reported in the scheduled run,
+without affecting a PR's checks. To generate the same report locally, run
+`just report-external-links /path/to/external-links.md`; its nonzero exit status
+still indicates findings or tool errors. No external availability check is part
+of `just check`.
+
 After setup, run a focused component regression by selecting its test file:
 
 ```console
@@ -35,7 +54,7 @@ on fresh fixtures. The [reviewed selection policy](docs/operations/installed-sel
 selects affected groups for mapped changes and all groups for shared or unknown
 inputs. The stable `Ansible` check verifies every selected completion receipt.
 Scheduled and manual runs also require the original complete installed journey.
-A scheduled failure blocks release until corrected and requalified.
+A scheduled installed-qualification failure blocks release until corrected and requalified.
 Use `just plan-installed-checks BASE_COMMIT HEAD_COMMIT` with full commit IDs to
 preview the required groups for committed changes. Run a selected group locally
 to reproduce its failure or validate changes to its installed scenario.

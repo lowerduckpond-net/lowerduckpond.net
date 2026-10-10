@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import hashlib
 import re
 import uuid
@@ -17,6 +18,10 @@ CREATION_SETTLE = timedelta(minutes=5)
 CLEANUP_MARGIN = timedelta(days=2)
 ROLES = frozenset({"archive", "backup", "operator", "caddy", "observer", "audit", "page-rules"})
 ProviderKind = Literal["spaces", "cloudflare-account", "cloudflare-user"]
+PROVIDERS: frozenset[ProviderKind] = frozenset({"spaces", "cloudflare-account", "cloudflare-user"})
+LEASE_POLICY_FORMAT = "lowerduckpond-m3-11-lease-policy-v1"
+GENERATION_FORMAT = "lowerduckpond-m3-11-authority-generation-v1"
+MONTHS_PER_YEAR = 12
 
 
 class LifecycleError(RuntimeError):
@@ -63,6 +68,186 @@ def strings(value: object) -> dict[str, str]:
     ):
         raise LifecycleError("invalid lifecycle string mapping")
     return cast(dict[str, str], value)
+
+
+def fingerprint(value: object) -> str:
+    if not isinstance(value, str) or re.fullmatch(r"[a-f0-9]{64}", value) is None:
+        raise LifecycleError("invalid lifecycle digest")
+    return value
+
+
+@dataclass(frozen=True)
+class LeasePolicy:
+    """Explicit approved inputs; there are deliberately no operational defaults.
+
+    Seven days is the reviewed design recommendation, not an implicit live grant.
+    Parsing historical policy is independent of current admission or expiry.
+    """
+
+    approved_at: str
+    start_before: str
+    issuance_before: str
+    credential_lifetime_seconds: int
+    cleanup_reserve_seconds: int
+    retain_after_failure: bool
+    approval_reference: str
+
+    def __post_init__(self) -> None:
+        if (
+            not instant(self.approved_at)
+            < instant(self.start_before)
+            <= instant(self.issuance_before)
+            or any(
+                type(value) is not int or not 0 < value <= 2**31 - 1
+                for value in (self.credential_lifetime_seconds, self.cleanup_reserve_seconds)
+            )
+            or type(self.retain_after_failure) is not bool
+            or not isinstance(self.approval_reference, str)
+            or not 1 <= len(self.approval_reference) <= 256  # noqa: PLR2004 - bounded approval label
+            or any(ord(char) < 32 for char in self.approval_reference)  # noqa: PLR2004
+        ):
+            raise LifecycleError("lease policy is missing explicit approved bounds")
+
+    def document(self) -> dict[str, object]:
+        return {"format": LEASE_POLICY_FORMAT, **asdict(self)}
+
+    @property
+    def sha256(self) -> str:
+        return digest(self.document())
+
+    @classmethod
+    def parse(cls, value: object) -> LeasePolicy:
+        data = fields(value, {"format", *cls.__dataclass_fields__})
+        if data["format"] != LEASE_POLICY_FORMAT:
+            raise LifecycleError("lease policy format is unsupported")
+        texts = strings(
+            {
+                key: data[key]
+                for key in ("approved_at", "start_before", "issuance_before", "approval_reference")
+            }
+        )
+        if (
+            any(
+                type(data[key]) is not int
+                for key in ("credential_lifetime_seconds", "cleanup_reserve_seconds")
+            )
+            or type(data["retain_after_failure"]) is not bool
+        ):
+            raise LifecycleError("lease policy bounds have invalid types")
+        return cls(
+            **texts,
+            credential_lifetime_seconds=cast(int, data["credential_lifetime_seconds"]),
+            cleanup_reserve_seconds=cast(int, data["cleanup_reserve_seconds"]),
+            retain_after_failure=data["retain_after_failure"],
+        )
+
+    def deadline(self, requested_at: datetime) -> datetime:
+        try:
+            return requested_at + timedelta(seconds=self.credential_lifetime_seconds)
+        except OverflowError:
+            raise LifecycleError("lease deadline exceeds the timestamp range") from None
+
+    def require_start(self, *, now: datetime, approved_sha256: str) -> None:
+        if (
+            fingerprint(approved_sha256) != self.sha256
+            or not instant(self.approved_at) <= now < instant(self.start_before)
+            or not now < instant(self.issuance_before) < self.deadline(now)
+        ):
+            raise LifecycleError("lease policy is unapproved or its start window elapsed")
+
+
+@dataclass(frozen=True)
+class AuthorityGeneration:
+    """Non-secret verified metadata for one role of a monthly authority generation."""
+
+    generation_id: str
+    role: str
+    targets_sha256: str
+    principals: dict[str, str]
+    fingerprints: dict[str, str]
+    expires_at: dict[str, str]
+    connect_expires_at: str
+    introduced_at: str
+    rotation_due_at: str
+
+    def __post_init__(self) -> None:
+        identity(self.generation_id)
+        fingerprint(self.targets_sha256)
+        if self.role not in {"provision", "cleanup"}:
+            raise LifecycleError("authority generation role is invalid")
+        for values in (self.principals, self.fingerprints, self.expires_at):
+            if set(strings(values)) != PROVIDERS:
+                raise LifecycleError("authority generation is incomplete")
+        for value in self.fingerprints.values():
+            fingerprint(value)
+        for value in self.expires_at.values():
+            instant(value)
+        instant(self.connect_expires_at)
+        introduced = instant(self.introduced_at)
+        year, month = (
+            introduced.year + (introduced.month == MONTHS_PER_YEAR),
+            introduced.month % MONTHS_PER_YEAR + 1,
+        )
+        expected_rotation = introduced.replace(
+            year=year, month=month, day=min(introduced.day, calendar.monthrange(year, month)[1])
+        )
+        if instant(self.rotation_due_at) != expected_rotation:
+            raise LifecycleError(
+                "authority generation must use its explicit calendar-month rotation"
+            )
+        if any(
+            not 1 <= len(value) <= 128  # noqa: PLR2004 - bounded non-secret principal
+            or re.fullmatch(r"[A-Za-z0-9_.:@/-]+", value) is None
+            for value in self.principals.values()
+        ):
+            raise LifecycleError("authority generation principal is unestablished")
+
+    def document(self) -> dict[str, object]:
+        return {"format": GENERATION_FORMAT, **asdict(self)}
+
+    @classmethod
+    def parse(cls, value: object) -> AuthorityGeneration:
+        data = fields(value, {"format", *cls.__dataclass_fields__})
+        if data["format"] != GENERATION_FORMAT:
+            raise LifecycleError("authority generation format is unsupported")
+        return cls(
+            **strings(
+                {
+                    key: data[key]
+                    for key in (
+                        "generation_id",
+                        "role",
+                        "targets_sha256",
+                        "connect_expires_at",
+                        "introduced_at",
+                        "rotation_due_at",
+                    )
+                }
+            ),
+            principals=strings(data["principals"]),
+            fingerprints=strings(data["fingerprints"]),
+            expires_at=strings(data["expires_at"]),
+        )
+
+    def require_coverage(self, *, policy: LeasePolicy, deadline: datetime) -> None:
+        reserve = (
+            timedelta(seconds=policy.cleanup_reserve_seconds)
+            if self.role == "cleanup"
+            else timedelta()
+        )
+        if any(
+            instant(value) < deadline + reserve
+            for value in (*self.expires_at.values(), self.connect_expires_at)
+        ):
+            raise LifecycleError("authority generation cannot cover the child deadline")
+
+    def require_same_principal(self, previous: AuthorityGeneration) -> None:
+        if (
+            self.role != previous.role
+            or self.targets_sha256 != previous.targets_sha256
+            or self.principals != previous.principals
+        ):
+            raise LifecycleError("replacement authority principal or targets differ")
 
 
 @dataclass(frozen=True)
@@ -135,6 +320,7 @@ class Intent:
     scope: dict[str, object]
     baseline_ids: tuple[str, ...]
     targets: Targets
+    policy: LeasePolicy | None = None
 
     def __post_init__(self) -> None:
         identity(self.run_id)
@@ -146,8 +332,23 @@ class Intent:
             or self.provider not in {"spaces", "cloudflare-account", "cloudflare-user"}
             or self.name != f"ldp-m311-{uuid.UUID(self.run_id).hex}-{self.role}"
             or not instant(self.requested_at) < instant(self.create_before) < instant(self.deadline)
-            or instant(self.deadline) - instant(self.requested_at) != LIFETIME
-            or instant(self.create_before) - instant(self.requested_at) != CREATION_SETTLE
+            or (
+                self.policy is None
+                and (
+                    instant(self.deadline) - instant(self.requested_at) != LIFETIME
+                    or instant(self.create_before) - instant(self.requested_at) != CREATION_SETTLE
+                )
+            )
+            or (
+                self.policy is not None
+                and (
+                    instant(self.deadline) != self.policy.deadline(instant(self.requested_at))
+                    or self.create_before != self.policy.issuance_before
+                    or not instant(self.policy.approved_at)
+                    <= instant(self.requested_at)
+                    < instant(self.policy.start_before)
+                )
+            )
             or len(set(self.baseline_ids)) != len(self.baseline_ids)
             or any(
                 re.fullmatch(r"[A-Za-z0-9_-]{8,128}", item) is None for item in self.baseline_ids
@@ -158,12 +359,19 @@ class Intent:
     def document(self) -> dict[str, object]:
         value = asdict(self)
         value["baseline_ids"] = list(self.baseline_ids)
+        if self.policy is None:
+            del value["policy"]
+        else:
+            value["policy"] = self.policy.document()
         return value
 
     @classmethod
     def parse(cls, value: object) -> Intent:
-        data = fields(value, set(cls.__dataclass_fields__))
-        names = set(cls.__dataclass_fields__) - {"scope", "baseline_ids", "targets"}
+        expected = set(cls.__dataclass_fields__) - {"policy"}
+        if isinstance(value, dict) and "policy" in value:
+            expected.add("policy")
+        data = fields(value, expected)
+        names = set(cls.__dataclass_fields__) - {"scope", "baseline_ids", "targets", "policy"}
         text = strings({key: data[key] for key in names})
         scope, baseline = data["scope"], data["baseline_ids"]
         if (
@@ -186,6 +394,7 @@ class Intent:
             scope=scope,
             baseline_ids=tuple(baseline),
             targets=Targets.parse(data["targets"]),
+            policy=LeasePolicy.parse(data["policy"]) if "policy" in data else None,
         )
 
     @property
@@ -217,3 +426,103 @@ class Authority:
             or self.valid_until < deadline + CLEANUP_MARGIN
         ):
             raise LifecycleError("cleanup authority does not outlive the child credential deadline")
+
+
+@dataclass(frozen=True)
+class LeaseManifest:
+    """The complete immutable obligation exists off-host before the first CREATE."""
+
+    lease_id: str
+    source_revision: str
+    helper_revision: str
+    created_at: str
+    policy: LeasePolicy
+    creator: AuthorityGeneration
+    cleanup: AuthorityGeneration
+    targets: Targets
+    intents: tuple[Intent, ...]
+
+    def __post_init__(self) -> None:
+        identity(self.lease_id)
+        revision(self.source_revision)
+        revision(self.helper_revision)
+        requested = instant(self.created_at)
+        self.policy.require_start(now=requested, approved_sha256=self.policy.sha256)
+        target_digest = digest(asdict(self.targets))
+        if (
+            self.creator.role != "provision"
+            or self.cleanup.role != "cleanup"
+            or self.creator.generation_id != self.cleanup.generation_id
+            or self.creator.principals != self.cleanup.principals
+            or any(
+                generation.targets_sha256 != target_digest
+                or generation.principals["cloudflare-account"] != self.targets.account_id
+                or generation.principals["cloudflare-user"] != self.targets.user_id
+                for generation in (self.creator, self.cleanup)
+            )
+            or {intent.role for intent in self.intents} != ROLES
+            or len(self.intents) != len(ROLES)
+        ):
+            raise LifecycleError("lease manifest has incomplete or mismatched authority and roles")
+        for generation in (self.creator, self.cleanup):
+            generation.require_coverage(
+                policy=self.policy, deadline=self.policy.deadline(requested)
+            )
+        for intent in self.intents:
+            provider = (
+                "spaces"
+                if intent.role in {"archive", "backup", "operator"}
+                else "cloudflare-user"
+                if intent.role == "page-rules"
+                else "cloudflare-account"
+            )
+            if (
+                intent.run_id != self.lease_id
+                or intent.source_revision != self.source_revision
+                or intent.helper_revision != self.helper_revision
+                or intent.requested_at != self.created_at
+                or intent.policy != self.policy
+                or intent.targets != self.targets
+                or intent.provider != provider
+                or intent.cleanup_authority_sha256 != self.cleanup.fingerprints[provider]
+            ):
+                raise LifecycleError("lease manifest child differs from its approved binding")
+
+    def document(self) -> dict[str, object]:
+        return {
+            "format": "lowerduckpond-m3-11-lease-manifest-v1",
+            "lease_id": self.lease_id,
+            "source_revision": self.source_revision,
+            "helper_revision": self.helper_revision,
+            "created_at": self.created_at,
+            "policy": self.policy.document(),
+            "creator": self.creator.document(),
+            "cleanup": self.cleanup.document(),
+            "targets": asdict(self.targets),
+            "intents": [intent.document() for intent in sorted(self.intents, key=lambda v: v.role)],
+        }
+
+    @property
+    def sha256(self) -> str:
+        return digest(self.document())
+
+    @classmethod
+    def parse(cls, value: object) -> LeaseManifest:
+        data = fields(value, {"format", *cls.__dataclass_fields__})
+        if data["format"] != "lowerduckpond-m3-11-lease-manifest-v1" or not isinstance(
+            data["intents"], list
+        ):
+            raise LifecycleError("lease manifest format is invalid")
+        return cls(
+            **strings(
+                {
+                    key: data[key]
+                    for key in ("lease_id", "source_revision", "helper_revision", "created_at")
+                }
+            ),
+            policy=LeasePolicy.parse(data["policy"]),
+            creator=AuthorityGeneration.parse(data["creator"]),
+            cleanup=AuthorityGeneration.parse(data["cleanup"]),
+            targets=Targets.parse(data["targets"]),
+            intents=tuple(Intent.parse(entry) for entry in data["intents"]),
+        )

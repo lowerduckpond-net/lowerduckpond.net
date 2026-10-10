@@ -2,6 +2,11 @@ accept = [200, 204, 206, 429]
 exclude = [
   '^https://github\.com/lowerduckpond-net/lowerduckpond\.net/security/advisories/new$',
   '^https://www\.reddit\.com/r/HaveWeMet/$',
+  # Recurring 503s make MinIO documentation/source references unreliable as CI gates.
+  # Keep citations for readers; these groups affect only Lychee, not storage tests.
+  '^https?://docs\.min\.io(?:[/?#]|$)',
+  '^https?://min\.io/docs(?:[/?#]|$)',
+  '^https?://github\.com/minio/minio(?:[/?#]|$)',
 ]
 exclude_all_private = true
 max_concurrency = 8

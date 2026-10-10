@@ -11,8 +11,9 @@ import subprocess
 from pathlib import Path
 
 from scripts.m3_11_private_inputs import read_private
-from scripts.m3_11_qualification_evidence import canonical_bytes, fields
-from scripts.m3_11_unattended import connect_renewal
+from scripts.m3_11_qualification_evidence import canonical_bytes
+from scripts.m3_11_unattended.config import LeaseConfiguration
+from scripts.m3_11_unattended.connect_action import bootstrap
 from scripts.m3_11_unattended.model import LifecycleError
 
 REPOSITORY = "lowerduckpond-net/lowerduckpond.net"
@@ -43,12 +44,9 @@ def receive():
     if not 0 < len(raw) <= 1024 * 1024 or hashlib.sha256(raw).hexdigest() != expected:
         raise ValueError()
     value = json.loads(raw)
-    fields = {"format", "manifest", "url", "tokens", "provider_metadata"}
-    if isinstance(value, dict) and "renewal" in value:
-        fields.add("renewal")
-    if not isinstance(value, dict) or set(value) != fields:
-        raise ValueError()
-    if value["format"] != "lowerduckpond-m3-11-connect-bootstrap-v1":
+    if (not isinstance(value, dict)
+            or value.get("format") != "lowerduckpond-m3-11-lease-config-v1"
+            or value.get("mode") != "controller"):
         raise ValueError()
     path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     info = path.parent.lstat()
@@ -91,53 +89,20 @@ except (OSError, ValueError, TypeError):
 
 
 def bundles(output: Path) -> tuple[bytes, bytes]:
-    raw_controller = read_private(output / "controller-connect.json")
+    controller = LeaseConfiguration.load(output / "controller-connect.json")
     raw_cleanup = read_private(output / "github-connect.json")
-    controller = fields(
-        raw_controller,
-        {
-            "format",
-            "manifest",
-            "url",
-            "tokens",
-            "provider_metadata",
-        }
-        | ({"renewal"} if "renewal" in raw_controller else set()),
-    )
-    cleanup = fields(
-        raw_cleanup,
-        {
-            "format",
-            "targets",
-            "journal_vault",
-            "cleanup",
-            "token",
-            "server_credentials",
-            "provider_metadata",
-        }
-        | ({"checkpoint_token"} if "checkpoint_token" in raw_cleanup else set()),
-    )
-    value = controller["manifest"]
-    if (
-        controller["format"] != "lowerduckpond-m3-11-connect-bootstrap-v1"
-        or cleanup["format"] != controller["format"]
-        or not isinstance(value, dict)
-        or any(cleanup[key] != value.get(key) for key in ("targets", "journal_vault", "cleanup"))
-        or not isinstance(controller["tokens"], dict)
-        or set(controller["tokens"]) != {"provision", "cleanup", "production"}
-    ):
-        raise LifecycleError("Connect delivery bundles have mismatched roles or targets")
-    if ("renewal" in controller) != ("checkpoint_token" in cleanup):
-        raise LifecycleError("cleanup renewal must preserve the original checkpoint key")
-    if "renewal" in controller:
-        receipt = connect_renewal.receipt(controller["renewal"])
-        key = cleanup["checkpoint_token"]
-        if (
-            not isinstance(key, str)
-            or hashlib.sha256(key.encode()).hexdigest() != receipt["checkpoint_token_sha256"]
-        ):
-            raise LifecycleError("cleanup delivery checkpoint key differs from its renewal")
-    return canonical_bytes(controller), canonical_bytes(cleanup)
+    cleanup, _credentials = bootstrap(raw_cleanup, helper=controller.helper_revision)
+    shared = controller.document(cleanup_only=True)
+    independent = cleanup.document()
+    for document in (shared, independent):
+        generations = document["generations"]
+        if not isinstance(generations, dict):
+            raise LifecycleError("lease generation projection is unavailable")
+        for roles in generations.values():
+            roles["cleanup"].pop("reader")
+    if shared != independent or controller.mode != "controller":
+        raise LifecycleError("Connect delivery bundles have mismatched policy or generations")
+    return canonical_bytes(controller.document()), canonical_bytes(raw_cleanup)
 
 
 class Delivery:
@@ -239,24 +204,20 @@ class Delivery:
         self.workspace_identity()
         self.github_protection()
 
-    def install(self, output: Path, *, renewal_id: str | None = None) -> None:
+    def install(self, output: Path) -> None:
         controller, cleanup = bundles(output)
-        destination = DESTINATION
-        renewal = json.loads(controller).get("renewal")
-        if (renewal_id is None) != (renewal is None):
-            raise LifecycleError("cleanup renewal must use its separate staging destination")
-        if renewal_id is not None:
-            from scripts.m3_11_unattended.model import identity as run_identity  # noqa: PLC0415
-
-            destination = (
-                DESTINATION.removesuffix("connect-bootstrap.json")
-                + "connect-renewal-"
-                + run_identity(renewal_id)
-                + ".json"
-            )
-            request = connect_renewal.request(connect_renewal.receipt(renewal)["request"])
-            if request["renewal_id"] != renewal_id:
-                raise LifecycleError("cleanup renewal delivery identity differs")
+        activation = read_private(output / "activation.json")
+        if (
+            activation.get("format") != "lowerduckpond-m3-11-lease-activation-v1"
+            or activation.get("status") != "ready"
+            or activation.get("controller_sha256") != hashlib.sha256(controller).hexdigest()
+            or activation.get("independent_sha256") != hashlib.sha256(cleanup).hexdigest()
+        ):
+            raise LifecycleError("private delivery requires exact verified migration preflight")
+        # Every staged revision has its own immutable destination, including rotation.
+        destination = DESTINATION.removesuffix("connect-bootstrap.json") + (
+            "lease-" + hashlib.sha256(controller).hexdigest() + ".json"
+        )
         if len(cleanup) > MAX_SECRET_BYTES:
             raise LifecycleError("independent Connect bootstrap exceeds GitHub's secret limit")
         identity = self.workspace_identity()
@@ -295,5 +256,37 @@ class Delivery:
             ENVIRONMENT,
             stdin=cleanup,
         )
-        # This is a new, inactive secret. Existing cleanup configuration and
-        # the approved helper revision stay under the implementation merge gate.
+        # Delivery is an explicit operational action after migration and approval;
+        # scheduled cleanup reads this single versioned bundle on its next execution.
+
+
+def main() -> int:
+    import argparse  # noqa: PLC0415 - operator-only entry point
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--destination", required=True)
+    parser.add_argument("--workspace", required=True)
+    parser.add_argument("--workspace-id", required=True)
+    parser.add_argument("--apply", action="store_true")
+    args = parser.parse_args()
+    try:
+        delivery = Delivery(args.destination, args.workspace, args.workspace_id)
+        bundles(args.output)
+        delivery.preflight()
+        if args.apply:
+            delivery.install(args.output)
+    except RuntimeError, OSError, ValueError, KeyError, TypeError:
+        parser.exit(
+            1, "Private delivery is unresolved; retain staged bundles and original access.\n"
+        )
+    print(
+        "Versioned bundles delivered."
+        if args.apply
+        else "Destination checked; no bundle delivered."
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

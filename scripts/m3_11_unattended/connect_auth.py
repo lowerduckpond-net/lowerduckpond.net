@@ -100,12 +100,14 @@ class Access:
         }
 
 
-def inspect(
+def inspect(  # noqa: PLR0913 - separate native policy, time and historical parsing bounds
     entry: dict[str, object],
     metadata: dict[str, object],
     *,
     expected: dict[str, int],
     now: datetime,
+    approved_expires_at: datetime | None = None,
+    allow_expired: bool = False,
 ) -> Access:
     """Parse policy privately. Endpoint authentication must follow before use."""
     token = entry.get("token")
@@ -150,7 +152,10 @@ def inspect(
         raise LifecycleError("Connect client lifetime is invalid") from None
     if (
         issued_at > now + SKEW
-        or not now < expires_at <= issued_at + MAX_LIFETIME + SKEW
+        or (not allow_expired and not now < expires_at)
+        or expires_at <= issued_at
+        or (approved_expires_at is None and expires_at > issued_at + MAX_LIFETIME + SKEW)
+        or (approved_expires_at is not None and expires_at != approved_expires_at)
         or abs(instant(native.get("created_at")) - issued_at) > SKEW
         or instant(native.get("expires_at")) != expires_at
         or instant(entry.get("expires_at")) != expires_at

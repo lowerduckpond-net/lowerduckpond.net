@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import atexit
 import hashlib
 import importlib
 import json
 import os
 import subprocess
 import sys
+from contextlib import ExitStack
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
@@ -21,6 +24,52 @@ from scripts.m3_11_live_storage import LiveStorage
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.qualification_context import HOST_ENV
 from scripts.qualification_probe import document
+
+_LEASE_SESSION = ExitStack()
+atexit.register(_LEASE_SESSION.close)
+
+
+def lease_use(root: Path) -> None:
+    """An attached diagnostic holds the same exclusive owner until process exit."""
+    from scripts.m3_11_unattended.model import digest, identity, instant  # noqa: PLC0415
+    from scripts.m3_11_unattended.state import LeaseState, RunState  # noqa: PLC0415
+
+    marker = read_private(root / MARKER)
+    original = Path(str(marker["original_run"]))
+    attempt = original.parent.parent
+    request_path = attempt / "request.json"
+    if not request_path.exists():
+        if attempt.parent.name == "runs" and (attempt / "attempt.json").exists():
+            raise ValueError("managed fixture request is unavailable")
+        return  # Older manually supplied fixtures retain their existing gates.
+    request = read_private(request_path)
+    if request.get("format") != "lowerduckpond-m3-11-unattended-request-v2":
+        raise ValueError("obsolete managed fixture cannot reacquire runtime access")
+    lease = LeaseState(attempt.parent.parent / "leases" / identity(request["lease_id"]))
+    with ExitStack() as pending:
+        pending.enter_context(RunState(attempt).lock())
+        pending.enter_context(lease.use_lock())
+        run_id = identity(attempt.name)
+        manifest = lease.manifest()
+        use = read_private(lease.directory / ("use-" + run_id + ".json"))
+        if (
+            use["attempt_id"] != run_id
+            or use["binding_sha256"] != digest(request["binding"])
+            or (lease.directory / ("released-" + run_id + ".json")).exists()
+            or any(lease.directory.glob("close-*.json"))
+            or datetime.now(UTC) >= manifest.policy.deadline(instant(manifest.created_at))
+            or RunState(attempt).status()["qualification"] not in {"failed", "interrupted"}
+        ):
+            raise ValueError("diagnostic fixture does not hold exclusive lease use")
+        lease.retain(
+            "diagnostic-" + run_id + ".json",
+            {
+                "use_sha256": digest(use),
+                "workspace_sha256": digest(str(root)),
+            },
+        )
+        _LEASE_SESSION.enter_context(pending.pop_all())
+
 
 TESTS = Path(__file__).resolve().parents[1] / "config/ansible/molecule/m3_8/tests"
 
@@ -61,6 +110,7 @@ def inputs(root: Path) -> tuple[dict[str, str], LiveStorage]:
 
 
 def attach(root: Path) -> Fixture:
+    lease_use(root)
     environment, storage = inputs(root)
     os.environ.update(environment)
     sys.path.insert(0, str(TESTS))

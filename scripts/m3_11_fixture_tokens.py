@@ -22,7 +22,8 @@ from scripts.check_m3_7_production_edge import (
 from scripts.check_m3_10_provider import required
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_qualification_evidence import fields
-from scripts.m3_11_unattended.model import ROLES, strings
+from scripts.m3_11_unattended.inputs import LEASE_FIXTURE_FORMAT
+from scripts.m3_11_unattended.model import ROLES, LeasePolicy, instant, strings
 
 
 def check_fixture_tokens(
@@ -95,12 +96,20 @@ def check_fixture_tokens(
             if name == "M3_10_TOKEN_AUDIT_TOKEN"
             else timedelta(hours=14)
         )
+        if fixture.get("format") == LEASE_FIXTURE_FORMAT:
+            maximum = timedelta(
+                seconds=LeasePolicy.parse(fixture["lease_policy"]).credential_lifetime_seconds
+            )
         expires = _timestamp(details.get("expires_on"))
         if (
             not now < expires <= now + maximum
             or expires - now < minimum_remaining
             or _timestamp(details.get("issued_on")) > now
             or (details.get("not_before") and _timestamp(details["not_before"]) > now)
+            or (
+                fixture.get("format") == LEASE_FIXTURE_FORMAT
+                and expires != instant(fixture["deadline"])
+            )
         ):
             raise ProductionEdgePreflightError(
                 "managed fixture token validity is outside its bound"

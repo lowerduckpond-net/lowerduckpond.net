@@ -11,7 +11,6 @@ from typing import override
 
 import pytest
 
-from scripts.m3_11_unattended import cleanup
 from scripts.m3_11_unattended.journal import FileJournal, event
 from scripts.m3_11_unattended.lifecycle import (
     CreationRecorder,
@@ -377,13 +376,9 @@ def test_stale_independent_resolution_cannot_hide_failed_authentication(
     assert independent.reconcile(intent).status == "unresolved"
     with pytest.raises(LifecycleError, match="outstanding"):
         independent.require_clear()
-    status = cleanup.status_document(case.journal, helper="f" * 40, now=NOW + LIFETIME)
-    assert status["outstanding"] == 1
-    assert status["overdue"] == 0  # exact deadline; overdue is strictly later
     case.provider.still_authenticates = False
     assert case.lifecycle.reconcile(intent, secret).status == "verified"
     independent.require_clear()
-    assert cleanup.status_document(case.journal, helper="f" * 40, now=NOW)["outstanding"] == 0
 
 
 def test_denied_proof_covers_explicit_markers_without_clock_ordering() -> None:

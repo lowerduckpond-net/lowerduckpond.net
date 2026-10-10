@@ -7,20 +7,15 @@ intent or overwrites a controller update. Provider secrets are never journaled.
 from __future__ import annotations
 
 import json
-import os
 import re
-import shutil
-import subprocess
 import uuid
-from collections.abc import Mapping
-from contextlib import suppress
 from datetime import UTC, datetime
+from http import HTTPStatus
 from pathlib import Path
 from typing import Protocol, cast, runtime_checkable
 
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
-from scripts.m3_11_unattended.journal_cache import JournalCache
 from scripts.m3_11_unattended.model import LifecycleError, digest, identity, instant, stamp
 
 FORMAT = "lowerduckpond-m3-11-credential-journal-v1"
@@ -55,6 +50,10 @@ def validate(value: object) -> dict[str, object]:
     ):
         raise LifecycleError("credential journal contains an invalid record")
     return record
+
+
+def record_title(record: dict[str, object]) -> str:
+    return f"m3-11-{record['event_id']}-{digest(record)}"
 
 
 class Journal(Protocol):
@@ -110,52 +109,6 @@ class FileJournal:
         return record
 
 
-class OnePassword:
-    def __init__(self, token: str, *, environment: Mapping[str, str] | None = None) -> None:
-        if not token or "\n" in token:
-            raise LifecycleError("1Password service account is unavailable")
-        ambient = os.environ if environment is None else environment
-        executable = shutil.which("op", path=ambient.get("PATH"))
-        if executable is None:
-            raise LifecycleError("1Password CLI is unavailable")
-        self.executable = executable
-        # Neither user sessions nor a second service account can bleed into op.
-        self.environment = {
-            key: ambient[key] for key in ("PATH", "HOME", "SSL_CERT_FILE") if key in ambient
-        }
-        self.environment.update(OP_SERVICE_ACCOUNT_TOKEN=token, OP_CACHE="false")
-
-    def journal_cache(self, path: Path, vault: str, *, output: Path | None = None) -> JournalCache:
-        return JournalCache(
-            path, token=self.environment["OP_SERVICE_ACCOUNT_TOKEN"], vault=vault, output=output
-        )
-
-    def command(self, *arguments: str, stdin: bytes | None = None) -> bytes:
-        try:
-            result = subprocess.run(  # noqa: S603 - fixed op operations, secrets only in stdin/env
-                [self.executable, *arguments],
-                input=stdin,
-                env=self.environment,
-                capture_output=True,
-                timeout=60,
-                check=False,
-            )
-        except OSError, subprocess.SubprocessError:
-            raise LifecycleError("1Password operation failed; retain the obligation") from None
-        if result.returncode or len(result.stdout) > MAX_OUTPUT:
-            raise LifecycleError("1Password operation failed; retain the obligation")
-        return result.stdout
-
-    def read(self, reference: str) -> str:
-        # Require immutable vault/item IDs, not an ambiguous user-visible title.
-        if re.fullmatch(r"op://[a-z0-9]{26}/[a-z0-9]{26}/[A-Za-z0-9_/-]+", reference) is None:
-            raise LifecycleError("1Password reference must use explicit vault and item identities")
-        raw = self.command("read", "--no-newline", reference)
-        if not 1 <= len(raw) <= 65536:  # noqa: PLR2004 - bounded secret input
-            raise LifecycleError("1Password field exceeds its input bound")
-        return raw.decode("utf-8")
-
-
 def _note_content(value: object) -> str:
     if not isinstance(value, list) or any(not isinstance(entry, dict) for entry in value):
         raise LifecycleError("credential journal item content is unavailable")
@@ -187,136 +140,247 @@ def _note_content(value: object) -> str:
     return content
 
 
-class OpJournal:
-    def __init__(self, op: OnePassword, vault: str) -> None:
-        if re.fullmatch(r"[a-z0-9]{26}", vault) is None:
-            raise LifecycleError("credential journal needs its dedicated vault identity")
-        self.op, self.vault = op, vault
-        self._records: list[dict[str, object]] | None = None
-        self._items: dict[str, tuple[str, dict[str, object]]] = {}
-        self._cache: JournalCache | None = None
+MIGRATION_FORMAT = "lowerduckpond-m3-11-legacy-import-v1"
+MIGRATION_TAG = "ldp-m3-11-legacy-import-v1"
 
-    def persist(self, record: dict[str, object]) -> dict[str, object]:
-        # op communicates with 1Password directly, without a Connect replica.
-        matches = [value for value in self.records() if value["event_id"] == record["event_id"]]
-        if matches:
-            if matches != [record]:
-                raise LifecycleError("persisted journal event differs from its original contents")
-        else:
-            self.append(record)
-        return record
 
-    def use_cache(self, path: Path, *, output: Path | None = None) -> None:
-        if self._items or self._records is not None:
-            raise LifecycleError("configure journal acceleration before reading obligations")
-        self._cache = self.op.journal_cache(path, self.vault, output=output)
-        try:
-            saved = self._cached_items(self._cache.read())
-        except RuntimeError, OSError, ValueError, TypeError:
-            # An untrusted/unreadable acceleration file is not the journal.
-            # Cold-read all live records; never manufacture an empty snapshot.
-            return
-        self._items = saved
+def migration(value: object) -> dict[str, object]:  # noqa: PLR0912 - complete reviewed obligation schema
+    """An approved import is an inventory of obligations, never a success receipt.
 
-    @staticmethod
-    def _cached_items(saved: dict[str, object]) -> dict[str, tuple[str, dict[str, object]]]:
-        if len(saved) > MAX_EVENTS:
-            raise LifecycleError("credential journal cache exceeds its bound")
-        result = {}
-        for item_id, value in saved.items():
-            selected = fields(value, {"version", "record"})
-            version = selected["version"]
-            if re.fullmatch(r"[a-z0-9]{26}", item_id) is None or (
-                not isinstance(version, str) or re.fullmatch(r"[0-9a-f]{64}", version) is None
-            ):
-                raise LifecycleError("credential journal cache identity is invalid")
-            result[item_id] = (version, validate(selected["record"]))
+    Exact old records, retained private-file digests and update intents remain
+    bound even when their original code path is retired. The operator's stopped
+    issuer attestation is part of the reviewed cutover input, not inferred from
+    an empty provider response or a liveness timeout.
+    """
+    from scripts.m3_11_unattended.model import fingerprint, strings  # noqa: PLC0415
+
+    selected = fields(
+        value,
+        {
+            "format",
+            "records",
+            "obligations",
+            "retained_files",
+            "expiry_updates",
+            "issuers",
+            "approved_at",
+            "approval_reference",
+        },
+    )
+    if selected["format"] != MIGRATION_FORMAT:
+        raise LifecycleError("legacy import format is unsupported")
+    instant(selected["approved_at"])
+    approval = selected["approval_reference"]
+    if not isinstance(approval, str) or not approval or len(approval) > 256:  # noqa: PLR2004
+        raise LifecycleError("legacy import requires explicit approval")
+    for key, expected in strings(selected["records"]).items():
+        identity(key)
+        fingerprint(expected)
+    for path, expected in strings(selected["retained_files"]).items():
+        if not path or len(path) > 4096 or any(ord(char) < 32 for char in path):  # noqa: PLR2004
+            raise LifecycleError("legacy retained-file mapping is invalid")
+        fingerprint(expected)
+    obligations = selected["obligations"]
+    if not isinstance(obligations, dict):
+        raise LifecycleError("legacy obligation mapping is missing")
+    for key, raw in obligations.items():
+        fingerprint(key)
+        row = fields(raw, {"generation_id", "provider_id", "original_status"})
+        identity(row["generation_id"])
+        if row["provider_id"] is not None and (
+            not isinstance(row["provider_id"], str)
+            or re.fullmatch(r"[A-Za-z0-9_-]{8,128}", row["provider_id"]) is None
+        ):
+            raise LifecycleError("legacy provider ID mapping is invalid")
+        if row["original_status"] not in {
+            "unresolved",
+            "verified",
+            "not-submitted",
+            "operator-accepted-uncertainty",
+        }:
+            raise LifecycleError("legacy original status is invalid")
+    if not isinstance(selected["expiry_updates"], list):
+        raise LifecycleError("legacy expiry update inventory is missing")
+    for raw in selected["expiry_updates"]:
+        row = fields(raw, {"plan", "plan_sha256", "generation_id", "result_files"})
+        if digest(row["plan"]) != fingerprint(row["plan_sha256"]):
+            raise LifecycleError("legacy expiry intent digest differs")
+        identity(row["generation_id"])
+        for path, expected in strings(row["result_files"]).items():
+            if strings(selected["retained_files"]).get(path) != fingerprint(expected):
+                raise LifecycleError("legacy expiry evidence was not retained")
+    issuers = selected["issuers"]
+    if not isinstance(issuers, list) or (selected["records"] and not issuers):
+        raise LifecycleError("legacy import lacks stopped issuer evidence")
+    for raw in issuers:
+        row = fields(
+            raw,
+            {
+                "container_id",
+                "daemon_sha256",
+                "stopped_at",
+                "running",
+                "restart_policy",
+                "issuance_disabled",
+            },
+        )
+        fingerprint(row["container_id"])
+        fingerprint(row["daemon_sha256"])
+        instant(row["stopped_at"])
+        if (
+            row["running"] is not False
+            or row["restart_policy"] != "no"
+            or row["issuance_disabled"] is not True
+        ):
+            raise LifecycleError("legacy issuer may still execute or restart")
+    return selected
+
+
+class ConnectObligations:
+    """Cleanup-only reader of original journal records plus monotonic outcomes.
+
+    There is no service-account access, witness, checkpoint, or new legacy intent.
+    The reviewed import's exact minimum inventory may never disappear. New old-
+    format issuance after cutover is a hard error, even when its creator is gone.
+    """
+
+    def __init__(self, client: object, vault: str, *, spool: Path, expected: str) -> None:
+        from scripts.m3_11_unattended.connect_api import Connect  # noqa: PLC0415
+        from scripts.m3_11_unattended.model import fingerprint  # noqa: PLC0415
+        from scripts.m3_11_unattended.state import private_directory  # noqa: PLC0415
+
+        if not isinstance(client, Connect):
+            raise LifecycleError("legacy import requires its authenticated Connect reader")
+        self.client, self.vault, self.expected = (
+            client,
+            Connect._identity(vault),
+            fingerprint(expected),
+        )
+        spool.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private_directory(spool)
+        self.spool = spool
+        self.mapping: dict[str, object] | None = None
+
+    def _items(self) -> list[dict[str, object]]:
+        response = self.client.request("GET", f"/v1/vaults/{self.vault}/items")
+        if (
+            response.status != HTTPStatus.OK
+            or not isinstance(response.body, list)
+            or len(response.body) > MAX_EVENTS
+        ):
+            raise LifecycleError("legacy Connect inventory is unavailable or incomplete")
+        result = []
+        seen: set[str] = set()
+        for raw in response.body:
+            if not isinstance(raw, dict):
+                raise LifecycleError("legacy Connect inventory is malformed")
+            if not isinstance(raw.get("id"), str):
+                raise LifecycleError("legacy Connect item identity is invalid")
+            item_id = self.client._identity(str(raw["id"]))
+            if item_id in seen:
+                raise LifecycleError("legacy Connect inventory repeats an item")
+            seen.add(item_id)
+            result.append(raw)
         return result
 
-    def _inventory(self) -> list[dict[str, object]]:
-        value = json.loads(
-            self.op.command("item", "list", "--vault", self.vault, "--format", "json")
-        )
+    def _read(self, item: dict[str, object], *, tag: str) -> dict[str, object]:
+        full = self.client.item(self.vault, str(item["id"]))
         if (
-            not isinstance(value, list)
-            or len(value) > MAX_EVENTS
-            or any(not isinstance(item, dict) for item in value)
+            full.get("category") != "SECURE_NOTE"
+            or full.get("tags") != [tag]
+            or full.get("state") is not None
         ):
-            raise LifecycleError("credential journal inventory is unavailable")
-        return cast(list[dict[str, object]], value)
-
-    def _read(self, item_id: object) -> dict[str, object]:
-        if not isinstance(item_id, str) or re.fullmatch(r"[a-z0-9]{26}", item_id) is None:
-            raise LifecycleError("credential journal item identity is invalid")
-        item = json.loads(
-            self.op.command("item", "get", item_id, "--vault", self.vault, "--format", "json")
+            raise LifecycleError("legacy Connect record metadata differs")
+        raw = _note_content(full.get("fields"))
+        value = json.loads(raw)
+        if not isinstance(value, dict) or canonical_bytes(value).decode() != raw:
+            raise LifecycleError("legacy Connect record content is ambiguous")
+        expected_title = (
+            "m3-11-import-" + digest(migration(value))
+            if tag == MIGRATION_TAG
+            else record_title(validate(value))
         )
-        if (
-            not isinstance(item, dict)
-            or item.get("id") != item_id
-            or not isinstance(item.get("vault"), dict)
-            or item["vault"].get("id") != self.vault
-            or item.get("category") != "SECURE_NOTE"
-            or item.get("tags") != [TAG]
-        ):
-            raise LifecycleError("credential journal item metadata changed")
-        content = _note_content(item.get("fields"))
-        record = validate(json.loads(content))
-        if item.get("title") != self._title(record) or canonical_bytes(record).decode() != content:
-            raise LifecycleError("credential journal item content changed")
-        return record
-
-    @staticmethod
-    def _title(record: dict[str, object]) -> str:
-        return f"m3-11-{record['event_id']}-{digest(record)}"
+        if full.get("title") != expected_title or item.get("title") != expected_title:
+            raise LifecycleError("legacy Connect record identity differs")
+        return cast(dict[str, object], value)
 
     def records(self) -> list[dict[str, object]]:
-        if self._records is not None:
-            return list(self._records)
-        # Dedicated vault: silently filtering malformed/foreign obligations could
-        # hide a credential. Unrelated configuration belongs in separate vaults.
-        records = []
-        inventory = self._inventory()
-        if set(self._items) - {item.get("id") for item in inventory}:
-            raise LifecycleError("an immutable credential journal item disappeared")
-        for item in inventory:
-            item_id = item.get("id")
-            if not isinstance(item_id, str):
-                raise LifecycleError("credential journal item identity is invalid")
-            version = digest(
-                {
-                    key: item.get(key)
-                    for key in ("id", "title", "vault", "updated_at", "version", "tags", "category")
-                }
-            )
-            cached = self._items.get(item_id)
-            if cached is None:
-                cached = (version, self._read(item_id))
-                self._items[item_id] = cached
-            if cached[0] != version or item.get("title") != self._title(cached[1]):
-                raise LifecycleError("an immutable credential journal item was edited")
-            records.append(cached[1])
-        ids = [record["event_id"] for record in records]
-        if len(set(ids)) != len(ids):
-            raise LifecycleError("credential journal has ambiguous duplicate identities")
-        self._records = records
-        if self._cache is not None:
-            # Provider cleanup uses the already validated live snapshot even if
-            # optional local acceleration cannot be retained or exceeds its cap.
-            with suppress(OSError, RuntimeError, ValueError):
-                self._cache.write(
-                    {
-                        item_id: {"version": version, "record": record}
-                        for item_id, (version, record) in self._items.items()
-                    }
-                )
-        return list(records)
+        items = self._items()
+        imports = [row for row in items if row.get("title") == "m3-11-import-" + self.expected]
+        if len(imports) != 1:
+            raise LifecycleError("approved legacy import is missing or ambiguous")
+        mapping = migration(self._read(imports[0], tag=MIGRATION_TAG))
+        if digest(mapping) != self.expected:
+            raise LifecycleError("legacy import changed after approval")
+        values: dict[str, dict[str, object]] = {}
+        for item in items:
+            tags = item.get("tags")
+            if (
+                not (isinstance(tags, list) and TAG in tags)
+                and re.fullmatch(r"m3-11-[0-9a-f-]{36}-[0-9a-f]{64}", str(item.get("title")))
+                is None
+            ):
+                continue
+            record = self._read(item, tag=TAG)
+            key = str(record["event_id"])
+            if key in values and values[key] != record:
+                raise LifecycleError("legacy record identity is ambiguous")
+            values[key] = record
+        minimum = cast(dict[str, str], mapping["records"])
+        if any(
+            key not in values or digest(values[key]) != expected
+            for key, expected in minimum.items()
+        ):
+            raise LifecycleError("an imported legacy obligation disappeared or changed")
+        if any(
+            row["kind"] in {"intent", "run"} and key not in minimum for key, row in values.items()
+        ):
+            raise LifecycleError("obsolete issuance appeared after legacy import")
+        from scripts.m3_11_unattended.lifecycle import _intents, _known_id  # noqa: PLC0415
 
-    def append(self, record: dict[str, object]) -> None:
+        records = list(values.values())
+        originals = [values[key] for key in minimum]
+        obligations = cast(dict[str, dict[str, object]], mapping["obligations"])
+        intents = _intents(originals)
+        if set(obligations) != {intent.sha256 for intent in intents} or any(
+            obligations[intent.sha256]["provider_id"] != _known_id(originals, intent)
+            for intent in intents
+        ):
+            raise LifecycleError("legacy import does not cover every original obligation")
+        self.mapping = mapping
+        return records
+
+    def persist(self, record: dict[str, object]) -> dict[str, object]:
         validate(record)
-        title = self._title(record)
-        item = {
-            "title": title,
+        records = self.records()
+        matches = [row for row in records if row["event_id"] == record["event_id"]]
+        if matches:
+            if matches != [record]:
+                raise LifecycleError("legacy cleanup observation conflicts")
+            return record
+        if record["kind"] in {"intent", "run"}:
+            raise LifecycleError("obsolete credential issuance is permanently disabled")
+        # Identical observations reuse their original immutable event ID.
+        previous = next(
+            (
+                row
+                for row in records
+                if all(row[key] == record[key] for key in ("kind", "run_id", "payload"))
+            ),
+            None,
+        )
+        if previous is not None:
+            return previous
+        semantic = {key: record[key] for key in ("kind", "run_id", "payload")}
+        pending = self.spool / (digest(semantic) + ".json")
+        if pending.exists():
+            original = read_private(pending)
+            if any(original.get(key) != value for key, value in semantic.items()):
+                raise LifecycleError("legacy pending observation conflicts")
+            raise LifecycleError("legacy cleanup observation remains unobserved")
+        write_private(pending, record)
+        item: dict[str, object] = {
+            "title": record_title(record),
             "category": "SECURE_NOTE",
             "vault": {"id": self.vault},
             "tags": [TAG],
@@ -330,27 +394,18 @@ class OpJournal:
                 }
             ],
         }
-        # A lost item-creation response is reconciled by exact immutable content;
-        # never retry the mutation or create multiple intents after uncertainty.
-        response: object = None
-        with suppress(LifecycleError, ValueError):
-            response = json.loads(
-                self.op.command(
-                    "item", "create", "--format", "json", "-", stdin=canonical_bytes(item)
-                )
-            )
-        if isinstance(response, dict) and isinstance(response.get("id"), str):
-            selected = response["id"]
-        else:
-            matches = [entry for entry in self._inventory() if entry.get("title") == title]
-            if len(matches) != 1:
-                raise LifecycleError("credential obligation was not durably acknowledged")
-            selected = matches[0].get("id")
-        if self._read(selected) != record:
-            raise LifecycleError("credential obligation was not durably acknowledged")
-        if self._records is not None:
-            self._records.append(record)
+        response = self.client.request("POST", f"/v1/vaults/{self.vault}/items", item)
+        if response.status not in {200, 201} or not isinstance(response.body, dict):
+            raise LifecycleError("legacy cleanup observation was not acknowledged")
+        if not isinstance(response.body.get("id"), str):
+            raise LifecycleError("legacy cleanup acknowledgement identity is invalid")
+        readback: dict[str, object] = {
+            "id": self.client._identity(str(response.body["id"])),
+            "title": item["title"],
+        }
+        if self._read(readback, tag=TAG) != record:
+            raise LifecycleError("legacy cleanup observation readback differs")
+        return record
 
-    def refresh(self) -> None:
-        """One consistent remote snapshot per bounded provisioning/cleanup pass."""
-        self._records = None
+    def append(self, record: dict[str, object]) -> None:
+        self.persist(record)
