@@ -1,0 +1,54 @@
+---
+name: External link report
+
+on:
+  schedule:
+    - cron: "47 5 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-link-report
+  cancel-in-progress: false
+
+jobs:
+  report:
+    name: External link availability (informational)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned tools
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          github_token: ${{ github.token }}
+          version: 2026.8.8
+          install_args: just github:lycheeverse/lychee
+      - name: Check external availability
+        # HTTP failures belong in this report, never in the PR merge gate.
+        continue-on-error: true
+        run: just report-external-links "$RUNNER_TEMP/external-links.md"
+      - name: Publish informational summary
+        if: always()
+        run: |
+          {
+            echo '## External link availability'
+            echo 'Informational only; external availability does not gate merges.'
+            if [[ -f "$RUNNER_TEMP/external-links.md" ]]; then
+              cat "$RUNNER_TEMP/external-links.md"
+            else
+              echo 'Report unavailable; inspect this scheduled run for tool or runner errors.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain external link report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: external-links-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/external-links.md
+          retention-days: 30
+          if-no-files-found: warn

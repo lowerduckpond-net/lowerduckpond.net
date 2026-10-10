@@ -26,9 +26,13 @@ check: check-pre-commit check-links check-python check-m3-contract-spine check-m
 check-pre-commit: _sync
     git ls-files --cached --others --exclude-standard -z | xargs -0 uv run pre-commit run --show-diff-on-failure --files
 
-# Check external and internal links in Markdown documentation.
+# Check repository files and supported Markdown/HTML anchors without network requests.
 check-links:
-    lychee --config .lychee.toml "**/*.md" "*.md"
+    lychee --config .lychee.toml --offline --include-fragments=anchor-only "**/*.md" "*.md"
+
+# Write an informational external HTTP(S) availability report (not part of check).
+report-external-links report:
+    lychee --config .lychee.toml --scheme http --scheme https --format markdown --output {{quote(report)}} "**/*.md" "*.md"
 
 # Format-check, lint, type-check, and test Python workspace packages.
 check-python: check-python-static
