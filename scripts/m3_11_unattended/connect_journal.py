@@ -12,7 +12,12 @@ from functools import partial
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_unattended.connect_auth import identity as account_identity
 from scripts.m3_11_unattended.connect_checkpoint import Checkpoint, Stored
-from scripts.m3_11_unattended.connect_ledger import ACK_FORMAT, ConnectLedger, SnapshotChangedError
+from scripts.m3_11_unattended.connect_ledger import (
+    ACK_FORMAT,
+    ConnectLedger,
+    ReadbackExpiredError,
+    SnapshotChangedError,
+)
 from scripts.m3_11_unattended.journal import event, validate
 from scripts.m3_11_unattended.model import LifecycleError, digest, identity
 from scripts.m3_11_unattended.state import cleanup_lock
@@ -22,6 +27,11 @@ from scripts.qualification_timing import measure
 ACK_WAIT_SECONDS = 120
 ACK_POLL_SECONDS = 5
 OBSERVATION_SECONDS = 5
+RECEIPT_SECONDS = 10
+
+
+class ReceiptPendingError(LifecycleError):
+    """An informational receipt was not published; no admission result is implied."""
 
 
 def acknowledgement(record: dict[str, object]) -> bool:
@@ -381,7 +391,16 @@ class IndependentJournal(_Canonical):
         # Do not select an arbitrary equal-payload checkpoint row here: that
         # could relabel a controller's forged receipt as independently authored.
         with self._fresh():
-            self.ledger.stage(record)
+            try:
+                # Informational publication must leave time to service returned
+                # credential IDs while the controller's ACK clocks keep running.
+                with self.ledger.read_budget(
+                    deadline=time.monotonic() + RECEIPT_SECONDS,
+                    check_cancelled=lambda: None,
+                ):
+                    self.ledger.stage(record)
+            except ReadbackExpiredError as error:
+                raise ReceiptPendingError("independent receipt publication is pending") from error
             self.records()
             if not self.ledger.authored(record, self.witness.author):
                 raise LifecycleError("independent receipt awaits native author readback")

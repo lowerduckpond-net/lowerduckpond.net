@@ -33,9 +33,13 @@ from scripts.m3_11_unattended.connect_checkpoint import FORMAT as CHECKPOINT_FOR
 from scripts.m3_11_unattended.connect_checkpoint import Checkpoint, Stored
 from scripts.m3_11_unattended.connect_checkpoint_key import credential as checkpoint_credential
 from scripts.m3_11_unattended.connect_configuration import PROVIDER_REFERENCES, _references
-from scripts.m3_11_unattended.connect_diagnostics import failure, failure_chain
+from scripts.m3_11_unattended.connect_diagnostics import failure, failure_chain, retain_failure
 from scripts.m3_11_unattended.connect_host import independent_server
-from scripts.m3_11_unattended.connect_journal import IndependentJournal, Witness
+from scripts.m3_11_unattended.connect_journal import (
+    IndependentJournal,
+    ReceiptPendingError,
+    Witness,
+)
 from scripts.m3_11_unattended.connect_ledger import ConnectLedger
 from scripts.m3_11_unattended.docker import Docker
 from scripts.m3_11_unattended.github_checkpoint import REPOSITORY, WORKFLOW, GitHubArtifacts
@@ -246,6 +250,7 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
     attempt: int,
     fallback: Callable[[], Lifecycle],
     dispatch_id: str = "",
+    journal_failure: Callable[[Exception], None] = lambda _error: None,
 ) -> dict[str, object]:
     """One bounded witness execution; hourly independent sweeps continue afterward."""
     until = time.monotonic() + (WITNESS_SECONDS if request_sha256 else 0)
@@ -261,6 +266,17 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
     connected: Connections | None = None
     lifecycle: Lifecycle | None = None
     last_flush = time.monotonic()
+
+    def recover_receipt(error: ReceiptPendingError) -> None:
+        nonlocal next_sweep
+        # This is another observation of the same bounded witness, never a
+        # restarted controller, repeated credential CREATE or renewed window.
+        # A fresh full sweep must succeed before any further creation ACK.
+        with suppress(Exception):
+            journal_failure(error)
+        if not request_sha256 or time.monotonic() >= until:
+            raise error
+        next_sweep = 0.0
 
     def arm_policy_restore(deadline: datetime) -> None:
         nonlocal until, audit_wait_selected, audit_deadline
@@ -385,16 +401,20 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
             )
             lifecycle.progress = cleanup_progress
             policy_pass_started = datetime.now(UTC)
-            with journal.reconciliation():
-                receipt = cleanup.sweep(
-                    lifecycle,
-                    actor="github",
-                    helper=journal.witness.current_helper,
-                    authority_verified=connected is not None,
-                    arm_policy_restore=arm_policy_restore,
-                    force_policy_restore=final_policy_pass,
-                    before_receipt=completed_sweep,
-                )
+            try:
+                with journal.reconciliation():
+                    receipt = cleanup.sweep(
+                        lifecycle,
+                        actor="github",
+                        helper=journal.witness.current_helper,
+                        authority_verified=connected is not None,
+                        arm_policy_restore=arm_policy_restore,
+                        force_policy_restore=final_policy_pass,
+                        before_receipt=completed_sweep,
+                    )
+            except ReceiptPendingError as error:
+                recover_receipt(error)
+                continue
             if audit_deadline is not None and policy_pass_started >= audit_deadline:
                 audit_due_checked = True
             next_sweep = time.monotonic() + SWEEP_SECONDS
@@ -410,22 +430,26 @@ def reconcile(  # noqa: PLR0913, PLR0915 - explicit witness/restoration deadline
                 admission = Admission(journal, targets=targets, now=datetime.now(UTC))
                 reserve_pending(admission)
             if not announced and receipt.get("status") == "ready":
-                journal.append(
-                    event(
-                        "heartbeat",
-                        str(uuid.uuid7()),
-                        {
-                            "format": READY_FORMAT,
-                            "request_sha256": request_sha256,
-                            "dispatch_id": dispatch_id,
-                            "active_helper": journal.witness.current_helper,
-                            "witness": journal.witness.binding(),
-                            "observed_at": stamp(datetime.now(UTC)),
-                            "github_run_id": run_id,
-                            "github_run_attempt": attempt,
-                        },
+                try:
+                    journal.append(
+                        event(
+                            "heartbeat",
+                            str(uuid.uuid7()),
+                            {
+                                "format": READY_FORMAT,
+                                "request_sha256": request_sha256,
+                                "dispatch_id": dispatch_id,
+                                "active_helper": journal.witness.current_helper,
+                                "witness": journal.witness.binding(),
+                                "observed_at": stamp(datetime.now(UTC)),
+                                "github_run_id": run_id,
+                                "github_run_attempt": attempt,
+                            },
+                        )
                     )
-                )
+                except ReceiptPendingError as error:
+                    recover_receipt(error)
+                    continue
                 announced = True
         # Recreate both the records snapshot and clock after network/provider I/O.
         admission = Admission(journal, targets=targets, now=datetime.now(UTC))
@@ -604,6 +628,12 @@ def execute(  # noqa: PLR0915 - staged cleanup keeps private authority in this b
                 attempt=int(os.environ["GITHUB_RUN_ATTEMPT"]),
                 fallback=lambda: Lifecycle(
                     independent, cleanup.cleanup_providers(client, references, targets)
+                ),
+                journal_failure=lambda error: retain_failure(
+                    directory / "journal-observation-failure.json",
+                    binding={"helper_revision": helper},
+                    stage="reconcile-and-witness",
+                    error=error,
                 ),
             )
             if operation == "reconcile":

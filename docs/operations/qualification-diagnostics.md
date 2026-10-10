@@ -20,6 +20,14 @@ unresolved. Receipts use a GitHub run/attempt artifact name; the private
 digest. Earlier failed attempts remain separate evidence, including legacy
 artifacts that share a name.
 
+The failure receipt also retains up to four related causes using the same
+closed fields. Transport causes can identify the original journal POST's HTTP
+status or timeout separately from its eventual readback timeout, without
+exporting the response body. If a witness recovers after an informational
+heartbeat could not be observed, `m3-11-journal-observation-RUN-attempt-N`
+retains that first failure even when the execution later succeeds. This
+diagnostic does not establish provider revocation or qualification success.
+
 `just check-ansible-m3-8` runs the existing full installed sequence and records
 monotonic timing observations. Its private timing directory is printed before
 the run, under `${XDG_DATA_HOME:-$HOME/.local/share}/lowerduckpond.net/qualification/`
