@@ -20,13 +20,15 @@ from scripts.qualification_context import ARTIFACT_ENV, RUN_ENV, host_name
 def _assert_archive_export_budget(host: Host) -> None:
     checked = host.run(
         "/usr/bin/systemctl show lowerduckpond-archive-export@request.service "
-        "--property=Result,InvocationID,MemoryMax,MemorySwapMax,LimitCPU,CPUQuotaPerSecUSec"
+        "--property=Result,InvocationID,MemoryMax,MemoryPeak,MemorySwapMax,LimitCPU,CPUQuotaPerSecUSec"
     )
     assert checked.rc == 0, checked.stderr
     properties = dict(line.split("=", 1) for line in checked.stdout.splitlines())
     assert properties["InvocationID"], "the restore must exercise the archive-export service"
     assert properties["Result"] == "success"
     assert int(properties["MemoryMax"]) == 256 * 1024 * 1024
+    assert properties["MemoryPeak"].isdigit(), "the export service requires live memory accounting"
+    assert int(properties["MemoryPeak"]) > 0
     assert properties["MemorySwapMax"] == "0"
     assert properties["LimitCPU"] == "120"
     assert properties["CPUQuotaPerSecUSec"] == "1s"
