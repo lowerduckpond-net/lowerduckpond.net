@@ -14,6 +14,7 @@ from pathlib import Path
 from lowerduckpond_m3_archive.report import ArchiveQualificationReport
 
 from scripts import m3_11_qualification_evidence as combined
+from scripts import qualification_report_originals
 from scripts.m3_11_private_inputs import publish_bytes, read_private, read_private_bytes
 from scripts.m3_11_recovery_policy import HISTORICAL_SPAN, SUMMARY_FIELDS, Window
 from scripts.m3_11_unattended import inputs as managed_inputs
@@ -495,6 +496,7 @@ def publish_report(  # noqa: PLR0913 - explicit candidate and recovery publicati
         )
         if raw != combined.canonical_bytes(original):
             raise ValueError("qualification report changed during publication repair")
+        qualification_report_originals.verify(directory, original, phases=PHASES)
     else:
         report = create_report(
             directory,
@@ -513,8 +515,11 @@ def publish_report(  # noqa: PLR0913 - explicit candidate and recovery publicati
                 recovery = report["finalization_recovery"]
                 if not isinstance(managed, dict) or not isinstance(recovery, dict):
                     raise ValueError("recovery evidence is invalid")
-                if datetime.now(UTC) >= Window.from_evidence(managed, recovery).deadline:
+                window = Window.from_evidence(managed, recovery)
+                authorized = datetime.now(UTC)
+                if authorized >= window.deadline:
                     raise ValueError("recovery publication exceeded original credential expiry")
+                window.validate(report, now=authorized, freshness=HISTORICAL_SPAN)
 
             write_once(path, raw, before_publish=require_publication)
         else:

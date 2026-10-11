@@ -1286,7 +1286,9 @@ lease lifecycle; finalization does not retire credentials or cleanup authorities
 
 If a complete `qualification.json` already exists, recovery validates it against
 its original evidence and only completes the report/checksum publication pair.
-That path needs no credentials or new provider observations. It preserves report
+That path matches the report to retained original combined/context, storage,
+artifact, managed receipt and observation evidence without recreating it. It
+needs no credentials or new provider observations. It preserves report
 bytes and `packaged_at`. Existing conflicting or truncated published files are
 not overwritten. Checksum-only repair validates the original packaging chronology
 and current candidate inputs/revocations even after evidence ages out; repairing
@@ -1300,6 +1302,7 @@ storage proof must all come from one recovery invocation, before child expiry.
 Report bytes must be complete and publication authorized before that expiry.
 The final guard runs after staging/fsync, immediately before atomic rename; an
 operating-system pause after authorization can delay directory-entry visibility.
+The same final guard rechecks the 24-hour observation age after staging.
 That invocation appends `final-observation.json`; an earlier recovery summary and
 all original evidence remain unchanged. Packaging requires those observations to
 be at most 24 hours old, measured from the invocation's earliest observation.

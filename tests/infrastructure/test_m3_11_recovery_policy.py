@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import uuid
 from collections.abc import Callable
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
@@ -29,7 +30,7 @@ from scripts.qualification_storage_lease import FD_ENV
 from . import test_m3_11_qualification_report as fixtures
 from . import test_m3_11_unattended_inputs as credentials
 from .test_m3_11_finalization_report import prepared
-from .test_m3_11_qualification_report import ARTIFACT, TARGET, Run, child
+from .test_m3_11_qualification_report import ARTIFACT, TARGET, Run, child, rehash
 
 
 def clock(value: datetime) -> SimpleNamespace:
@@ -225,7 +226,88 @@ def test_checksum_repair_rejects_changed_original_binding(
     assert not (run.directory / "qualification.sha256").exists()
 
 
-@pytest.mark.parametrize("reason", ["expired", "cancelled"])
+@pytest.mark.parametrize("recovered", [False, True])
+def test_checksum_repair_rejects_internally_valid_report_from_another_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, recovered: bool
+) -> None:
+    if recovered:
+        run, environment, _ = historical(tmp_path, monkeypatch, 3)
+        monkeypatch.setattr(recovery, "_command", Mock())
+        recovery.finish(run.directory, invocation(run, "recovered"), environment)
+    else:
+        run = getattr(fixtures.run, "__wrapped__")(tmp_path)  # noqa: B009 - pytest wrapper typing
+        reports.publish_report(
+            run.directory, repository=run.repository, storage_target=TARGET, milestone="3.11"
+        )
+    report = read_private(run.directory / "qualification.json")
+    child(report, "combined", "context")["run_id"] = str(uuid.uuid7())
+    rehash(report)
+    if recovered:
+        observation = child(report, "finalization_recovery", "final_observation")
+        observation["context_sha256"] = functional.digest(child(report, "combined", "context"))
+        observation["combined_sha256"] = functional.digest(report["combined"])
+    # Internal consistency alone cannot prove these bytes belong to this run.
+    conflicting = run.verify(report)
+    (run.directory / "qualification.sha256").unlink()
+    with pytest.raises(ValueError, match="retained combined evidence"):
+        reports.publish_report(
+            run.directory, repository=run.repository, storage_target=TARGET, milestone="3.11"
+        )
+    assert (run.directory / "qualification.json").read_bytes() == conflicting
+    assert not (run.directory / "qualification.sha256").exists()
+
+
+@pytest.mark.parametrize(
+    "fault", ["storage", "installed", "context", "inputs", "managed", "timestamp", "observation"]
+)
+def test_checksum_repair_requires_retained_original_files_and_observations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    run, environment, _ = historical(tmp_path, monkeypatch, 3)
+    monkeypatch.setattr(recovery, "_command", Mock())
+    attempt = invocation(run, "recovered")
+    recovery.finish(run.directory, attempt, environment)
+    original = (run.directory / "qualification.json").read_bytes()
+    (run.directory / "qualification.sha256").unlink()
+    paths = {
+        "storage": "storage.json",
+        "installed": "installed.json",
+        "context": "combined-context.json",
+        "inputs": "qualification-inputs.json",
+        "managed": "managed-credentials.json",
+        "timestamp": "verify.passed",
+        "observation": "recovered/final-observation.json",
+    }
+    path = run.directory / paths[fault]
+    if fault == "timestamp":
+        import os  # noqa: PLC0415
+
+        timestamp = path.stat().st_mtime - 1
+        os.utime(path, (timestamp, timestamp))
+    elif fault == "observation":
+        path.unlink()
+    else:
+        import json  # noqa: PLC0415
+
+        value = json.loads(path.read_bytes())
+        key = {
+            "storage": "run_id",
+            "installed": "artifact_sha256",
+            "context": "run_id",
+            "inputs": "storage_target_sha256",
+            "managed": "managed_run_id",
+        }[fault]
+        value[key] = "a" * 64 if fault in {"installed", "inputs"} else str(uuid.uuid7())
+        path.write_bytes(evidence.canonical_bytes(value))
+    with pytest.raises(ValueError, match="retained"):
+        reports.publish_report(
+            run.directory, repository=run.repository, storage_target=TARGET, milestone="3.11"
+        )
+    assert (run.directory / "qualification.json").read_bytes() == original
+    assert not (run.directory / "qualification.sha256").exists()
+
+
+@pytest.mark.parametrize("reason", ["expired", "cancelled", "stale"])
 def test_access_loss_after_report_construction_cannot_publish_or_repair(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reason: str
 ) -> None:
@@ -243,12 +325,14 @@ def test_access_loss_after_report_construction_cannot_publish_or_repair(
             return
         if reason == "expired":
             monkeypatch.setattr(reports, "datetime", clock(deadline))
+        elif reason == "stale":
+            monkeypatch.setattr(reports, "datetime", clock(datetime.now(UTC) + timedelta(hours=25)))
         else:
             monkeypatch.setattr(recovery, "require_live", Mock(side_effect=ValueError("cancelled")))
         publish_bytes(path, raw, before_publish=before_publish)
 
     monkeypatch.setattr(reports, "publish_bytes", stage)
-    with pytest.raises(ValueError, match=r"expiry|cancelled"):
+    with pytest.raises(ValueError, match=r"expiry|cancelled|stale"):
         recovery.finish(run.directory, invocation(run, "recovered"), environment)
     assert not (run.directory / "qualification.json").exists()
     assert not (run.directory / "qualification.sha256").exists()
