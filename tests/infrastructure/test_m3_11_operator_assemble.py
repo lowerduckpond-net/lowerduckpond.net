@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -19,7 +20,7 @@ from scripts.m3_11_unattended import operator_assemble as assembly
 from scripts.m3_11_unattended.config import DO_READ_SCOPES, LeaseConfiguration
 from scripts.m3_11_unattended.connect_action import bootstrap
 from scripts.m3_11_unattended.connect_delivery import MAX_SECRET_BYTES
-from scripts.m3_11_unattended.model import LifecycleError, digest, stamp
+from scripts.m3_11_unattended.model import LifecycleError, digest, instant, stamp
 
 from .test_m3_11_connect_setup import independent_reader
 from .test_m3_11_lease_configuration import document, mapping
@@ -122,6 +123,12 @@ def fixture() -> tuple[dict[str, object], FakeOperator]:
                 "observed_at": stamp(now),
                 "attested_by": "synthetic-operator",
                 "principal_context": "synthetic approved console team",
+                "generation_id": generation_id,
+                "token_reference": mapping(existing["references"])["digitalocean"],
+                "token_sha256": hashlib.sha256(
+                    ("SYNTHETIC-PROVIDER-CANARY-" + role + "-digitalocean").encode()
+                ).hexdigest(),
+                "token_created_at": first["introduced_at"],
             },
         }
     return manifest, FakeOperator(manifest, configured)
@@ -169,6 +176,9 @@ def test_private_assembly_separates_readers_and_leaves_originals(
     assert output.stat().st_mode & 0o777 == DIRECTORY_MODE
     assert all(path.stat().st_mode & 0o777 == FILE_MODE for path in output.iterdir())
     assert read_private(output / "assembly-receipt.json")["status"] == "staged-only"
+    assert read_private(output / "assembly-receipt.json")["operator_inputs_sha256"] == digest(
+        manifest
+    )
     for role in ("provision", "cleanup"):
         attestation = read_private(output / (role + "-digitalocean-attestation.json"))
         generation = controller.generations[controller.active_generation][role].generation
@@ -188,6 +198,74 @@ def test_check_reads_no_credentials_and_writes_nothing(
     assert assembly.main() == 0
     assert "credentials were not read" in capsys.readouterr().out
     assert before == {path.name: path.read_bytes() for path in tmp_path.iterdir()}
+
+
+def test_observation_before_token_creation_is_rejected() -> None:
+    manifest, _operator = fixture()
+    observed = mapping(
+        mapping(mapping(manifest["providers"])["cleanup"])["digitalocean_observation"]
+    )
+    observed["observed_at"] = stamp(instant(manifest["introduced_at"]) - timedelta(seconds=1))
+    with pytest.raises(LifecycleError, match="observation"):
+        assembly.validate(manifest, now=datetime.now(UTC))
+
+
+def test_changed_token_cannot_reuse_console_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest, operator = fixture()
+    refs = mapping(mapping(mapping(manifest["providers"])["cleanup"])["references"])
+    operator.secrets[str(refs["digitalocean"])] = "SYNTHETIC-DIFFERENT-TOKEN"
+    source, credentials = inputs(tmp_path, manifest)
+    output = tmp_path / "staged"
+    monkeypatch.setattr(assembly, "Operator", lambda: operator)
+    with pytest.raises(LifecycleError, match="observation"):
+        assembly.run(assembly.load_manifest(source), credentials=credentials, output=output)
+    assert not list(output.iterdir())
+
+
+@pytest.mark.parametrize("role", ["provision", "cleanup"])
+@pytest.mark.parametrize("fault", ["generation", "reference", "future", "missing-hash", "v1"])
+def test_observation_provenance_is_checked_without_reading_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, role: str, fault: str
+) -> None:
+    manifest, _operator = fixture()
+    observed = mapping(mapping(mapping(manifest["providers"])[role])["digitalocean_observation"])
+    if fault == "generation":
+        observed["generation_id"] = "0198d17f-6f4a-7000-8000-000000000099"
+    elif fault == "reference":
+        observed["token_reference"] = str(observed["token_reference"]) + "-old"
+    elif fault == "future":
+        observed["observed_at"] = stamp(datetime.now(UTC) + timedelta(days=1))
+    elif fault == "missing-hash":
+        del observed["token_sha256"]
+    else:
+        manifest["format"] = "lowerduckpond-m3-11-operator-inputs-v1"
+    source, _credentials = inputs(tmp_path, manifest)
+    monkeypatch.setattr(assembly, "Operator", lambda: pytest.fail("invalid input read credentials"))
+    with pytest.raises((LifecycleError, ValueError)):
+        assembly.load_manifest(source)
+
+
+def test_valid_token_observation_remains_usable_when_assembly_is_later(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest, operator = fixture()
+    now = datetime.now(UTC)
+    for role in ("provision", "cleanup"):
+        observed = mapping(
+            mapping(mapping(manifest["providers"])[role])["digitalocean_observation"]
+        )
+        observed["token_created_at"] = stamp(now - timedelta(days=8))
+        observed["observed_at"] = stamp(now - timedelta(days=7))
+    source, credentials = inputs(tmp_path, manifest)
+    output = tmp_path / "staged"
+    monkeypatch.setattr(assembly, "Operator", lambda: operator)
+    assembly.run(assembly.load_manifest(source), credentials=credentials, output=output)
+    for role in ("provision", "cleanup"):
+        attestation = read_private(output / (role + "-digitalocean-attestation.json"))
+        assert attestation["verified_at"] == stamp(now - timedelta(days=7))
+    assert read_private(output / "assembly-receipt.json")["status"] == "staged-only"
 
 
 @pytest.mark.parametrize("fault", ["permissions", "symlink", "hardlink", "duplicate"])

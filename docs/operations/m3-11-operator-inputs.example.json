@@ -1,5 +1,5 @@
 {
-  "format": "lowerduckpond-m3-11-operator-inputs-v1",
+  "format": "lowerduckpond-m3-11-operator-inputs-v2",
   "purpose": "initial-legacy-migration",
   "onepassword_account_id": "<normal-account UUID from operator account metadata>",
   "targets": {
@@ -76,6 +76,10 @@
         "cloudflare-user": "<exact native UTC expiry>"
       },
       "digitalocean_observation": {
+        "generation_id": "<same approved generation UUIDv7 as this setup>",
+        "token_reference": "op://vvvvvvvvvvvvvvvvvvvvvvvvvv/<new-provider-item-id>/password",
+        "token_sha256": "<independently recorded SHA-256 of the exact token whose console policy was observed>",
+        "token_created_at": "<original token creation UTC timestamp; must precede or equal the observation>",
         "principal": "<confirmed DigitalOcean team/principal identity>",
         "scopes": [
           "actions:read",
@@ -104,6 +108,10 @@
         "cloudflare-user": "<exact native UTC expiry>"
       },
       "digitalocean_observation": {
+        "generation_id": "<same approved generation UUIDv7 as this setup>",
+        "token_reference": "op://cccccccccccccccccccccccccc/<new-provider-item-id>/password",
+        "token_sha256": "<independently recorded SHA-256 of the exact token whose console policy was observed>",
+        "token_created_at": "<original token creation UTC timestamp; must precede or equal the observation>",
         "principal": "<confirmed DigitalOcean team/principal identity>",
         "scopes": [
           "actions:read",

@@ -3,6 +3,10 @@
 check never invokes op or reads server credentials. assemble does not authenticate
 providers, publish attestations, migrate obligations, deliver bundles or activate.
 Use a private Linux/WSL filesystem, outside source, with Python 3.14.
+
+Input v2 binds each console observation to its original token fingerprint,
+reference, creation time and approved generation. Preserve the original observed
+time; later assembly does not require a new observation of the unchanged token.
 """
 
 from __future__ import annotations
@@ -42,8 +46,8 @@ from scripts.m3_11_unattended.model import (
 from scripts.m3_11_unattended.production import REFERENCES
 from scripts.m3_11_unattended.state import private_directory
 
-FORMAT = "lowerduckpond-m3-11-operator-inputs-v1"
-HELPER = "181ab29f65d3dde19ddac3411b8b7e8928dd14da"
+FORMAT = "lowerduckpond-m3-11-operator-inputs-v2"
+HELPER = "6b7c21f9680b4b7858ba29a316c9e5b2ff021665"
 CLIENTS = {"provision", "cleanup", "production", "independent_cleanup"}
 ROOT = Path(__file__).resolve().parents[2]
 PROVIDER_KEYS = {
@@ -190,6 +194,10 @@ def validate(raw: object, *, now: datetime) -> dict[str, object]:  # noqa: PLR09
                 "observed_at",
                 "attested_by",
                 "principal_context",
+                "generation_id",
+                "token_reference",
+                "token_sha256",
+                "token_created_at",
             },
         )
         scopes = (
@@ -200,9 +208,12 @@ def validate(raw: object, *, now: datetime) -> dict[str, object]:  # noqa: PLR09
         if (
             observed["principal"] != principals["spaces"]
             or observed["scopes"] != sorted(scopes)
-            or instant(observed["observed_at"]) > now
+            or observed["generation_id"] != manifest["generation_id"]
+            or observed["token_reference"] != role_references["digitalocean"]
+            or not instant(observed["token_created_at"]) <= instant(observed["observed_at"]) <= now
         ):
             raise LifecycleError("DigitalOcean console observation is incomplete")
+        fingerprint(observed["token_sha256"])
         label(observed["attested_by"])
         label(observed["principal_context"])
         declared = generation(manifest, role, dict.fromkeys(PROVIDERS, "0" * 64))
@@ -289,6 +300,7 @@ def readers(manifest: dict[str, object], operator: Operator) -> dict[str, dict[s
 def documents(
     manifest: dict[str, object], operator: Operator
 ) -> tuple[dict[str, object], dict[str, object], dict[str, dict[str, object]]]:
+    manifest = validate(manifest, now=datetime.now(UTC))
     configured = readers(manifest, operator)
     roles, attestations = {}, {}
     for role, raw in fields(manifest["providers"], {"provision", "cleanup"}).items():
@@ -300,6 +312,9 @@ def documents(
             ).hexdigest()
             for kind, key in PROVIDER_KEYS.items()
         }
+        observed = cast(dict[str, object], selected["digitalocean_observation"])
+        if observed["token_sha256"] != hashes["spaces"]:
+            raise LifecycleError("DigitalOcean token differs from its console observation")
         approved = generation(manifest, role, hashes)
         roles[role] = {
             "format": "lowerduckpond-m3-11-lease-bootstrap-v1",
@@ -307,7 +322,6 @@ def documents(
             "reader": configured[role],
             "references": refs,
         }
-        observed = cast(dict[str, object], selected["digitalocean_observation"])
         attestations[role] = {
             "format": "lowerduckpond-digitalocean-bootstrap-v2",
             "generation_id": approved.generation_id,
@@ -370,6 +384,7 @@ def run(manifest: dict[str, object], *, credentials: Path, output: Path) -> None
             "status": "staged-only",
             **receipt,
             "helper_revision": HELPER,
+            "operator_inputs_sha256": digest(manifest),
             "provider_verification": "pending",
             "independent_server_verification": "pending",
             "attestation_publication": "pending",
