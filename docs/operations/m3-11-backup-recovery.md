@@ -1225,9 +1225,9 @@ targets to finish, including when ownership markers are already gone.
 
 ### Interrupted combined teardown
 
-A failed qualification retains its original attempt and cannot be rerun into a
+A failed functional test retains its original attempt and cannot be rerun into a
 pass. If `owned-teardown/intent.json` exists, the fixed installed test already
-completed and deletion was authorized. In the same private environment, this
+completed and deletion was authorized. In the same private environment, these
 commands, from the repository root, reload the runtime keys from encrypted state
 inside a disposable subshell and finish that exact cleanup after a lost response:
 
@@ -1253,6 +1253,73 @@ observation and returns the private removal receipt; it never creates
 `combined.json` or packages a qualification report. Without the prior teardown
 intent, retain the fixture and use the existing bounded failure diagnostics to
 resolve its outstanding authority before any removal.
+
+### Same-run finalization recovery
+
+For a managed qualification whose functional assertions completed successfully,
+use the original clean checkout and original private run directory:
+
+```bash
+uv run --frozen python -m scripts.m3_11_finalization /absolute/original/private/run --seconds 7200
+```
+
+The command requires the original `functional-completion.json`, including the
+exact collection, setup/call/teardown reports and zero pytest exit status. It
+verifies unchanged original inputs, artifact and phase receipts, takes the
+controller, credential-use, storage-target and run locks, and requires the
+original controller's host commands to have drained. It reuses only the
+original credential identities under approved failure retention, before their expiry and without
+issuance, lease extension or a new delivery bundle. Cancellation, closure,
+release or changed ownership stops recovery, including between cleanup mutations.
+
+Select an explicit execution allowance with `--seconds` (7,200 seconds in the
+example); each invocation records that choice and uses bounded shutdown. This
+resource budget grants no additional credential validity. Timeout leaves the
+original retained lease resumable and never requests cancellation. Recovery
+resumes authorized deletion, or freshly authorizes deletion when no committed
+intent exists, then obtains fresh absence observations, completes remaining
+wrapper checks and packages the report. Original failures and timestamps stay
+intact; each recovery invocation appends a private `finalization-*` directory.
+The original controller status remains failed/interrupted. The completed report
+records recovery separately. Credential closure/release still uses the existing
+lease lifecycle; finalization does not retire credentials or cleanup authorities.
+
+If a complete `qualification.json` already exists, recovery validates it against
+its original evidence and only completes the report/checksum publication pair.
+That path matches the report to retained original combined/context, storage,
+artifact, managed receipt and observation evidence without recreating it. It
+needs no credentials or new provider observations. It preserves report
+bytes and `packaged_at`. Existing conflicting or truncated published files are
+not overwritten. Checksum-only repair validates the original packaging chronology
+and current candidate inputs/revocations even after evidence ages out; repairing
+a checksum does not make an expired report consumable. Legacy M3.10 reports
+without `packaged_at` must retain observations that fit an original 24-hour
+packaging window with their existing five-minute clock tolerance, including the
+destroy observation; that feasible window cannot lie entirely in the future.
+
+Managed recovery can bridge a multi-day interruption within the original approved
+retained lease and actual child credential deadlines. The cleanup reserve never
+extends child access. Original functional proof must have met the existing
+24-hour span at its recorded completion. Fresh cleanup, DNS and private-empty
+storage proof must all come from one recovery invocation, before child expiry.
+Report bytes must be complete and publication authorized before that expiry.
+The final guard runs after staging/fsync, immediately before atomic rename; an
+operating-system pause after authorization can delay directory-entry visibility.
+The same final guard rechecks the 24-hour observation age after staging.
+That invocation appends `final-observation.json`; an earlier recovery summary and
+all original evidence remain unchanged. Packaging requires those observations to
+be at most 24 hours old, measured from the invocation's earliest observation.
+Recovered report consumption and unfinished production work use seven days from
+that same earliest time. They do not refresh original functional timestamps.
+Ordinary reports retain their existing 24-hour packaging span and seven-day
+consumption freshness policy.
+
+This is not functional phase retry: public-CA, reconstruction and all other
+assertions remain one ordered shared-history journey. A missing completion
+checkpoint, failed pytest teardown, altered input, diagnostic workspace, released
+lease or expired runtime credential cannot be promoted into qualification.
+Older manually supplied runs retain the cleanup-only command above; the managed
+finalizer does not infer their credential authority.
 
 ### Failed-fixture archive retirement
 

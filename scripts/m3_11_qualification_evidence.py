@@ -137,7 +137,7 @@ def count(value: object, *, minimum: int = 0, maximum: int = MAX_COUNT) -> None:
         raise ValueError("combined qualification count is invalid")
 
 
-def timestamp(value: object, *, now: datetime, maximum_age: timedelta) -> datetime:
+def parse_timestamp(value: object) -> datetime:
     if (
         not isinstance(value, str)
         or re.fullmatch(
@@ -146,7 +146,11 @@ def timestamp(value: object, *, now: datetime, maximum_age: timedelta) -> dateti
         is None
     ):
         raise ValueError("combined qualification timestamp is invalid")
-    result = datetime.fromisoformat(value)
+    return datetime.fromisoformat(value)
+
+
+def timestamp(value: object, *, now: datetime, maximum_age: timedelta) -> datetime:
+    result = parse_timestamp(value)
     if not timedelta(0) <= now - result <= maximum_age:
         raise ValueError("combined qualification evidence is stale or future-dated")
     return result
@@ -201,6 +205,7 @@ def validate(
     *,
     binding: dict[str, object],
     maximum_age: timedelta,
+    now: datetime | None = None,
 ) -> EvidenceTimes:
     proof = fields(
         value,
@@ -231,8 +236,9 @@ def validate(
     uuid7(context["run_id"])
     if context["source_fixture_sha256"] == context["destination_fixture_sha256"]:
         raise ValueError("combined qualification requires distinct source and destination hosts")
-    started, completed = _phases(proof["phases"], maximum_age=maximum_age)
-    captured = timestamp(context["captured_at"], now=datetime.now(UTC), maximum_age=maximum_age)
+    now = now or datetime.now(UTC)
+    started, completed = _phases(proof["phases"], maximum_age=maximum_age, now=now)
+    captured = timestamp(context["captured_at"], now=now, maximum_age=maximum_age)
     if captured > started:
         raise ValueError("combined qualification context was captured after proof began")
     _recovery(proof["recovery"])
@@ -241,8 +247,10 @@ def validate(
     return EvidenceTimes(captured, started, completed)
 
 
-def _phases(value: object, *, maximum_age: timedelta) -> tuple[datetime, datetime]:
-    now = datetime.now(UTC)
+def _phases(
+    value: object, *, maximum_age: timedelta, now: datetime | None = None
+) -> tuple[datetime, datetime]:
+    now = now or datetime.now(UTC)
     phases = fields(value, set(PHASE_CHECKS))
     times: list[datetime] = []
     for name, checks in PHASE_CHECKS.items():

@@ -62,7 +62,7 @@ def due_processes(root: Path, docker: Docker) -> list[Path]:
         if not alive and not terminal:
             state.interrupted()
         if expired and alive and not terminal:
-            state.cancel()
+            state.stop_attempt()
             # Stop only the owned controller. Never remove guest containers/data.
             docker.command("kill", "--signal=TERM", controller_name(run_id))
     return due
@@ -329,15 +329,11 @@ def prepare_lease_cleanup(root: Path, docker: Docker, inventory: Inventory) -> b
             ).get("Running")
         except RuntimeError, OSError, ValueError, KeyError, TypeError:
             alive = None
-        elapsed = datetime.now(UTC) - instant(
-            read_private(directory / "attempt.json")["started_at"]
-        )
         due = (
             state.cancelled
             or outcome is not None
             or alive is False
             or datetime.now(UTC) >= deadline
-            or elapsed.total_seconds() >= qualification_deadline.LIVE_SECONDS
         )
         if not due:
             continue

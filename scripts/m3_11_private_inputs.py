@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import stat
+import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -63,3 +65,48 @@ def write_private(path: Path, value: dict[str, object], *, maximum: int = MAX_BY
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def publish_bytes(
+    path: Path,
+    raw: bytes,
+    *,
+    staging_directory: Path | None = None,
+    before_publish: Callable[[], None] | None = None,
+) -> None:
+    """Publish complete new bytes without replacing an existing directory entry."""
+    from lowerduckpond_static_host_agent.durable import _rename_noreplace  # noqa: PLC0415
+
+    with tempfile.NamedTemporaryFile(
+        dir=staging_directory or path.parent, prefix=".publication-", delete=False
+    ) as stream:
+        temporary = Path(stream.name)
+        stream.write(raw)
+        stream.flush()
+        os.fsync(stream.fileno())
+    descriptor = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        source = os.open(temporary.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            if before_publish is not None:
+                before_publish()
+            _rename_noreplace(source, temporary.name, path.name, destination_fd=descriptor)
+            os.fsync(source)
+        finally:
+            os.close(source)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def publish_private(
+    path: Path,
+    value: dict[str, object],
+    *,
+    maximum: int = MAX_BYTES,
+    staging_directory: Path | None = None,
+) -> None:
+    raw = canonical_bytes(value)
+    if len(raw) > maximum:
+        raise ValueError("combined private inputs exceed their byte bound")
+    publish_bytes(path, raw, staging_directory=staging_directory)

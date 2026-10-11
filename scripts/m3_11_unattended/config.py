@@ -402,9 +402,16 @@ class LeaseConfiguration:
         )
 
     def require_issuance(self, *, now: datetime) -> None:
+        from scripts.m3_11_unattended.connect_configuration import reader_access  # noqa: PLC0415
+
         if self.mode != "controller":
             raise LifecycleError("cleanup-only configuration cannot issue credentials")
         self.policy.require_start(now=now, approved_sha256=self.approved_policy_sha256)
+        if self.production is None:
+            raise LifecycleError("production reader is required before credential issuance")
+        _, production = reader_access(self.production["connect"], allow_expired=True)
+        if now >= production.expires_at:
+            raise LifecycleError("production reader expired before credential issuance")
         for role in ("provision", "cleanup"):
             generation = self.generations[self.active_generation][role].generation
             if not instant(generation.introduced_at) <= now < instant(generation.rotation_due_at):

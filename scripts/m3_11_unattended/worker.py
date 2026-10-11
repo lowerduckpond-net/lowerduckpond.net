@@ -418,7 +418,7 @@ class Worker:
             self.lifecycle.prepare(writer_sha256=writer)
             while True:
                 self.check_cancelled()
-                if datetime.now(UTC) >= instant(manifest.policy.issuance_before):
+                if datetime.now(UTC) >= instant(manifest.policy.start_before):
                     raise LifecycleError(
                         "independent manifest confirmation missed the approved cutoff"
                     )
@@ -429,6 +429,9 @@ class Worker:
                     break
                 except LifecycleError:
                     time.sleep(5)
+            # Confirmation may take time; reject locally known reader expiry
+            # immediately before the first credential CREATE as well.
+            self.config.require_issuance(now=datetime.now(UTC))
             self.lifecycle.issue(
                 writer_sha256=writer,
                 approved_policy_sha256=self.config.approved_policy_sha256,

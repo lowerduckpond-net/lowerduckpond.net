@@ -27,7 +27,7 @@ from scripts.check_m3_7_production_edge import (
 from scripts.check_m3_10_provider import check_caddy_token, required
 from scripts.m3_11_fixture_tokens import check_fixture_tokens
 from scripts.m3_11_live_storage import LiveStorage
-from scripts.m3_11_private_inputs import read_private, write_private
+from scripts.m3_11_private_inputs import publish_private, read_private, write_private
 
 FORMAT = "lowerduckpond-m3-11-private-dns-observation-v1"
 POLL_INTERVAL_SECONDS = 5
@@ -211,7 +211,12 @@ class DnsWitness:
         path = (
             self.output_directory or self.directory / "public-dns"
         ) / f"{self.sequence:04d}.json"
-        write_private(path, document)
+        if kind == "teardown":
+            # Interrupted staging must not become an entry in the strict,
+            # contiguous original DNS observation sequence.
+            publish_private(path, document, staging_directory=self.directory)
+        else:
+            write_private(path, document)
         self.sequence += 1
         records = [record for inventory in inventories.values() for record in inventory]
         active = frozenset(domain for domain, inventory in inventories.items() if inventory)
@@ -243,7 +248,9 @@ class DnsWitness:
             raise ValueError("public DNS-01 activity was not independently observed in both zones")
 
 
-def removal_absence(directory: Path, storage: LiveStorage) -> Observation:
+def removal_absence(
+    directory: Path, storage: LiveStorage, *, before_authorization: bool = False
+) -> Observation:
     """Append a cleanup-only observation without replacing the failed live attempt.
 
     The caller has validated its prior teardown authorization. No runtime token,
@@ -252,7 +259,13 @@ def removal_absence(directory: Path, storage: LiveStorage) -> Observation:
     context = read_private(directory / "combined-context.json")
     names = read_private(directory / "combined-names.json")
     evidence.validate_names(directory / "combined-names.json", context)
-    intent = read_private(directory / "owned-teardown/intent.json")
+    if before_authorization:
+        from scripts.m3_11_functional_completion import load  # noqa: PLC0415
+
+        load(directory, dict(storage.environment))
+        intent: dict[str, object] = {"context_sha256": _digest(context)}
+    else:
+        intent = read_private(directory / "owned-teardown/intent.json")
     if (
         context["run_id"] != storage.target.run_id
         or any(context[key] != storage.binding[key] for key in evidence.BINDING_FIELDS)
@@ -297,7 +310,7 @@ def removal_absence(directory: Path, storage: LiveStorage) -> Observation:
         ):
             raise ValueError("DNS cleanup original observation sequence changed")
         hashes.append(_digest(value))
-    if intent.get("dns_sha256") not in hashes:
+    if not before_authorization and intent.get("dns_sha256") not in hashes:
         raise ValueError("DNS cleanup lost its original authorization observation")
     client = CloudflareClient(required(storage.environment, "CLOUDFLARE_API_TOKEN"))
     if (

@@ -2,7 +2,7 @@
 
 Invoked only as the final task of the existing complete Spaces verify playbook.
 All provider credentials and original private observations stay on the secure
-workstation. A failed or partial attempt cannot be resumed into qualification.
+workstation. Only completed functional assertions permit same-run finalization.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts import m3_11_functional_completion as functional
 from scripts import m3_11_qualification_evidence as evidence
 from scripts.m3_10_qualification_report import EMPTY_ACCOUNTING, _empty_accounting
 from scripts.m3_11_combined_inputs import environment_for
@@ -22,7 +23,7 @@ from scripts.m3_11_dns_witness import DnsWitness
 from scripts.m3_11_live_storage import LiveStorage
 from scripts.m3_11_owned_teardown import Teardown, nodes
 from scripts.m3_11_phase_receipts import Recorder
-from scripts.m3_11_private_inputs import read_private, write_private
+from scripts.m3_11_private_inputs import publish_private, read_private, write_private
 from scripts.qualification_context import ARTIFACT_ENV, host_name, run_lease
 from scripts.qualification_group_runner import SCENARIO, Completion
 
@@ -69,14 +70,18 @@ class Attempt:
         write_private(self.directory / "combined-assertions.json", self.results)
         self.witness = witness
 
-    def finish(self, completion: Completion, status: int) -> None:
+    def require_assertions(self) -> None:
         if (
             self.witness is None
             or not self.results
             or read_private(self.directory / "combined-assertions.json") != self.results
         ):
             raise ValueError("combined live attempt lacks its original completed assertions")
+
+    def finish(self, completion: Completion, status: int) -> None:
+        self.require_assertions()
         witness = self.witness
+        assert witness is not None  # noqa: S101 - checked above
         retirement = Teardown(
             self.directory, self.storage, lambda: witness.require_absent("teardown").sha256
         )
@@ -93,7 +98,7 @@ class Attempt:
             "teardown": details["teardown"],
         }
         evidence.validate(envelope, binding=self.storage.binding, maximum_age=timedelta(hours=24))
-        write_private(self.directory / "combined.json", envelope)
+        publish_private(self.directory / "combined.json", envelope)
 
 
 def _legacy(directory: Path, storage: LiveStorage) -> str:
@@ -146,6 +151,8 @@ def _run(directory: Path, environment: dict[str, str]) -> int:
         return status or 2
     if _legacy(directory, storage) != legacy_sha256:
         raise ValueError("combined live attempt changed the original legacy evidence")
+    attempt.require_assertions()
+    functional.save(directory, completion, status, environment)
     attempt.finish(completion, status)
     return 0
 

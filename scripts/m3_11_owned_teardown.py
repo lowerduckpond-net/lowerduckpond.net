@@ -11,6 +11,7 @@ import hashlib
 import os
 import re
 import stat
+import tempfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import cast
@@ -23,7 +24,7 @@ from scripts.m3_11_backup_removal import MAX_INTENT_BYTES, Removal, _once
 from scripts.m3_11_combined_inputs import environment_for
 from scripts.m3_11_dns_witness import removal_absence
 from scripts.m3_11_live_storage import LiveStorage
-from scripts.m3_11_private_inputs import read_private, write_private
+from scripts.m3_11_private_inputs import publish_private, read_private
 from scripts.qualification_case import owned_containers, remove_owned_image
 from scripts.qualification_context import (
     ARCHIVE_ENV,
@@ -73,7 +74,12 @@ def nodes(environment: dict[str, str]) -> tuple[str, ...]:
 
 class Teardown:
     def __init__(
-        self, directory: Path, storage: LiveStorage, dns_absence: Callable[[], str]
+        self,
+        directory: Path,
+        storage: LiveStorage,
+        dns_absence: Callable[[], str],
+        *,
+        guard: Callable[[], None] | None = None,
     ) -> None:
         self.directory = directory
         self.storage = storage
@@ -86,6 +92,11 @@ class Teardown:
         self.dns_absence = dns_absence
         self.root = directory / "owned-teardown"
         self.intent: dict[str, object] = {}
+        self.guard = guard
+
+    def _guard(self) -> None:
+        if self.guard is not None:
+            self.guard()
 
     def _archive_absent(self) -> None:
         _, observer = self.storage.target.clients(self.storage.environment)
@@ -125,10 +136,19 @@ class Teardown:
 
     def authorize(self, completion: Completion, status: int) -> None:
         """Only the fixed, entirely passing pytest node can authorize deletion."""
+        self._guard()
         if completion.expected != nodes(self.environment) or not completion.passed(status):
             raise ValueError("owned teardown requires exact installed-test completion")
         if self.root.exists() or self.root.is_symlink():
-            raise ValueError("owned teardown cannot replace its original authorization")
+            metadata = self.root.lstat()
+            if (
+                self.root.resolve() != self.root
+                or not stat.S_ISDIR(metadata.st_mode)
+                or stat.S_IMODE(metadata.st_mode) != 0o700  # noqa: PLR2004
+                or metadata.st_uid != os.geteuid()
+                or any(self.root.iterdir())
+            ):
+                raise ValueError("owned teardown cannot replace its original authorization")
         self.storage.require_source(self.environment)
         bound = owned_containers(self.environment)
         before = {key: snapshot(self.environment, value) for key, value in bound.items()}
@@ -170,7 +190,7 @@ class Teardown:
             },
             "exit_status": status,
         }
-        write_private(self.directory / "combined-tests.json", tests)
+        _once(self.directory / "combined-tests.json", tests)
         self.intent = {
             "format": FORMAT,
             "context_sha256": _digest(self.context),
@@ -185,8 +205,17 @@ class Teardown:
             "image": source["image"],
             "dns_sha256": dns,
         }
-        self.root.mkdir(mode=0o700)
-        write_private(self.root / "intent.json", self.intent)
+        self._guard()
+        staging = Path(tempfile.mkdtemp(dir=self.directory, prefix=".owned-teardown-"))
+        publish_private(staging / "intent.json", self.intent)
+        # The run lease excludes concurrent authorization. Rename can replace
+        # only an empty directory; interrupted staging is retained separately.
+        staging.rename(self.root)
+        descriptor = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
     def _load(self) -> None:
         metadata = self.root.lstat()
@@ -270,6 +299,7 @@ class Teardown:
             raise ValueError("owned restore pair removal is incomplete")
 
     def _quiet(self) -> str:
+        self._guard()
         self._core("backup", started=True)
         self._pair_absent()
         restore.source_fenced(self.environment)
@@ -287,6 +317,7 @@ class Teardown:
             observer,
             self.root / "backup",
             self._quiet,
+            guard=self.guard,
         )
 
     def _backup_absent(self) -> None:
@@ -307,7 +338,11 @@ class Teardown:
 
     def _action(self, step: str, current: dict[str, dict[str, object]]) -> None:
         if step == "pair":
-            restore.remove_pair(self.environment, cast("dict[str, str]", self.intent["pair"]))
+            pair = cast("dict[str, str]", self.intent["pair"])
+            if self.guard is None:
+                restore.remove_pair(self.environment, pair)
+            else:
+                restore.remove_pair(self.environment, pair, guard=self.guard)
             self._pair_absent()
         elif step == "backup":
             self._backup().run()
@@ -331,6 +366,7 @@ class Teardown:
                 restore.source_fenced(self.environment)
             else:
                 uninstalled_storage_absence(self.environment, identity)
+            self._guard()
             restore.command(
                 self.environment, "docker", "stop", "--time", "20", identity, timeout=30
             )
@@ -343,6 +379,7 @@ class Teardown:
                 raise ValueError("owned container removal did not finish")
 
     def run(self) -> dict[str, object]:
+        self._guard()
         self._load()
         authorization: dict[str, object] = {"intent_sha256": _digest(self.intent)}
         for step in STEPS:
@@ -361,6 +398,7 @@ class Teardown:
             if step == "image" and not started.exists() and self._image() != self.intent["image"]:
                 raise ValueError("owned image disappeared before removal authorization")
             _once(started, authorization)
+            self._guard()
             self._action(step, current)
             _once(done, authorization)
         if owned_containers(self.environment, allow_missing=True) or self._image():
@@ -373,13 +411,14 @@ class Teardown:
             "dns_sha256": self._dns_absent(),
             "teardown": dict.fromkeys(evidence.ZERO_TEARDOWN, 0),
         }
+        self._guard()
         # A resumed cleanup must not replace original final observations.
         if (self.root / "removed.json").exists():
             original = read_private(self.root / "removed.json")
             if any(original[key] != result[key] for key in ("intent_sha256", "teardown")):
                 raise ValueError("owned teardown completion changed")
             return original
-        write_private(self.root / "removed.json", result)
+        publish_private(self.root / "removed.json", result)
         return result
 
 

@@ -7,12 +7,16 @@ import hashlib
 import os
 import re
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from lowerduckpond_m3_archive.report import ArchiveQualificationReport
 
 from scripts import m3_11_qualification_evidence as combined
+from scripts import qualification_report_originals
+from scripts.m3_11_private_inputs import publish_bytes, read_private, read_private_bytes
+from scripts.m3_11_recovery_policy import HISTORICAL_SPAN, SUMMARY_FIELDS, Window
 from scripts.m3_11_unattended import inputs as managed_inputs
 from scripts.m3_11_unattended.model import digest as managed_digest
 from scripts.m3_11_unattended.model import instant
@@ -44,7 +48,7 @@ EMPTY_ACCOUNTING = {
 }
 
 
-def verify_report(  # noqa: PLR0912, PLR0913 - independent evidence gates and explicit candidate bindings
+def verify_report(  # noqa: PLR0913 - explicit candidate bindings
     path: Path,
     *,
     source: str,
@@ -53,6 +57,29 @@ def verify_report(  # noqa: PLR0912, PLR0913 - independent evidence gates and ex
     storage_target: str | None = None,
     milestone: str = "3.10",
     managed_binding: dict[str, object] | None = None,
+) -> bytes:
+    return _verify_report(
+        path,
+        source=source,
+        artifact=artifact,
+        repository=repository,
+        storage_target=storage_target,
+        milestone=milestone,
+        managed_binding=managed_binding,
+        now=datetime.now(UTC),
+    )
+
+
+def _verify_report(  # noqa: PLR0912, PLR0913, PLR0915 - original publication and current consumption clocks
+    path: Path,
+    *,
+    source: str,
+    artifact: str,
+    repository: Path | None,
+    storage_target: str | None,
+    milestone: str,
+    managed_binding: dict[str, object] | None,
+    now: datetime,
 ) -> bytes:
     """Return the exact report bytes accepted by every gate below.
 
@@ -90,6 +117,8 @@ def verify_report(  # noqa: PLR0912, PLR0913 - independent evidence gates and ex
         else set()
     )
     expected_fields |= {"managed_credentials"} if managed else set()
+    if milestone == "3.11" and "finalization_recovery" in report:
+        expected_fields.add("finalization_recovery")
     expected_fields |= (
         {"combined", "combined_report_sha256", "packaged_at", "legacy_observations"}
         if milestone == "3.11"
@@ -114,17 +143,44 @@ def verify_report(  # noqa: PLR0912, PLR0913 - independent evidence gates and ex
     ):
         raise ValueError("qualification report does not bind this source and artifact")
     _empty_accounting(report["accounting"])
+    window = None
+    evidence_now = now
     maximum_age = PROVIDER_EVIDENCE_MAX_AGE if input_bound else timedelta(hours=24)
-    completed = _fresh_timestamp(report["completed_at"], maximum_age=maximum_age)
-    oldest = _fresh_timestamp(report["oldest_evidence_at"], maximum_age=maximum_age)
+    if "finalization_recovery" in report:
+        if not managed:
+            raise ValueError("recovery report requires managed lease evidence")
+        window = Window.from_evidence(
+            combined.fields(
+                report["managed_credentials"],
+                managed_inputs.BINDING | {"format", "receipts", "receipts_sha256"},
+            ),
+            combined.fields(
+                report["finalization_recovery"], SUMMARY_FIELDS | {"final_observation"}
+            ),
+        )
+        evidence_now = combined.parse_timestamp(report["packaged_at"])
+        if evidence_now > now:
+            raise ValueError("qualification package is future-dated")
+        maximum_age = window.maximum_age
+        window.validate(report, now=now, freshness=PROVIDER_EVIDENCE_MAX_AGE)
+    completed = _fresh_timestamp(report["completed_at"], maximum_age=maximum_age, now=evidence_now)
+    oldest = _fresh_timestamp(
+        report["oldest_evidence_at"], maximum_age=maximum_age, now=evidence_now
+    )
     if oldest > completed:
         raise ValueError("qualification evidence chronology is invalid")
     if milestone == "3.11":
         if raw != combined.canonical_bytes(report):
             raise ValueError("M3.11 qualification envelope must be canonical")
-        _verify_combined(report, maximum_age=maximum_age)
+        _verify_combined(report, maximum_age=maximum_age, now=evidence_now, window=window)
         if managed:
-            _verify_managed(report, maximum_age=maximum_age, binding=managed_binding)
+            _verify_managed(
+                report,
+                maximum_age=maximum_age,
+                binding=managed_binding,
+                now=evidence_now,
+                historical_at=window.functional_at if window else None,
+            )
     if (
         not isinstance(report["storage_report_sha256"], str)
         or re.fullmatch(r"[0-9a-f]{64}", report["storage_report_sha256"]) is None
@@ -174,14 +230,20 @@ def _empty_accounting(value: object) -> None:
             raise ValueError("installed accounting is unresolved")
 
 
-def _verify_combined(report: dict[str, object], *, maximum_age: timedelta) -> None:
-    times = combined.validate(report["combined"], binding=report, maximum_age=maximum_age)
+def _verify_combined(
+    report: dict[str, object],
+    *,
+    maximum_age: timedelta,
+    now: datetime | None = None,
+    window: Window | None = None,
+) -> None:
+    now = now or datetime.now(UTC)
+    times = combined.validate(report["combined"], binding=report, maximum_age=maximum_age, now=now)
     if (
         report["combined_report_sha256"]
         != hashlib.sha256(combined.canonical_bytes(report["combined"])).hexdigest()
     ):
         raise ValueError("combined qualification receipt digest changed")
-    now = datetime.now(UTC)
     oldest, completed, packaged = (
         combined.timestamp(report[key], now=now, maximum_age=maximum_age)
         for key in ("oldest_evidence_at", "completed_at", "packaged_at")
@@ -195,19 +257,23 @@ def _verify_combined(report: dict[str, object], *, maximum_age: timedelta) -> No
         <= packaged
     ):
         raise ValueError("combined qualification envelope chronology is invalid")
-    if packaged - oldest > timedelta(hours=24):
+    if window is None and packaged - oldest > timedelta(hours=24):
         raise ValueError("combined qualification exceeded the packaging window")
-    _verify_legacy_observations(report, times, maximum_age=maximum_age)
+    _verify_legacy_observations(report, times, maximum_age=maximum_age, now=now)
 
 
 def _verify_legacy_observations(
-    report: dict[str, object], times: combined.EvidenceTimes, *, maximum_age: timedelta
+    report: dict[str, object],
+    times: combined.EvidenceTimes,
+    *,
+    maximum_age: timedelta,
+    now: datetime | None = None,
 ) -> None:
     observations = combined.fields(
         report["legacy_observations"], {"storage_at", "installed_at", "phases"}
     )
     phases = combined.fields(observations["phases"], set(PHASES))
-    now = datetime.now(UTC)
+    now = now or datetime.now(UTC)
     phase_times = {
         key: combined.timestamp(phases[key], now=now, maximum_age=maximum_age) for key in PHASES
     }
@@ -238,28 +304,41 @@ def _verify_legacy_observations(
         raise ValueError("combined qualification legacy observation chronology is invalid")
 
 
-def _fresh_timestamp(value: object, *, maximum_age: timedelta = timedelta(hours=24)) -> datetime:
+def _fresh_timestamp(
+    value: object,
+    *,
+    maximum_age: timedelta = timedelta(hours=24),
+    now: datetime | None = None,
+) -> datetime:
     if not isinstance(value, str) or not value.endswith("Z"):
         raise ValueError("qualification report timestamp is invalid")
     timestamp = datetime.fromisoformat(value)
-    age = datetime.now(UTC) - timestamp
+    age = (now or datetime.now(UTC)) - timestamp
     if not -timedelta(minutes=5) <= age <= maximum_age:
         raise ValueError("qualification report is stale or future-dated")
     return timestamp
 
 
-def _evidence_time(path: Path) -> datetime:
+def _evidence_time(
+    path: Path,
+    *,
+    maximum_age: timedelta = timedelta(hours=24),
+    now: datetime | None = None,
+) -> datetime:
     return _fresh_timestamp(
-        datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat().replace("+00:00", "Z")
+        datetime.fromtimestamp(path.stat().st_mtime, UTC).isoformat().replace("+00:00", "Z"),
+        maximum_age=maximum_age,
+        now=now,
     )
 
 
-def create_report(
+def create_report(  # noqa: PLR0912, PLR0915 - legacy, managed, and recovered evidence gates
     directory: Path,
     *,
     repository: Path | None = None,
     storage_target: str | None = None,
     milestone: str = "3.10",
+    recovery_observation: Path | None = None,
 ) -> dict[str, object]:
     if (directory / "diagnostic-origin.json").exists() or (
         directory / "diagnostic-origin.json"
@@ -268,26 +347,52 @@ def create_report(
     _formats(milestone)
     if milestone == "3.11" and repository is None:
         raise ValueError("M3.11 qualification requires its Git inputs and storage target")
+    now = datetime.now(UTC)
+    window = None
+    recovery = None
+    maximum_age = HISTORICAL_SPAN
+    if milestone == "3.11" and (directory / "finalization-recovery.json").exists():
+        if recovery_observation is None:
+            raise ValueError(
+                "recovery packaging requires this invocation's fresh final observations"
+            )
+        recovery = {
+            **recovery_summary(directory),
+            "final_observation": read_private(recovery_observation),
+        }
+        window = Window.from_evidence(
+            read_private(directory / "managed-credentials.json"), recovery
+        )
+        if now >= window.deadline:
+            raise ValueError("recovery packaging exceeded original credential expiry")
+        maximum_age = window.maximum_age
     source = revision((directory / "source-revision").read_text(encoding="ascii").strip())
     storage_raw, _ = combined.read_document(directory / "storage.json")
     storage = ArchiveQualificationReport.from_json(storage_raw.decode("ascii"))
     if storage.source_revision != source:
         raise ValueError("storage qualification used another source revision")
-    evidence_times = [_fresh_timestamp(storage.generated_at)]
+    evidence_times = [_fresh_timestamp(storage.generated_at, maximum_age=maximum_age, now=now)]
     for phase in PHASES:
         if (directory / f"{phase}.passed").read_text(encoding="ascii") != "passed\n":
             raise ValueError("an installed qualification phase did not pass")
-        evidence_times.append(_evidence_time(directory / f"{phase}.passed"))
+        evidence_times.append(
+            _evidence_time(directory / f"{phase}.passed", maximum_age=maximum_age, now=now)
+        )
     _, installed = combined.read_document(directory / "installed.json")
-    evidence_times.append(_evidence_time(directory / "installed.json"))
+    evidence_times.append(
+        _evidence_time(directory / "installed.json", maximum_age=maximum_age, now=now)
+    )
     # Captured immediately before the final independent proof, never when the
     # envelope happens to be packaged after destruction or a suspended process.
     completed = _fresh_timestamp(
-        (directory / "final-proof.started-at").read_text(encoding="ascii").strip()
+        (directory / "final-proof.started-at").read_text(encoding="ascii").strip(),
+        maximum_age=maximum_age,
+        now=now,
     )
     if (
-        _evidence_time(directory / "verify.passed") > completed
-        or _evidence_time(directory / "destroy.passed") < completed
+        _evidence_time(directory / "verify.passed", maximum_age=maximum_age, now=now) > completed
+        or _evidence_time(directory / "destroy.passed", maximum_age=maximum_age, now=now)
+        < completed
     ):
         raise ValueError("qualification final proof chronology is invalid")
     if not isinstance(installed, dict) or set(installed) != {"artifact_sha256", *EMPTY_ACCOUNTING}:
@@ -322,12 +427,133 @@ def create_report(
             raise ValueError("qualification inputs changed since the run started")
         report.update(format=INPUT_BOUND_FORMAT, **expected_inputs)
     if milestone == "3.11":
-        _add_combined(report, directory)
-        _add_managed(report, directory)
+        if recovery is not None:
+            report["finalization_recovery"] = recovery
+        _add_combined(report, directory, maximum_age=maximum_age, now=now, window=window)
+        _add_managed(report, directory, maximum_age=maximum_age, now=now, window=window)
+        if window:
+            window.validate(report, now=now, freshness=HISTORICAL_SPAN)
     return report
 
 
-def _add_managed(report: dict[str, object], directory: Path) -> None:
+def recovery_summary(directory: Path) -> dict[str, object]:
+    """Retain the original recovery time, but reject stale original-evidence bindings."""
+    value = read_private(directory / "finalization-recovery.json")
+    checkpoint = read_private(directory / "functional-completion.json")
+    original = read_private(directory.parent.parent / "journey-result.json")
+    if value != {
+        "functional_completed_at": checkpoint["completed_at"],
+        "completed_at": value.get("completed_at"),
+        "original_outcome": original["outcome"],
+        "original_result_sha256": managed_digest(original),
+        "checkpoint_sha256": managed_digest(checkpoint),
+    }:
+        raise ValueError("finalization recovery lost its original evidence binding")
+    return value
+
+
+def write_once(path: Path, raw: bytes, *, before_publish: Callable[[], None] | None = None) -> None:
+    """Retry only missing output; never replace conflicting or partial bytes."""
+    if path.exists() or path.is_symlink():
+        if read_private_bytes(path) != raw:
+            raise ValueError("existing qualification output differs from original evidence")
+        return
+    publish_bytes(path, raw, before_publish=before_publish)
+
+
+def publish_report(  # noqa: PLR0913 - explicit candidate and recovery publication guards
+    directory: Path,
+    *,
+    repository: Path,
+    storage_target: str,
+    milestone: str,
+    recovery_observation: Path | None = None,
+    guard: Callable[[], None] | None = None,
+) -> None:
+    path = directory / "qualification.json"
+    if path.exists() or path.is_symlink():
+        original = read_private(path)
+        if "finalization_recovery" in original:
+            recovery = combined.fields(
+                original["finalization_recovery"], SUMMARY_FIELDS | {"final_observation"}
+            )
+            if {key: recovery[key] for key in SUMMARY_FIELDS} != recovery_summary(directory):
+                raise ValueError("published recovery lost its original evidence binding")
+        # Repair publication, not qualification. Validate the ORIGINAL chronology
+        # at its original packaging time, keeping current input/revocation checks.
+        packaged = combined.parse_timestamp(original.get("packaged_at", original["completed_at"]))
+        tolerance = timedelta(0) if "packaged_at" in original else timedelta(minutes=5)
+        if packaged > datetime.now(UTC) + tolerance:
+            raise ValueError("original qualification package is future-dated")
+        raw = _verify_report(
+            path,
+            source=revision((directory / "source-revision").read_text(encoding="ascii").strip()),
+            artifact=str(original["artifact_sha256"]),
+            repository=repository,
+            storage_target=storage_target,
+            milestone=milestone,
+            managed_binding=None,
+            now=packaged,
+        )
+        if raw != combined.canonical_bytes(original):
+            raise ValueError("qualification report changed during publication repair")
+        qualification_report_originals.verify(
+            directory, original, phases=PHASES, now=datetime.now(UTC)
+        )
+    else:
+        report = create_report(
+            directory,
+            repository=repository,
+            storage_target=storage_target,
+            milestone=milestone,
+            recovery_observation=recovery_observation,
+        )
+        raw = combined.canonical_bytes(report)
+        if "finalization_recovery" in report:
+
+            def require_publication() -> None:
+                if guard is not None:
+                    guard()
+                managed = report["managed_credentials"]
+                recovery = report["finalization_recovery"]
+                if not isinstance(managed, dict) or not isinstance(recovery, dict):
+                    raise ValueError("recovery evidence is invalid")
+                window = Window.from_evidence(managed, recovery)
+                authorized = datetime.now(UTC)
+                if authorized >= window.deadline:
+                    raise ValueError("recovery publication exceeded original credential expiry")
+                window.validate(report, now=authorized, freshness=HISTORICAL_SPAN)
+
+            write_once(path, raw, before_publish=require_publication)
+        else:
+            write_once(path, raw)
+    write_once(
+        directory / "qualification.sha256",
+        (hashlib.sha256(raw).hexdigest() + "  qualification.json\n").encode("ascii"),
+    )
+
+
+def freshness_start(report: dict[str, object]) -> object:
+    """Freshness basis for an already validated, immutable report."""
+    if "finalization_recovery" not in report:
+        return report["oldest_evidence_at"]
+    recovery = combined.fields(
+        report["finalization_recovery"], SUMMARY_FIELDS | {"final_observation"}
+    )
+    observation = recovery["final_observation"]
+    if not isinstance(observation, dict):
+        raise ValueError("recovery final observation is invalid")
+    return observation["started_at"]
+
+
+def _add_managed(
+    report: dict[str, object],
+    directory: Path,
+    *,
+    maximum_age: timedelta = HISTORICAL_SPAN,
+    now: datetime | None = None,
+    window: Window | None = None,
+) -> None:
     path = directory / "managed-credentials.json"
     if not path.exists() and not path.is_symlink():
         if os.environ.get(managed_inputs.MANAGED_ENV):
@@ -340,14 +566,19 @@ def _add_managed(report: dict[str, object], directory: Path) -> None:
         managed_credentials=receipt,
     )
     receipts = combined.fields(receipt.get("receipts"), {"production", "fixture"})
-    times = [_fresh_timestamp(report["oldest_evidence_at"])]
+    times = [_fresh_timestamp(report["oldest_evidence_at"], maximum_age=maximum_age, now=now)]
     for value in receipts.values():
         if not isinstance(value, dict):
             raise ValueError("managed credential receipt is invalid")
-        times.append(_fresh_timestamp(value.get("started_at")))
+        times.append(_fresh_timestamp(value.get("started_at"), maximum_age=maximum_age, now=now))
     report["oldest_evidence_at"] = min(times).isoformat().replace("+00:00", "Z")
-    _verify_managed(report, maximum_age=timedelta(hours=24))
-    _verify_combined(report, maximum_age=timedelta(hours=24))
+    _verify_managed(
+        report,
+        maximum_age=maximum_age,
+        now=now,
+        historical_at=window.functional_at if window else None,
+    )
+    _verify_combined(report, maximum_age=maximum_age, now=now, window=window)
 
 
 def _verify_managed(
@@ -355,6 +586,8 @@ def _verify_managed(
     *,
     maximum_age: timedelta,
     binding: dict[str, object] | None = None,
+    now: datetime | None = None,
+    historical_at: datetime | None = None,
 ) -> None:
     credential = combined.fields(
         report["managed_credentials"],
@@ -376,14 +609,14 @@ def _verify_managed(
     receipts = managed_inputs.receipt_pair(
         credential["receipts"],
         binding=credential,
-        now=datetime.now(UTC),
-        maximum_age=maximum_age,
+        now=historical_at or now or datetime.now(UTC),
+        maximum_age=HISTORICAL_SPAN if historical_at else maximum_age,
     )
     legacy = combined.fields(
         report["legacy_observations"], {"storage_at", "installed_at", "phases"}
     )
-    storage = _fresh_timestamp(legacy["storage_at"], maximum_age=maximum_age)
-    oldest = _fresh_timestamp(report["oldest_evidence_at"], maximum_age=maximum_age)
+    storage = _fresh_timestamp(legacy["storage_at"], maximum_age=maximum_age, now=now)
+    oldest = _fresh_timestamp(report["oldest_evidence_at"], maximum_age=maximum_age, now=now)
     for value in receipts.values():
         if not isinstance(value, dict):
             raise ValueError("managed credential receipt is invalid")
@@ -391,19 +624,29 @@ def _verify_managed(
             raise ValueError("managed credential evidence chronology is invalid")
 
 
-def _add_combined(report: dict[str, object], directory: Path) -> None:
+def _add_combined(
+    report: dict[str, object],
+    directory: Path,
+    *,
+    maximum_age: timedelta = HISTORICAL_SPAN,
+    now: datetime | None = None,
+    window: Window | None = None,
+) -> None:
+    now = now or datetime.now(UTC)
     raw, proof = combined.read_document(directory / "combined.json")
-    times = combined.validate(proof, binding=report, maximum_age=timedelta(hours=24))
+    times = combined.validate(proof, binding=report, maximum_age=maximum_age, now=now)
     context_raw, context = combined.read_document(directory / "combined-context.json")
     if (
         raw != combined.canonical_bytes(proof)
         or context_raw != combined.canonical_bytes(context)
         or context != proof["context"]
-        or _evidence_time(directory / "combined-context.json") > times.started_at
-        or _evidence_time(directory / "combined-names.json") > times.started_at
+        or _evidence_time(directory / "combined-context.json", maximum_age=maximum_age, now=now)
+        > times.started_at
+        or _evidence_time(directory / "combined-names.json", maximum_age=maximum_age, now=now)
+        > times.started_at
         or not times.completed_at
-        <= _evidence_time(directory / "combined.json")
-        <= _fresh_timestamp(report["completed_at"])
+        <= _evidence_time(directory / "combined.json", maximum_age=maximum_age, now=now)
+        <= _fresh_timestamp(report["completed_at"], maximum_age=maximum_age, now=now)
     ):
         raise ValueError("combined qualification did not retain its original context and proof")
     combined.validate_names(directory / "combined-names.json", context)
@@ -412,11 +655,15 @@ def _add_combined(report: dict[str, object], directory: Path) -> None:
     _, storage = combined.read_document(directory / "storage.json")
     observations: dict[str, object] = {
         "storage_at": storage["generated_at"],
-        "installed_at": _evidence_time(directory / "installed.json")
+        "installed_at": _evidence_time(
+            directory / "installed.json", maximum_age=maximum_age, now=now
+        )
         .isoformat()
         .replace("+00:00", "Z"),
         "phases": {
-            phase: _evidence_time(directory / f"{phase}.passed").isoformat().replace("+00:00", "Z")
+            phase: _evidence_time(directory / f"{phase}.passed", maximum_age=maximum_age, now=now)
+            .isoformat()
+            .replace("+00:00", "Z")
             for phase in PHASES
         },
     }
@@ -424,13 +671,16 @@ def _add_combined(report: dict[str, object], directory: Path) -> None:
         format=combined.REPORT_FORMAT,
         combined=proof,
         combined_report_sha256=hashlib.sha256(raw).hexdigest(),
-        packaged_at=datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        packaged_at=now.isoformat().replace("+00:00", "Z"),
         legacy_observations=observations,
-        oldest_evidence_at=min(_fresh_timestamp(report["oldest_evidence_at"]), times.captured_at)
+        oldest_evidence_at=min(
+            _fresh_timestamp(report["oldest_evidence_at"], maximum_age=maximum_age, now=now),
+            times.captured_at,
+        )
         .isoformat()
         .replace("+00:00", "Z"),
     )
-    _verify_combined(report, maximum_age=timedelta(hours=24))
+    _verify_combined(report, maximum_age=maximum_age, now=now, window=window)
 
 
 def main() -> int:
@@ -460,17 +710,12 @@ def main() -> int:
             return 0
         if arguments.source or arguments.artifact:
             raise ValueError("unexpected evidence creation options")
-        report = create_report(
+        publish_report(
             arguments.path,
             repository=ROOT,
             storage_target=storage_target_digest(),
             milestone=arguments.milestone,
         )
-        raw = combined.canonical_bytes(report)
-        with (arguments.path / "qualification.json").open("xb") as stream:
-            stream.write(raw)
-        with (arguments.path / "qualification.sha256").open("x", encoding="ascii") as stream:
-            stream.write(hashlib.sha256(raw).hexdigest() + "  qualification.json\n")
     except ValueError, OSError, TypeError, AttributeError, RecursionError:
         parser.exit(1, f"M{arguments.milestone} qualification evidence is incomplete or invalid.\n")
     print(f"Sanitized M{arguments.milestone} installed Spaces qualification report created.")

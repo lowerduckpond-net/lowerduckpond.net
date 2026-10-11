@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,7 +25,7 @@ from lowerduckpond_m3_archive.storage import (
 )
 
 from scripts.m3_11_backup_fixture import Target, _version
-from scripts.m3_11_private_inputs import read_private, write_private
+from scripts.m3_11_private_inputs import publish_private, read_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, digest, fields
 
 FORMAT = "lowerduckpond-m3-11-backup-removal-v1"
@@ -39,7 +40,7 @@ def _once(path: Path, value: dict[str, object]) -> None:
         if read_private(path) != value:
             raise ValueError("owned backup removal intent changed")
     else:
-        write_private(path, value)
+        publish_private(path, value)
 
 
 @dataclass
@@ -51,6 +52,7 @@ class Removal:
     observer: S3Client
     directory: Path
     quiescent: Callable[[], str]
+    guard: Callable[[], None] | None = None
 
     def _key(self, key: str) -> None:
         _version(key)  # Same bounded opaque UTF-8/control-character rules as full IDs.
@@ -191,7 +193,7 @@ class Removal:
         original = self.target.manifest(self.binding)
         _version(self.owner_version)
         path = self.directory / "intent.json"
-        if self.directory.exists() or self.directory.is_symlink():
+        if self.directory.exists() and any(self.directory.iterdir()):
             intent = self._saved_intent()
             self._quiet(str(intent["quiescent_sha256"]))
             return intent
@@ -199,7 +201,6 @@ class Removal:
         self._owner()
         inventory = self._observed()
         self._quiet(quiet)
-        self.directory.mkdir(mode=0o700)
         intent = {
             "format": FORMAT,
             "ownership": original,
@@ -207,10 +208,19 @@ class Removal:
             "quiescent_sha256": quiet,
             "inventory": inventory,
         }
-        write_private(path, intent, maximum=MAX_INTENT_BYTES)
+        staging = Path(tempfile.mkdtemp(dir=self.directory.parent, prefix=".backup-removal-"))
+        publish_private(staging / path.name, intent, maximum=MAX_INTENT_BYTES)
+        staging.rename(self.directory)
+        descriptor = os.open(self.directory.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
         return intent
 
     def _delete(self, key: str, version: str) -> None:
+        if self.guard is not None:
+            self.guard()
         response = self.writer.delete_object(
             Bucket=self.target.backup_bucket, Key=key, VersionId=version
         )
@@ -268,6 +278,8 @@ class Removal:
             self._quiet(str(intent["quiescent_sha256"]))
             _once(self.directory / "data-delete.started.json", authorization)
             for key, upload_id in cast("list[list[str]]", remaining["uploads"]):
+                if self.guard is not None:
+                    self.guard()
                 self.writer.abort_multipart_upload(
                     Bucket=self.target.backup_bucket, Key=key, UploadId=upload_id
                 )

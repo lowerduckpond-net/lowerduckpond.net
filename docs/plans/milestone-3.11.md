@@ -922,7 +922,11 @@ observation cannot complete the original failed qualification.
 The complete journey must retain one source, restored state, protected history,
 provider observations and final accounting chain. Splitting it into independent
 fixtures would remove that proof. Keep the existing independently runnable
-components and the full uninterrupted live journey. The supervisor now owns the
+components and the ordered live functional journey. The
+[same-run finalization recovery](../operations/m3-11-backup-recovery.md#same-run-finalization-recovery)
+amendment permits a new bounded controller to finish cleanup/reporting only after
+durable exact functional completion. It preserves the original failed process
+result, timestamps, shared history and actual credential expiry. The supervisor owns the
 deadline outside the controller's signal group, records its actual exit and
 duration, signals that group, then gives read-only failure collection five minutes.
 Both processes have a 30-second TERM grace and a bounded 30-second wait after
