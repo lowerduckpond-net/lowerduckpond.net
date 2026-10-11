@@ -6,6 +6,7 @@ import json
 import os
 import stat
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -66,7 +67,13 @@ def write_private(path: Path, value: dict[str, object], *, maximum: int = MAX_BY
         os.close(descriptor)
 
 
-def publish_bytes(path: Path, raw: bytes, *, staging_directory: Path | None = None) -> None:
+def publish_bytes(
+    path: Path,
+    raw: bytes,
+    *,
+    staging_directory: Path | None = None,
+    before_publish: Callable[[], None] | None = None,
+) -> None:
     """Publish complete new bytes without replacing an existing directory entry."""
     from lowerduckpond_static_host_agent.durable import _rename_noreplace  # noqa: PLC0415
 
@@ -81,6 +88,8 @@ def publish_bytes(path: Path, raw: bytes, *, staging_directory: Path | None = No
     try:
         source = os.open(temporary.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
+            if before_publish is not None:
+                before_publish()
             _rename_noreplace(source, temporary.name, path.name, destination_fd=descriptor)
             os.fsync(source)
         finally:

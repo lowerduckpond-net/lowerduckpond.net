@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from scripts.m3_11_private_inputs import read_private
-from scripts.m3_11_qualification_evidence import fields
+from scripts.m3_11_qualification_evidence import fields, parse_timestamp
 from scripts.m3_11_unattended import inputs
 from scripts.m3_11_unattended.docker import Docker
 from scripts.m3_11_unattended.model import digest, identity, instant
@@ -56,7 +56,12 @@ def access(directory: Path) -> Iterator[dict[str, str]]:
         run_id = identity(binding["managed_run_id"])
         manifest = lease.manifest()
         receipt = read_private(directory / "managed-credentials.json")
-        pairs = inputs.receipt_pair(receipt["receipts"], binding=binding, now=datetime.now(UTC))
+        completed = parse_timestamp(
+            read_private(directory / "functional-completion.json")["completed_at"]
+        )
+        if completed > datetime.now(UTC):
+            raise ValueError("functional completion is future-dated")
+        pairs = inputs.receipt_pair(receipt["receipts"], binding=binding, now=completed)
         fixture = pairs["fixture"]
         context = read_private(directory / "combined-context.json")
         own = lease.directory / f"use-{run_id}.json"

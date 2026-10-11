@@ -120,10 +120,24 @@ Explicit cancellation, credential expiry and required revocation still apply.
 
 Recovered finalization adds `finalization_recovery` to a newly packaged report:
 the original functional completion time, finalization completion time, original
-failed/interrupted outcome, original result hash and checkpoint hash. The
+failed/interrupted outcome, original result hash and checkpoint hash, plus one
+successful recovery invocation's `final_observation`. That observation binds fresh
+owned-resource/DNS absence and private-empty storage checks, their ordered times,
+and the original combined/context/checkpoint hashes. Freshness starts at the
+invocation's earliest observation, never its latest check. Functional history
+retains its original 24-hour validity span at functional completion; recovery
+must finish report bytes and authorize publication before original child credential
+expiry under approved
+failure retention. The cleanup reserve does not extend runtime. Recovered
+packaging allows at most 24 hours since fresh observation started; consumption
+and unfinished production mutation allow seven days from that same time.
+Ordinary report freshness is unchanged. The
 controller's original failure and exit status remain unchanged. A report that
 was already completely written keeps its exact bytes and original packaging
-time when only its checksum needs repair. Output publication uses atomic
+time when only its checksum needs repair, even after its consumption window
+ends. Repair checks original bytes, chronology and evidence bindings plus current
+candidate/input/revocation policy, without credentials or a regenerated report.
+It grants no new consumption window. Output publication uses atomic
 no-replace rename; existing corrupt or conflicting files are preserved and
 rejected. Old attempts lacking the completion boundary cannot reconstruct it
 from logs, assertions alone or diagnostic continuation.

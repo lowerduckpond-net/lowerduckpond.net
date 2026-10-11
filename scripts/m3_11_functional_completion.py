@@ -147,7 +147,12 @@ def load(directory: Path, environment: dict[str, str]) -> tuple[Completion, dict
     phases = {name: phase_receipt(directory, name, context) for name in PHASES}
     if phases != value["phases"]:
         raise ValueError("original functional phase receipts changed")
-    now = datetime.now(UTC)
+    # Functional success is historical evidence. Validate its original 24-hour
+    # chronology at completion; live recovery separately requires current lease
+    # authority and fresh final absence, without changing these timestamps.
+    now = evidence.parse_timestamp(value["completed_at"])
+    if now > datetime.now(UTC):
+        raise ValueError("functional completion is future-dated")
     previous = evidence.timestamp(context["captured_at"], now=now, maximum_age=timedelta(hours=24))
     for phase in phases.values():
         started, completed = [

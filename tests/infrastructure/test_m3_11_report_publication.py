@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from contextlib import nullcontext
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -16,7 +16,8 @@ from scripts import m3_11_finalization as finalization
 from scripts import m3_11_functional_completion as functional
 from scripts.m3_11_private_inputs import publish_bytes, read_private_bytes, write_private
 
-from .test_m3_11_qualification_report import TARGET, Run, child
+from .test_m3_11_finalization_report import prepared
+from .test_m3_11_qualification_report import TARGET, Run
 from .test_m3_11_qualification_report import run as run  # noqa: PLC0414 - shared pytest fixture
 
 
@@ -83,29 +84,14 @@ def test_conflicting_checksum_or_report_never_overwrites_evidence(run: Run) -> N
     assert (run.directory / "qualification.json").read_bytes() == original
 
 
-def test_recovery_summary_preserves_original_failure_and_is_validated(run: Run) -> None:
-    directory = run.directory.parent / "attempt/qualification/synthetic"
-    directory.parent.mkdir(parents=True)
-    run.directory.rename(directory)
-    run.directory = directory
-    proof = run.create()["combined"]
-    assert isinstance(proof, dict)
-    stamp = child(proof, "phases", "owned-teardown")["started_at"]
-    checkpoint = {"completed_at": stamp}
-    original = {"outcome": "failed", "exit_status": 124}
-    write_private(run.directory / "functional-completion.json", checkpoint)
-    write_private(run.directory.parent.parent / "journey-result.json", original)
-    write_private(
-        run.directory / "finalization-recovery.json",
-        {
-            "functional_completed_at": stamp,
-            "completed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-            "original_outcome": "failed",
-            "original_result_sha256": functional.digest(original),
-            "checkpoint_sha256": functional.digest(checkpoint),
-        },
-    )
-    publish(run)
+def test_recovery_summary_preserves_original_failure_and_is_validated(
+    run: Run, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environment, _ = prepared(run, monkeypatch)
+    monkeypatch.setattr(finalization, "_command", Mock())
+    attempt = run.directory / "recovery"
+    attempt.mkdir(mode=0o700)
+    finalization.finish(run.directory, attempt, environment)
     raw = (run.directory / "qualification.json").read_bytes()
     assert b'"original_outcome":"failed"' in raw
     reports.verify_report(
@@ -134,6 +120,10 @@ def test_existing_report_finalizer_repairs_checksum_without_credentials_or_new_s
     monkeypatch.setattr(finalization, "run_lease", lambda _: nullcontext())
     monkeypatch.setattr(finalization, "RunState", lambda _: Mock(lock=nullcontext))
     (run.directory / "combined-context.json").chmod(0o600)
+    from .test_m3_11_recovery_policy import clock  # noqa: PLC0415
+
+    monkeypatch.setattr(reports, "datetime", clock(datetime.now(UTC) + timedelta(days=30)))
+    monkeypatch.setattr(reports, "create_report", Mock(side_effect=AssertionError("no new report")))
     provider = Mock(side_effect=AssertionError("no provider or credentials allowed"))
     monkeypatch.setattr(finalization, "access", provider)
     finalization.run(run.directory, run.directory)

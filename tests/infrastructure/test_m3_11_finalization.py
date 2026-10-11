@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import Mock
 
@@ -17,12 +18,14 @@ from scripts.m3_11_unattended.state import replace_private
 
 from .test_m3_11_combined_live import execute, retirement
 from .test_m3_11_combined_live import inputs as inputs  # noqa: PLC0414 - shared pytest fixture
+from .test_m3_11_finalization_report import managed
 
 
 @pytest.mark.parametrize("fault", ["authorize", "cleanup"])
 def test_new_process_finishes_without_replaying_tests_or_refreshing_originals(
     inputs: Mock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
 ) -> None:
+    managed(tmp_path, inputs.binding)
     tests = Mock(side_effect=execute("passed"))
     monkeypatch.setattr(pytest, "main", tests)
     removal = retirement(monkeypatch)
@@ -40,7 +43,16 @@ def test_new_process_finishes_without_replaying_tests_or_refreshing_originals(
     removal.authorize.side_effect = None
     removal.run.side_effect = None
     removal.root = tmp_path / "owned-teardown"
-    monkeypatch.setattr(finalization, "Teardown", Mock(return_value=removal))
+
+    def resume(_directory: Path, _storage: object, dns: object, **kwargs: object) -> Mock:
+        assert callable(dns)
+        removal.run.side_effect = lambda: (dns(), removal.run.return_value)[1]
+        return removal
+
+    monkeypatch.setattr(finalization, "Teardown", resume)
+    monkeypatch.setattr(
+        finalization, "removal_absence", Mock(return_value=SimpleNamespace(sha256="a" * 64))
+    )
     monkeypatch.setattr(finalization, "require_live", lambda _: None)
     finalization.combined(tmp_path, inputs)
     envelope = (tmp_path / "combined.json").read_bytes()
@@ -95,6 +107,7 @@ def test_changed_or_incomplete_completion_cannot_authorize_recovery(
 def test_access_loss_after_cleanup_cannot_publish_combined_pass(
     inputs: Mock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    managed(tmp_path, inputs.binding)
     monkeypatch.setattr(pytest, "main", execute("passed"))
     removal = retirement(monkeypatch)
     removal.run.side_effect = OSError("transient")

@@ -11,7 +11,7 @@ import pytest
 
 from scripts import m3_11_finalization_access as recovery
 from scripts.m3_11_private_inputs import read_private, write_private
-from scripts.m3_11_unattended.model import digest
+from scripts.m3_11_unattended.model import digest, instant
 from scripts.m3_11_unattended.state import RunState, replace_private
 
 from . import test_m3_11_connect_action as managed
@@ -41,6 +41,10 @@ def prepared(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Cas
     )
     fixture = directory / "qualification/synthetic"
     fixture.mkdir(mode=0o700, parents=True)
+    write_private(
+        fixture / "functional-completion.json",
+        {"completed_at": datetime.now(UTC).isoformat().replace("+00:00", "Z")},
+    )
     _, checked = case.lifecycle.credentials(binding=binding)
     receipts = {**pair(binding), "fixture": checked}
     write_private(
@@ -129,6 +133,27 @@ def test_cancellation_during_recovery_is_seen_by_next_mutation_guard(
         RunState(directory.parent.parent).cancel()
         with pytest.raises(ValueError, match="cancelled"):
             recovery.require_live(directory)
+
+
+def test_multiday_recovery_uses_original_deadline_without_cleanup_reserve(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory, case = prepared(tmp_path, monkeypatch)
+    deadline = min(instant(intent.deadline) for intent in case.manifest.intents)
+    creates = sum(p.creates for p in case.providers["provision"].values())
+    for now in (datetime.now(UTC) + timedelta(days=3), deadline - timedelta(seconds=1)):
+        monkeypatch.setattr(
+            recovery, "datetime", SimpleNamespace(now=lambda _zone, current=now: current)
+        )
+        with recovery.access(directory):
+            recovery.require_live(directory)
+    monkeypatch.setattr(recovery, "datetime", SimpleNamespace(now=lambda _zone: deadline))
+    with pytest.raises(ValueError), recovery.access(directory):
+        pytest.fail("cleanup reserve extended child access")
+    with pytest.raises(ValueError, match="expired"):
+        recovery.require_live(directory)
+    assert sum(p.creates for p in case.providers["provision"].values()) == creates
+    assert not list(case.state.directory.glob("close-*.json"))
 
 
 def test_failed_attempt_cannot_recover_without_approved_retention(

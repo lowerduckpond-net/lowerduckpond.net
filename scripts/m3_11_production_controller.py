@@ -153,7 +153,7 @@ class Candidate:
             raise ValueError("production inputs changed during the original transaction")
         if not self.completed:
             evidence.timestamp(
-                self.report["oldest_evidence_at"],
+                qualification.freshness_start(self.report),
                 now=datetime.now(UTC),
                 maximum_age=qualification.PROVIDER_EVIDENCE_MAX_AGE,
             )

@@ -1260,7 +1260,7 @@ For a managed qualification whose functional assertions completed successfully,
 use the original clean checkout and original private run directory:
 
 ```bash
-uv run --frozen python -m scripts.m3_11_finalization /absolute/original/private/run
+uv run --frozen python -m scripts.m3_11_finalization /absolute/original/private/run --seconds 7200
 ```
 
 The command requires the original `functional-completion.json`, including the
@@ -1272,7 +1272,10 @@ original credential identities under approved failure retention, before their ex
 issuance, lease extension or a new delivery bundle. Cancellation, closure,
 release or changed ownership stops recovery, including between cleanup mutations.
 
-Recovery has its own 30-minute execution allowance and bounded shutdown. It
+Select an explicit execution allowance with `--seconds` (7,200 seconds in the
+example); each invocation records that choice and uses bounded shutdown. This
+resource budget grants no additional credential validity. Timeout leaves the
+original retained lease resumable and never requests cancellation. Recovery
 resumes authorized deletion, or freshly authorizes deletion when no committed
 intent exists, then obtains fresh absence observations, completes remaining
 wrapper checks and packages the report. Original failures and timestamps stay
@@ -1285,7 +1288,25 @@ If a complete `qualification.json` already exists, recovery validates it against
 its original evidence and only completes the report/checksum publication pair.
 That path needs no credentials or new provider observations. It preserves report
 bytes and `packaged_at`. Existing conflicting or truncated published files are
-not overwritten. Existing evidence freshness limits still apply.
+not overwritten. Checksum-only repair validates the original packaging chronology
+and current candidate inputs/revocations even after evidence ages out; repairing
+a checksum does not make an expired report consumable.
+
+Managed recovery can bridge a multi-day interruption within the original approved
+retained lease and actual child credential deadlines. The cleanup reserve never
+extends child access. Original functional proof must have met the existing
+24-hour span at its recorded completion. Fresh cleanup, DNS and private-empty
+storage proof must all come from one recovery invocation, before child expiry.
+Report bytes must be complete and publication authorized before that expiry.
+The final guard runs after staging/fsync, immediately before atomic rename; an
+operating-system pause after authorization can delay directory-entry visibility.
+That invocation appends `final-observation.json`; an earlier recovery summary and
+all original evidence remain unchanged. Packaging requires those observations to
+be at most 24 hours old, measured from the invocation's earliest observation.
+Recovered report consumption and unfinished production work use seven days from
+that same earliest time. They do not refresh original functional timestamps.
+Ordinary reports retain their existing 24-hour packaging span and seven-day
+consumption freshness policy.
 
 This is not functional phase retry: public-CA, reconstruction and all other
 assertions remain one ordered shared-history journey. A missing completion
