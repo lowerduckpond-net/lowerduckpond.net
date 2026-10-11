@@ -17,6 +17,21 @@ from scripts.qualification_case import INSTALLED_FORMAT
 from scripts.qualification_context import ARTIFACT_ENV, RUN_ENV, host_name
 
 
+def _assert_archive_export_budget(host: Host) -> None:
+    checked = host.run(
+        "/usr/bin/systemctl show lowerduckpond-archive-export@request.service "
+        "--property=Result,InvocationID,MemoryMax,MemorySwapMax,LimitCPU,CPUQuotaPerSecUSec"
+    )
+    assert checked.rc == 0, checked.stderr
+    properties = dict(line.split("=", 1) for line in checked.stdout.splitlines())
+    assert properties["InvocationID"], "the restore must exercise the archive-export service"
+    assert properties["Result"] == "success"
+    assert int(properties["MemoryMax"]) == 256 * 1024 * 1024
+    assert properties["MemorySwapMax"] == "0"
+    assert properties["LimitCPU"] == "120"
+    assert properties["CPUQuotaPerSecUSec"] == "1s"
+
+
 def test_fresh_full_size_archive_restore(host: Host, tmp_path: Path) -> None:
     assert os.environ.get(RUN_ENV), "this diagnostic case requires a fresh owned local fixture"
     assert os.environ.get("M3_10_ARCHIVE_BACKEND") == "minio"
@@ -59,6 +74,7 @@ def test_fresh_full_size_archive_restore(host: Host, tmp_path: Path) -> None:
     restored_deployment = support._desired_deployment(restored)
     assert restored_deployment != original_deployment
     full_size.assert_worker_budget(host, restored)
+    _assert_archive_export_budget(host)
     assert full_size.installed_digest(host, tenant, restored_deployment) == expected_digest
     support._assert_route(host, origin, status=200, body=full_size.INDEX)
     assert not archives._remote_versions(host)

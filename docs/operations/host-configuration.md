@@ -446,6 +446,24 @@ sorted pending inventory, so a persistently failing prefix cannot consume every
 batch or starve later stranded jobs. The cursor advances before non-blocking
 handoff; a lost handoff therefore defers that job only until the bounded queue
 wraps rather than pinning recovery to it.
+
+The archive-export network helper has a separate 256-MiB memory ceiling, with
+swap disabled. This allows headroom for Python/TLS overhead and charged file
+cache during full-size restores; the earlier 128-MiB ceiling could terminate
+valid restores. Socket activation permits one fixed export service instance,
+and bundle work holds the exclusive host export lock. The increase therefore
+adds at most 128 MiB to this helper's allowance, without reserving that memory
+or multiplying the allowance by the tenant count. Construction and cleanup
+helpers retain their separate 128-MiB ceilings. These network helpers are
+outside the workers' 512-MiB slice; that slice is not a whole-host budget.
+Backup jobs have a separate 512-MiB ceiling and audit jobs have 256 MiB each.
+Their limits, alongside Caddy, MariaDB and the operating system, still need
+whole-host capacity qualification. The initial 2-GiB host and planned 4-GiB
+production class are described in [ADR 0015](../adr/0015-start-small-and-preserve-resize-reversibility.md);
+configured ceilings alone do not prove available headroom. The full-size
+archive case checks successful restore through the installed export service
+with its 256-MiB ceiling, zero swap and unchanged CPU bounds.
+
 Each worker begins as `ldp-provisioner` and crosses exactly the installed
 UUID-only sudo rule into the root-owned executor. Its no-new-privileges
 exception exists only for that transition; its capability bounding set retains
