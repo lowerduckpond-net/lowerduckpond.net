@@ -65,15 +65,21 @@ def template() -> dict[str, object]:
     }
 
 
-def validate(configuration: LeaseConfiguration, *, now: datetime) -> None:
+def validate(
+    configuration: LeaseConfiguration, *, now: datetime, active_only: bool = False
+) -> None:
     """Read-only capability checks for separately authorized setup or handover.
 
     Principal equality comes from the bound operator attestation, never from an
     authenticated empty provider list. This check does not grant issuance.
+    Activation checks historical access against the imported evidence and open
+    leases separately; merely retaining an old binding does not require its PAT.
     """
     if configuration.mode == "controller":
         configuration.require_issuance(now=now)
-    for roles in configuration.generations.values():
+    for key, roles in configuration.generations.items():
+        if active_only and key != configuration.active_generation:
+            continue
         for bootstrap in roles.values():
             bootstrap.providers(targets=configuration.targets, now=now)
     if configuration.production is not None:

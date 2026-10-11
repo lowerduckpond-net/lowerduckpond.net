@@ -2,7 +2,7 @@
 
 No old issuer is stopped here. The operator must establish its exact stopped,
 non-restarting state before this import can be published. Import preserves files
-and original outcomes; cleanup performs fresh provider verification afterwards.
+and original outcomes; outstanding cleanup still requires provider verification.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from scripts.m3_11_unattended.journal import (
     record_title,
 )
 from scripts.m3_11_unattended.journal import validate as validate_record
+from scripts.m3_11_unattended.legacy_terminal import validate_claims
 from scripts.m3_11_unattended.lifecycle import LeaseLifecycle, _intents, _known_id
 from scripts.m3_11_unattended.model import LeaseManifest, LifecycleError, digest, stamp, strings
 from scripts.m3_11_unattended.setup import validate
@@ -157,6 +158,7 @@ def publish_import(  # noqa: PLR0912 - reviewed originals, files and issuer fenc
         obligations[item.sha256]["provider_id"] != _known_id(originals, item) for item in owned
     ):
         raise LifecycleError("reviewed import omits or changes an original obligation")
+    validate_claims(mapping, originals)
     for filename, expected_file in strings(mapping["retained_files"]).items():
         if hashlib.sha256(read_private_bytes(Path(filename))).hexdigest() != expected_file:
             raise LifecycleError("retained legacy evidence differs from the reviewed import")
@@ -220,7 +222,7 @@ def publish_import(  # noqa: PLR0912 - reviewed originals, files and issuer fenc
 def activate(output: Path) -> dict[str, object]:
     controller, independent = bundles(output)
     config = LeaseConfiguration.load(output / "controller-connect.json")
-    validate(config, now=datetime.now(UTC))
+    validate(config, now=datetime.now(UTC), active_only=True)
     client = config.generations[config.active_generation]["cleanup"].reader()
     legacy = sweep_legacy(config, client, root=output)
     if legacy["status"] != "ready":
@@ -234,6 +236,7 @@ def activate(output: Path) -> dict[str, object]:
     }
     if any(row["lease_id"] not in manifests for row in records):
         raise LifecycleError("activation inventory has outcomes without their manifest")
+    checked = {config.active_generation}
     for lease_id, manifest in manifests.items():
         if any(row["lease_id"] == lease_id and row["slot"] == "closed" for row in records):
             continue
@@ -246,6 +249,9 @@ def activate(output: Path) -> dict[str, object]:
             available = config.generations.get(generation.generation_id, {}).get("cleanup")
             if available is None or available.generation != generation:
                 raise LifecycleError("activation removed required cleanup authority")
+            if generation.generation_id not in checked:
+                available.providers(targets=config.targets, now=datetime.now(UTC), reader=client)
+                checked.add(generation.generation_id)
     receipt: dict[str, object] = {
         "format": FORMAT,
         "controller_sha256": hashlib.sha256(controller).hexdigest(),

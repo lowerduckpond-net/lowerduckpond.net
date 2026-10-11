@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 from scripts.m3_11_private_inputs import read_private, read_private_bytes
 from scripts.m3_11_qualification_evidence import fields
@@ -21,15 +22,19 @@ from scripts.m3_11_unattended.config import LeaseConfiguration, UnavailableProvi
 from scripts.m3_11_unattended.connect_api import Connect
 from scripts.m3_11_unattended.inventory import ConnectInventory, Inventory, fact
 from scripts.m3_11_unattended.journal import ConnectObligations, event
+from scripts.m3_11_unattended.legacy_terminal import restored as legacy_restored
+from scripts.m3_11_unattended.legacy_terminal import terminal
 from scripts.m3_11_unattended.lifecycle import (
     LeaseLifecycle,
     Lifecycle,
+    Provider,
     intents,
 )
 from scripts.m3_11_unattended.model import (
     Credential,
     LeaseManifest,
     LifecycleError,
+    ProviderKind,
     identity,
     instant,
     stamp,
@@ -163,7 +168,9 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def retained_legacy(journal: ConnectObligations) -> tuple[dict[str, Credential], bool]:
+def retained_legacy(  # noqa: PLR0912 - independent retained-file and rejection-proof checks
+    journal: ConnectObligations,
+) -> tuple[dict[str, Credential], bool]:
     """Use only hash-bound original local facts and secrets; absence remains unavailable."""
     from scripts.m3_11_unattended.worker import (  # noqa: PLC0415
         restore_created,
@@ -176,6 +183,7 @@ def retained_legacy(journal: ConnectObligations) -> tuple[dict[str, Credential],
     runs: set[Path] = set()
     available: dict[str, Credential] = {}
     complete = True
+    missing_secrets: set[str] = set()
     for filename, expected in retained.items():
         path = Path(filename)
         if path.parent.name not in {
@@ -185,6 +193,8 @@ def retained_legacy(journal: ConnectObligations) -> tuple[dict[str, Credential],
         }:
             continue
         if not path.exists() and not path.is_symlink():
+            if path.parent.name == "credential-cleanup":
+                missing_secrets.add(path.stem)
             continue  # Independent host loss cannot claim a negative probe passed.
         if hashlib.sha256(read_private_bytes(path)).hexdigest() != expected:
             complete = False
@@ -208,6 +218,15 @@ def retained_legacy(journal: ConnectObligations) -> tuple[dict[str, Credential],
                 available[key] = value
         except RuntimeError, OSError, ValueError, KeyError, TypeError:
             complete = False
+    if missing_secrets:
+        records = journal.records()
+        owned = {intent.sha256: intent for intent in intents(journal)}
+        for key in missing_secrets:
+            proof = (
+                terminal(owned[key], records, credential_expected=True) if key in owned else None
+            )
+            if proof is None or proof.negative_authentication != "denied":
+                complete = False
     return available, complete
 
 
@@ -219,7 +238,12 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
     secrets: dict[str, Credential] | None = None,
 ) -> dict[str, object]:
     """Reconcile the reviewed legacy mapping without re-enabling its issuer."""
-    from scripts.m3_11_unattended.cleanup_expiry import reconcile_imported  # noqa: PLC0415
+    from scripts.m3_11_unattended.cleanup_expiry import (  # noqa: PLC0415
+        imported_update,
+        readback_proof,
+        reconcile_imported,
+        terminal_update,
+    )
 
     journal = ConnectObligations(
         client,
@@ -239,13 +263,31 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
     obligations = mapping["obligations"]
     if not isinstance(obligations, dict):
         raise LifecycleError("legacy obligation mapping is unavailable")
-    now = datetime.now(UTC)
-    providers = {
-        key: roles["cleanup"].providers(
-            targets=config.targets, now=now, reader=client, tolerate_unavailable=True
-        )
-        for key, roles in config.generations.items()
+    expected_secrets = {
+        Path(filename).stem
+        for filename in strings(mapping["retained_files"])
+        if Path(filename).parent.name == "credential-cleanup"
     }
+    fenced_after = max(
+        (instant(row["stopped_at"]) for row in cast(list[dict[str, object]], mapping["issuers"])),
+        default=None,
+    )
+    now = datetime.now(UTC)
+    providers: dict[str, dict[ProviderKind, Provider]] = {}
+
+    def clients_for(generation: str) -> dict[ProviderKind, Provider]:
+        if generation not in providers:
+            bootstrap = config.generations.get(generation, {}).get("cleanup")
+            providers[generation] = (
+                bootstrap.providers(
+                    targets=config.targets, now=now, reader=client, tolerate_unavailable=True
+                )
+                if bootstrap is not None
+                else {}
+            )
+        return providers[generation]
+
+    records = journal.records()  # Include restored local facts before deciding closure.
     outcomes = []
     for intent in intents(journal):
         if intent.targets != config.targets:
@@ -254,7 +296,21 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
             obligations[intent.sha256], {"generation_id", "provider_id", "original_status"}
         )
         generation = str(row["generation_id"])
-        clients = providers.get(generation, {})
+        retained = config.generations.get(generation, {}).get("cleanup")
+        if retained is not None and (
+            retained.generation.fingerprints[intent.provider] != intent.cleanup_authority_sha256
+        ):
+            raise LifecycleError("retained legacy generation differs from original authority")
+        completed = terminal(
+            intent,
+            records,
+            available.get(intent.sha256),
+            credential_expected=intent.sha256 in expected_secrets,
+        )
+        if completed is not None:
+            outcomes.append(dataclasses.asdict(completed))
+            continue
+        clients = clients_for(generation)
         selected = clients.get(intent.provider, UnavailableProvider(intent.provider))
         if selected.authority_sha256 != intent.cleanup_authority_sha256:
             outcomes.append(
@@ -270,9 +326,14 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
         # outstanding credential cleanup; imported status never proves removal.
         lifecycle.request_revocation(intent.run_id)
         result = lifecycle.reconcile(intent, available.get(intent.sha256))
+        if intent.sha256 in expected_secrets and result.negative_authentication != "denied":
+            result = dataclasses.replace(result, status="unresolved")
         outcomes.append(dataclasses.asdict(result))
     restorations = []
     for record in audit_policy_recovery.plans(records):
+        if legacy_restored(records, fenced_after=fenced_after, now=now):
+            restorations.append("original-policy-verified")
+            continue
         bound = next(
             (
                 item
@@ -292,10 +353,23 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
         try:
             restored = audit_policy_recovery.reconcile(
                 journal,
-                providers.get(generation, {}).get("cloudflare-account"),
+                clients_for(generation).get("cloudflare-account"),
                 now=now,
                 force_restore=True,
             )
+            if restored == "original-policy-verified":
+                audit_policy_recovery.observation(
+                    journal,
+                    status=restored,
+                    actor="legacy-cleanup",
+                    helper=config.helper_revision,
+                    now=datetime.now(UTC),
+                )
+                restored = (
+                    "original-policy-verified"
+                    if legacy_restored(journal.records(), fenced_after=fenced_after)
+                    else "unresolved"
+                )
         except RuntimeError, OSError, ValueError, KeyError, TypeError:
             restored = "unresolved"
         restorations.append(restored)
@@ -311,8 +385,10 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
     if not isinstance(updates, list):
         raise LifecycleError("legacy expiry obligation mapping is unavailable")
     for raw in updates:
-        row = fields(raw, {"plan", "plan_sha256", "generation_id", "result_files"})
-        clients = providers.get(str(row["generation_id"]), {})
+        row = imported_update(raw)
+        if terminal_update(row, targets=config.targets, records=records):
+            continue
+        clients = clients_for(str(row["generation_id"]))
         cloudflare = {
             str(key): value for key, value in clients.items() if isinstance(value, Cloudflare)
         }
@@ -323,6 +399,7 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
                 expected=str(row["plan_sha256"]),
                 providers=cloudflare,
             )
+            journal.persist(event("heartbeat", str(row["generation_id"]), readback_proof(row)))
         except RuntimeError, OSError, ValueError, KeyError, TypeError:
             expiry = "unresolved"
     ready = (
@@ -404,11 +481,18 @@ def sweep_leases(  # noqa: PLR0912, PLR0913, PLR0915 - independent cleanup and c
         # A fully transferred generation need not retain its old access. Any
         # unknown or untransferred role still selects that missing generation
         # during reconciliation and remains unresolved.
+        # Keep the original and every handover generation available: an older
+        # deployed actor may still need a verified fallback in that chain.
+        # Reconciliation validates the chain before using any provider.
+        required = {manifest.cleanup.generation_id} | {
+            slot.rsplit(":", 1)[-1] for slot in own if slot.startswith("handover:")
+        }
         generations = {
             key: roles["cleanup"].providers(
                 targets=config.targets, now=now, tolerate_unavailable=True, reader=connect_client
             )
             for key, roles in config.generations.items()
+            if key in required
         }
         providers = generations.get(manifest.cleanup.generation_id, {})
         lifecycle = LeaseLifecycle(manifest, inventory, state, providers={})

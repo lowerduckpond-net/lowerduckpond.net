@@ -1,0 +1,137 @@
+{
+  "format": "lowerduckpond-m3-11-operator-inputs-v2",
+  "purpose": "initial-legacy-migration",
+  "onepassword_account_id": "<normal-account UUID from operator account metadata>",
+  "targets": {
+    "region": "nyc3",
+    "archive_bucket": "example-archive",
+    "backup_bucket": "example-backup",
+    "account_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "zone_id": "cccccccccccccccccccccccccccccccc",
+    "tenant_zone_id": "dddddddddddddddddddddddddddddddd",
+    "user_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "vaults": {
+    "provision": "vvvvvvvvvvvvvvvvvvvvvvvvvv",
+    "cleanup": "cccccccccccccccccccccccccc",
+    "production": "pppppppppppppppppppppppppp",
+    "journal": "jjjjjjjjjjjjjjjjjjjjjjjjjj"
+  },
+  "shared_url": "<existing bare HTTPS Connect origin>",
+  "shared_server_id": "SSSSSSSSSSSSSSSSSSSSSSSSSS",
+  "independent_server_id": "IIIIIIIIIIIIIIIIIIIIIIIIII",
+  "policy": {
+    "format": "lowerduckpond-m3-11-lease-policy-v1",
+    "approved_at": "<approved exact UTC timestamp ending in Z>",
+    "start_before": "<approved exact UTC timestamp derived from actual expiry coverage>",
+    "issuance_before": "<approved exact UTC issuance cutoff>",
+    "credential_lifetime_seconds": 1209600,
+    "cleanup_reserve_seconds": 604800,
+    "retain_after_failure": "<explicit approved boolean>",
+    "approval_reference": "<reference to actual policy approval>"
+  },
+  "approved_policy_sha256": "<SHA-256 of the approved canonical policy document>",
+  "generation_id": "<approved UUIDv7>",
+  "introduced_at": "<approved exact UTC timestamp>",
+  "rotation_due_at": "<one calendar month after introduced_at>",
+  "principals": {
+    "spaces": "<confirmed DigitalOcean team/principal identity>",
+    "cloudflare-account": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "cloudflare-user": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "migration_sha256": "<digest of the complete reviewed legacy mapping; do not invent>",
+  "clients": {
+    "provision": {
+      "reference": "op://<operator-only-vault-id>/<new-provision-client-item-id>/password",
+      "name": "ldp-m311-20261011-provision",
+      "expires_at": "<exact native expiry; 30 days alone is insufficient>"
+    },
+    "cleanup": {
+      "reference": "op://<operator-only-vault-id>/<new-cleanup-client-item-id>/password",
+      "name": "ldp-m311-20261011-cleanup",
+      "expires_at": "<exact native expiry>"
+    },
+    "production": {
+      "reference": "op://<operator-only-vault-id>/<new-production-client-item-id>/password",
+      "name": "ldp-m311-20261011-production",
+      "expires_at": "<exact native expiry>"
+    },
+    "independent_cleanup": {
+      "reference": "op://<operator-only-vault-id>/<new-independent-client-item-id>/password",
+      "name": "ldp-m311-20261011-independent-cleanup",
+      "expires_at": "<exact native expiry>"
+    }
+  },
+  "providers": {
+    "provision": {
+      "references": {
+        "digitalocean": "op://vvvvvvvvvvvvvvvvvvvvvvvvvv/<new-provider-item-id>/password",
+        "digitalocean_metadata": "op://vvvvvvvvvvvvvvvvvvvvvvvvvv/<new-attestation-item-id>/notesPlain",
+        "cloudflare_account": "op://vvvvvvvvvvvvvvvvvvvvvvvvvv/<new-account-token-item-id>/password",
+        "cloudflare_user": "op://vvvvvvvvvvvvvvvvvvvvvvvvvv/<new-user-token-item-id>/password"
+      },
+      "expires_at": {
+        "spaces": "<approved UTC operational cutoff; record native expiry precision in principal_context>",
+        "cloudflare-account": "<exact native UTC expiry>",
+        "cloudflare-user": "<exact native UTC expiry>"
+      },
+      "digitalocean_observation": {
+        "generation_id": "<same approved generation UUIDv7 as this setup>",
+        "token_reference": "op://vvvvvvvvvvvvvvvvvvvvvvvvvv/<new-provider-item-id>/password",
+        "token_sha256": "<independently recorded SHA-256 of the exact token whose console policy was observed>",
+        "token_created_at": "<original token creation UTC timestamp; must precede or equal the observation>",
+        "principal": "<confirmed DigitalOcean team/principal identity>",
+        "scopes": [
+          "actions:read",
+          "regions:read",
+          "sizes:read",
+          "spaces:read",
+          "spaces_key:create_credentials",
+          "spaces_key:delete",
+          "spaces_key:read"
+        ],
+        "observed_at": "<actual console observation UTC timestamp>",
+        "attested_by": "<operator identity>",
+        "principal_context": "<supporting provider team context>"
+      }
+    },
+    "cleanup": {
+      "references": {
+        "digitalocean": "op://cccccccccccccccccccccccccc/<new-provider-item-id>/password",
+        "digitalocean_metadata": "op://cccccccccccccccccccccccccc/<new-attestation-item-id>/notesPlain",
+        "cloudflare_account": "op://cccccccccccccccccccccccccc/<new-account-token-item-id>/password",
+        "cloudflare_user": "op://cccccccccccccccccccccccccc/<new-user-token-item-id>/password"
+      },
+      "expires_at": {
+        "spaces": "<approved UTC operational cutoff; record native expiry precision in principal_context>",
+        "cloudflare-account": "<exact native UTC expiry>",
+        "cloudflare-user": "<exact native UTC expiry>"
+      },
+      "digitalocean_observation": {
+        "generation_id": "<same approved generation UUIDv7 as this setup>",
+        "token_reference": "op://cccccccccccccccccccccccccc/<new-provider-item-id>/password",
+        "token_sha256": "<independently recorded SHA-256 of the exact token whose console policy was observed>",
+        "token_created_at": "<original token creation UTC timestamp; must precede or equal the observation>",
+        "principal": "<confirmed DigitalOcean team/principal identity>",
+        "scopes": [
+          "actions:read",
+          "regions:read",
+          "sizes:read",
+          "spaces:read",
+          "spaces_key:delete",
+          "spaces_key:read"
+        ],
+        "observed_at": "<actual console observation UTC timestamp>",
+        "attested_by": "<operator identity>",
+        "principal_context": "<supporting provider team context>"
+      }
+    }
+  },
+  "production_references": {
+    "CADDY_CLOUDFLARE_API_TOKEN": "op://pppppppppppppppppppppppppp/<existing-item-id>/<existing-field-id>",
+    "OPENTOFU_ENCRYPTION_PASSPHRASE": "op://pppppppppppppppppppppppppp/<existing-item-id>/<existing-field-id>",
+    "OPENTOFU_STATE_ACCESS_KEY_ID": "op://pppppppppppppppppppppppppp/<existing-item-id>/<existing-field-id>",
+    "OPENTOFU_STATE_SECRET_ACCESS_KEY": "op://pppppppppppppppppppppppppp/<existing-item-id>/<existing-field-id>",
+    "OPENTOFU_STATE_BUCKET": "op://pppppppppppppppppppppppppp/<existing-item-id>/<existing-field-id>"
+  }
+}
