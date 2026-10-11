@@ -6,6 +6,7 @@ performs fresh provider checks. Original status labels never establish closure.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import cast
 
 from scripts.m3_11_qualification_evidence import fields
@@ -26,6 +27,8 @@ def terminal(  # noqa: PLR0912 - independent evidence gates
     intent: Intent,
     records: list[dict[str, object]],
     credential: Credential | None = None,
+    *,
+    credential_expected: bool = False,
 ) -> CleanupResult | None:
     """Return a preserved outcome only when all available facts support it.
 
@@ -48,7 +51,11 @@ def terminal(  # noqa: PLR0912 - independent evidence gates
     resolutions = [row for row in observations if row["kind"] == "resolved"]
     accepted = [row for row in related if historical_absence.is_receipt(row)]
     if accepted:
-        if credential is not None or not historical_absence.receipts(intent, records):
+        if (
+            credential is not None
+            or credential_expected
+            or not historical_absence.receipts(intent, records)
+        ):
             raise LifecycleError("legacy uncertainty acceptance conflicts with creation evidence")
         return CleanupResult(intent.sha256, historical_absence.STATUS, "unavailable")
     abort = select_abort(intent, records)
@@ -56,6 +63,7 @@ def terminal(  # noqa: PLR0912 - independent evidence gates
         if (
             known is not None
             or credential is not None
+            or credential_expected
             or any(row["kind"] == "cleanup" for row in observations)
         ):
             raise LifecycleError("legacy pre-creation abort conflicts with creation evidence")
@@ -93,7 +101,7 @@ def terminal(  # noqa: PLR0912 - independent evidence gates
         cast(dict[str, object], row["payload"])["negative_authentication"] == "denied"
         for row in resolutions
     )
-    if credential is not None and not denied:
+    if (credential is not None or credential_expected) and not denied:
         return None  # A retained key still requires its outstanding rejection check.
     return CleanupResult(intent.sha256, "verified", "denied" if denied else "unavailable")
 
@@ -118,8 +126,14 @@ def validate_claims(mapping: dict[str, object], records: list[dict[str, object]]
             raise LifecycleError("legacy terminal status lacks its original evidence")
 
 
-def restored(records: list[dict[str, object]]) -> bool:
+def restored(
+    records: list[dict[str, object]],
+    *,
+    fenced_after: datetime | None = None,
+    now: datetime | None = None,
+) -> bool:
     """A fenced diagnostic grant may retire only with its exact restoration proof."""
+    now = now or datetime.now(UTC)
     plans = audit_policy_recovery.plans(records)
     if len(plans) != 1:
         return not plans
@@ -158,14 +172,19 @@ def restored(records: list[dict[str, object]]) -> bool:
                 "restoration-unresolved",
             }
             or instant(value["observed_at"]) < instant(plan["recorded_at"])
+            or instant(value["observed_at"]) > now
         ):
             raise LifecycleError("legacy audit restoration proof differs from its original plan")
         proofs.append(value)
     if not proofs:
         return False
     latest = max(instant(value["observed_at"]) for value in proofs)
-    return latest >= instant(approved["restore_after"]) and all(
-        value["status"] == "original-policy-verified"
-        for value in proofs
-        if instant(value["observed_at"]) == latest
+    return (
+        latest >= instant(approved["restore_after"])
+        and (fenced_after is None or latest > fenced_after)
+        and all(
+            value["status"] == "original-policy-verified"
+            for value in proofs
+            if instant(value["observed_at"]) == latest
+        )
     )

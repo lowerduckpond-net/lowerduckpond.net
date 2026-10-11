@@ -12,6 +12,7 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 from scripts.m3_11_private_inputs import read_private, read_private_bytes
 from scripts.m3_11_qualification_evidence import fields
@@ -167,7 +168,9 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def retained_legacy(journal: ConnectObligations) -> tuple[dict[str, Credential], bool]:
+def retained_legacy(  # noqa: PLR0912 - independent retained-file and rejection-proof checks
+    journal: ConnectObligations,
+) -> tuple[dict[str, Credential], bool]:
     """Use only hash-bound original local facts and secrets; absence remains unavailable."""
     from scripts.m3_11_unattended.worker import (  # noqa: PLC0415
         restore_created,
@@ -180,6 +183,7 @@ def retained_legacy(journal: ConnectObligations) -> tuple[dict[str, Credential],
     runs: set[Path] = set()
     available: dict[str, Credential] = {}
     complete = True
+    missing_secrets: set[str] = set()
     for filename, expected in retained.items():
         path = Path(filename)
         if path.parent.name not in {
@@ -189,6 +193,8 @@ def retained_legacy(journal: ConnectObligations) -> tuple[dict[str, Credential],
         }:
             continue
         if not path.exists() and not path.is_symlink():
+            if path.parent.name == "credential-cleanup":
+                missing_secrets.add(path.stem)
             continue  # Independent host loss cannot claim a negative probe passed.
         if hashlib.sha256(read_private_bytes(path)).hexdigest() != expected:
             complete = False
@@ -212,6 +218,15 @@ def retained_legacy(journal: ConnectObligations) -> tuple[dict[str, Credential],
                 available[key] = value
         except RuntimeError, OSError, ValueError, KeyError, TypeError:
             complete = False
+    if missing_secrets:
+        records = journal.records()
+        owned = {intent.sha256: intent for intent in intents(journal)}
+        for key in missing_secrets:
+            proof = (
+                terminal(owned[key], records, credential_expected=True) if key in owned else None
+            )
+            if proof is None or proof.negative_authentication != "denied":
+                complete = False
     return available, complete
 
 
@@ -248,6 +263,15 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
     obligations = mapping["obligations"]
     if not isinstance(obligations, dict):
         raise LifecycleError("legacy obligation mapping is unavailable")
+    expected_secrets = {
+        Path(filename).stem
+        for filename in strings(mapping["retained_files"])
+        if Path(filename).parent.name == "credential-cleanup"
+    }
+    fenced_after = max(
+        (instant(row["stopped_at"]) for row in cast(list[dict[str, object]], mapping["issuers"])),
+        default=None,
+    )
     now = datetime.now(UTC)
     providers: dict[str, dict[ProviderKind, Provider]] = {}
 
@@ -277,7 +301,12 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
             retained.generation.fingerprints[intent.provider] != intent.cleanup_authority_sha256
         ):
             raise LifecycleError("retained legacy generation differs from original authority")
-        completed = terminal(intent, records, available.get(intent.sha256))
+        completed = terminal(
+            intent,
+            records,
+            available.get(intent.sha256),
+            credential_expected=intent.sha256 in expected_secrets,
+        )
         if completed is not None:
             outcomes.append(dataclasses.asdict(completed))
             continue
@@ -297,10 +326,12 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
         # outstanding credential cleanup; imported status never proves removal.
         lifecycle.request_revocation(intent.run_id)
         result = lifecycle.reconcile(intent, available.get(intent.sha256))
+        if intent.sha256 in expected_secrets and result.negative_authentication != "denied":
+            result = dataclasses.replace(result, status="unresolved")
         outcomes.append(dataclasses.asdict(result))
     restorations = []
     for record in audit_policy_recovery.plans(records):
-        if legacy_restored(records):
+        if legacy_restored(records, fenced_after=fenced_after, now=now):
             restorations.append("original-policy-verified")
             continue
         bound = next(
@@ -336,7 +367,7 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
                 )
                 restored = (
                     "original-policy-verified"
-                    if legacy_restored(journal.records())
+                    if legacy_restored(journal.records(), fenced_after=fenced_after)
                     else "unresolved"
                 )
         except RuntimeError, OSError, ValueError, KeyError, TypeError:

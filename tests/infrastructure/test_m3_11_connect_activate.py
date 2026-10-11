@@ -12,8 +12,14 @@ from typing import cast
 
 import pytest
 
-from scripts.m3_11_private_inputs import read_private
-from scripts.m3_11_unattended import cleanup, cleanup_expiry, historical_absence, setup
+from scripts.m3_11_private_inputs import read_private, write_private
+from scripts.m3_11_unattended import (
+    audit_policy_recovery,
+    cleanup,
+    cleanup_expiry,
+    historical_absence,
+    setup,
+)
 from scripts.m3_11_unattended import connect_activate as activation
 from scripts.m3_11_unattended.cloudflare import ORIGIN, Cloudflare
 from scripts.m3_11_unattended.config import LeaseBootstrap, LeaseConfiguration, UnavailableProvider
@@ -193,7 +199,17 @@ def test_rotation_keeps_old_cleanup_during_staging_and_requires_coverage_before_
 
 
 @pytest.mark.parametrize("retired", [False, True])
-@pytest.mark.parametrize("outcome", ["unresolved", "verified", "not-submitted", "uncertainty"])
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "unresolved",
+        "verified",
+        "not-submitted",
+        "uncertainty",
+        "missing-secret",
+        "missing-secret-denied",
+    ],
+)
 def test_import_activation_and_sweeps_preserve_terminal_evidence_after_authority_retirement(  # noqa: PLR0915 - exercise the complete cutover boundary
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, retired: bool, outcome: str
 ) -> None:
@@ -210,11 +226,13 @@ def test_import_activation_and_sweeps_preserve_terminal_evidence_after_authority
         authority=old.authority,
     )
     old.lifecycle.request_revocation(old.run_id)
-    completed = outcome != "unresolved"
+    completed = outcome not in {"unresolved", "missing-secret"}
     expected_status = "verified"
     negative = "denied"
-    if outcome == "verified":
+    if outcome in {"verified", "missing-secret-denied"}:
         assert old.lifecycle.reconcile(intent, credential).status == "verified"
+    if outcome == "missing-secret":
+        assert old.lifecycle.reconcile(intent).status == "verified"
     records = old.journal.records()
     provider_id: str | None = credential.identifier
     if outcome in {"not-submitted", "uncertainty"}:
@@ -273,6 +291,8 @@ def test_import_activation_and_sweeps_preserve_terminal_evidence_after_authority
                 "provider_id": provider_id,
                 "original_status": historical_absence.STATUS
                 if outcome == "uncertainty"
+                else "verified"
+                if outcome.startswith("missing-secret")
                 else outcome,
             }
         },
@@ -287,6 +307,20 @@ def test_import_activation_and_sweeps_preserve_terminal_evidence_after_authority
             }
         ],
     }
+    secret_path = tmp_path / intent.run_id / "credential-cleanup" / (intent.sha256 + ".json")
+    if outcome.startswith("missing-secret"):
+        secret_path.parent.mkdir(parents=True, mode=0o700)
+        write_private(
+            secret_path,
+            {
+                "intent_sha256": intent.sha256,
+                "identifier": credential.identifier,
+                "secret": credential.secret,
+            },
+        )
+        mapping["retained_files"] = {
+            str(secret_path): hashlib.sha256(secret_path.read_bytes()).hexdigest()
+        }
     for row in records:
         note(case.client, row, tag=TAG, title=record_title(row))
     approved = activation.publish_import(
@@ -296,6 +330,8 @@ def test_import_activation_and_sweeps_preserve_terminal_evidence_after_authority
         spool=tmp_path / "import",
         docker=cast(Docker, docker),
     )
+    if outcome.startswith("missing-secret"):
+        secret_path.unlink()
     case.config = dataclasses.replace(
         case.config,
         migration_sha256=approved,
@@ -310,6 +346,8 @@ def test_import_activation_and_sweeps_preserve_terminal_evidence_after_authority
         if bootstrap.generation.generation_id == generation_id:
             accesses.append(generation_id)
             assert not completed, "terminal evidence must not reopen expired provider access"
+            if outcome == "missing-secret":
+                return {"spaces": old.provider}
             return {kind: UnavailableProvider(kind) for kind in PROVIDERS}
         return dict(case.providers[bootstrap.generation.role])
 
@@ -350,6 +388,129 @@ def test_import_activation_and_sweeps_preserve_terminal_evidence_after_authority
     else:
         result = cleanup.sweep_legacy(case.config, case.client, root=tmp_path / "pending-sweep")
         assert result["status"] == "unresolved"
+        assert cast(list[dict[str, object]], result["results"])[0]["status"] == "unresolved"
+
+
+@pytest.mark.parametrize("restore_available", [False, True])
+def test_audit_restoration_must_follow_latest_issuer_fence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, restore_available: bool
+) -> None:
+    case = Case(tmp_path, monkeypatch)
+    old = LegacyCase(tmp_path / "old")
+    original, credential = old.create()
+    authority = case.config.generations[case.config.active_generation]["cleanup"].generation
+    intent = dataclasses.replace(
+        original,
+        role="audit",
+        provider="cloudflare-account",
+        targets=case.config.targets,
+        name=f"ldp-m311-{uuid.UUID(original.run_id).hex}-audit",
+        cleanup_authority_sha256=authority.fingerprints["cloudflare-account"],
+    )
+    now = datetime.now(UTC)
+    start = now - timedelta(hours=1)
+    candidate = {
+        "account_id": intent.targets.account_id,
+        "authorized": False,
+        "before": {},
+        "candidate_after": {},
+        "credential_id": "audit-credential",
+        "credential_sha256": "b" * 64,
+        "observed_at": stamp(start),
+        "provider": "cloudflare-account",
+        "scope": {},
+    }
+    monkeypatch.setattr(audit_policy_recovery, "CANDIDATE_SHA256", digest(candidate))
+    monkeypatch.setattr(audit_policy_recovery, "INTENT_SHA256", intent.sha256)
+    plan = event(
+        "heartbeat",
+        intent.run_id,
+        {
+            "format": audit_policy_recovery.FORMAT,
+            "candidate": candidate,
+            "helper_revision": intent.helper_revision,
+            "intent_sha256": intent.sha256,
+            "grant_before": stamp(start + audit_policy_recovery.GRANT_WINDOW),
+            "restore_after": stamp(start + audit_policy_recovery.RESTORE_WINDOW),
+        },
+    )
+    plan["recorded_at"] = stamp(start)
+    records = [
+        event("intent", intent.run_id, intent.document()),
+        event(
+            "created",
+            intent.run_id,
+            {"intent_sha256": intent.sha256, "credential_id": credential.identifier},
+        ),
+        event(
+            "resolved",
+            intent.run_id,
+            {
+                "intent_sha256": intent.sha256,
+                "credential_id": credential.identifier,
+                "provider_readback": "absent",
+                "negative_authentication": "unavailable",
+            },
+        ),
+        plan,
+        event(
+            "heartbeat",
+            intent.run_id,
+            {
+                "format": audit_policy_recovery.PROOF_FORMAT,
+                "plan_sha256": digest(plan),
+                "status": "original-policy-verified",
+                "cleanup_actor": "github",
+                "observed_at": stamp(now - timedelta(minutes=2)),
+                "helper_revision": intent.helper_revision,
+            },
+        ),
+    ]
+    case.mapping.update(
+        records={str(row["event_id"]): digest(row) for row in records},
+        obligations={
+            intent.sha256: {
+                "generation_id": case.config.active_generation,
+                "provider_id": credential.identifier,
+                "original_status": "verified",
+            }
+        },
+        issuers=[
+            {
+                "container_id": label * 64,
+                "daemon_sha256": "c" * 64,
+                "stopped_at": stamp(now - timedelta(minutes=minutes)),
+                "running": False,
+                "restart_policy": "no",
+                "issuance_disabled": True,
+            }
+            for label, minutes in (("a", 3), ("b", 1))
+        ],
+    )
+    for row in records:
+        note(case.client, row, tag=TAG, title=record_title(row))
+    note(case.client, case.mapping, tag=MIGRATION_TAG, title="m3-11-import-" + digest(case.mapping))
+    case.config = dataclasses.replace(case.config, migration_sha256=digest(case.mapping))
+    calls = []
+
+    def reconcile(*_args: object, **kwargs: object) -> str:
+        calls.append(kwargs)
+        assert kwargs["force_restore"] is True
+        if not restore_available:
+            raise LifecycleError("synthetic retired restoration authority")
+        return "original-policy-verified"
+
+    monkeypatch.setattr(audit_policy_recovery, "reconcile", reconcile)
+    first = cleanup.sweep_legacy(case.config, case.client, root=tmp_path / "first")
+    assert calls
+    assert first["status"] == ("ready" if restore_available else "unresolved")
+    assert first["audit_restoration"] == (
+        "original-policy-verified" if restore_available else "unresolved"
+    )
+    calls.clear()
+    second = cleanup.sweep_legacy(case.config, case.client, root=tmp_path / "second")
+    assert second["status"] == first["status"]
+    assert bool(calls) is not restore_available
 
 
 @pytest.mark.parametrize("readback_matches", [False, True])

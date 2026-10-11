@@ -662,6 +662,10 @@ def test_audit_restoration_retry_persists_new_terminal_evidence(
     )
     assert restored(case.journal.records())
     # Conflicting same-time observations cannot be hidden by record ordering.
+    assert not restored(case.journal.records(), fenced_after=case.now + timedelta(minutes=22))
+    assert restored(case.journal.records(), fenced_after=case.now + timedelta(minutes=21))
+    with pytest.raises(LifecycleError, match="original plan"):
+        restored(case.journal.records(), now=case.now + timedelta(minutes=21))
     audit_policy_recovery.observation(
         case.journal,
         status="restoration-unresolved",
