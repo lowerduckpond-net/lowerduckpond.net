@@ -152,6 +152,7 @@ def migration(value: object) -> dict[str, object]:  # noqa: PLR0912 - complete r
     issuer attestation is part of the reviewed cutover input, not inferred from
     an empty provider response or a liveness timeout.
     """
+    from scripts.m3_11_unattended.cleanup_expiry import imported_update  # noqa: PLC0415
     from scripts.m3_11_unattended.model import fingerprint, strings  # noqa: PLC0415
 
     selected = fields(
@@ -202,7 +203,7 @@ def migration(value: object) -> dict[str, object]:  # noqa: PLR0912 - complete r
     if not isinstance(selected["expiry_updates"], list):
         raise LifecycleError("legacy expiry update inventory is missing")
     for raw in selected["expiry_updates"]:
-        row = fields(raw, {"plan", "plan_sha256", "generation_id", "result_files"})
+        row = imported_update(raw)
         if digest(row["plan"]) != fingerprint(row["plan_sha256"]):
             raise LifecycleError("legacy expiry intent digest differs")
         identity(row["generation_id"])
@@ -210,7 +211,9 @@ def migration(value: object) -> dict[str, object]:  # noqa: PLR0912 - complete r
             if strings(selected["retained_files"]).get(path) != fingerprint(expected):
                 raise LifecycleError("legacy expiry evidence was not retained")
     issuers = selected["issuers"]
-    if not isinstance(issuers, list) or (selected["records"] and not issuers):
+    if not isinstance(issuers, list) or (
+        (selected["records"] or selected["expiry_updates"]) and not issuers
+    ):
         raise LifecycleError("legacy import lacks stopped issuer evidence")
     for raw in issuers:
         row = fields(
@@ -336,6 +339,10 @@ class ConnectObligations:
             row["kind"] in {"intent", "run"} and key not in minimum for key, row in values.items()
         ):
             raise LifecycleError("obsolete issuance appeared after legacy import")
+        from scripts.m3_11_unattended.legacy_terminal import (  # noqa: PLC0415
+            terminal,
+            validate_claims,
+        )
         from scripts.m3_11_unattended.lifecycle import _intents, _known_id  # noqa: PLC0415
 
         records = list(values.values())
@@ -347,6 +354,9 @@ class ConnectObligations:
             for intent in intents
         ):
             raise LifecycleError("legacy import does not cover every original obligation")
+        validate_claims(mapping, originals)
+        for intent in intents:
+            terminal(intent, records)
         self.mapping = mapping
         return records
 

@@ -21,15 +21,19 @@ from scripts.m3_11_unattended.config import LeaseConfiguration, UnavailableProvi
 from scripts.m3_11_unattended.connect_api import Connect
 from scripts.m3_11_unattended.inventory import ConnectInventory, Inventory, fact
 from scripts.m3_11_unattended.journal import ConnectObligations, event
+from scripts.m3_11_unattended.legacy_terminal import restored as legacy_restored
+from scripts.m3_11_unattended.legacy_terminal import terminal
 from scripts.m3_11_unattended.lifecycle import (
     LeaseLifecycle,
     Lifecycle,
+    Provider,
     intents,
 )
 from scripts.m3_11_unattended.model import (
     Credential,
     LeaseManifest,
     LifecycleError,
+    ProviderKind,
     identity,
     instant,
     stamp,
@@ -219,7 +223,12 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
     secrets: dict[str, Credential] | None = None,
 ) -> dict[str, object]:
     """Reconcile the reviewed legacy mapping without re-enabling its issuer."""
-    from scripts.m3_11_unattended.cleanup_expiry import reconcile_imported  # noqa: PLC0415
+    from scripts.m3_11_unattended.cleanup_expiry import (  # noqa: PLC0415
+        imported_update,
+        readback_proof,
+        reconcile_imported,
+        terminal_update,
+    )
 
     journal = ConnectObligations(
         client,
@@ -240,12 +249,21 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
     if not isinstance(obligations, dict):
         raise LifecycleError("legacy obligation mapping is unavailable")
     now = datetime.now(UTC)
-    providers = {
-        key: roles["cleanup"].providers(
-            targets=config.targets, now=now, reader=client, tolerate_unavailable=True
-        )
-        for key, roles in config.generations.items()
-    }
+    providers: dict[str, dict[ProviderKind, Provider]] = {}
+
+    def clients_for(generation: str) -> dict[ProviderKind, Provider]:
+        if generation not in providers:
+            bootstrap = config.generations.get(generation, {}).get("cleanup")
+            providers[generation] = (
+                bootstrap.providers(
+                    targets=config.targets, now=now, reader=client, tolerate_unavailable=True
+                )
+                if bootstrap is not None
+                else {}
+            )
+        return providers[generation]
+
+    records = journal.records()  # Include restored local facts before deciding closure.
     outcomes = []
     for intent in intents(journal):
         if intent.targets != config.targets:
@@ -254,7 +272,16 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
             obligations[intent.sha256], {"generation_id", "provider_id", "original_status"}
         )
         generation = str(row["generation_id"])
-        clients = providers.get(generation, {})
+        retained = config.generations.get(generation, {}).get("cleanup")
+        if retained is not None and (
+            retained.generation.fingerprints[intent.provider] != intent.cleanup_authority_sha256
+        ):
+            raise LifecycleError("retained legacy generation differs from original authority")
+        completed = terminal(intent, records, available.get(intent.sha256))
+        if completed is not None:
+            outcomes.append(dataclasses.asdict(completed))
+            continue
+        clients = clients_for(generation)
         selected = clients.get(intent.provider, UnavailableProvider(intent.provider))
         if selected.authority_sha256 != intent.cleanup_authority_sha256:
             outcomes.append(
@@ -273,6 +300,9 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
         outcomes.append(dataclasses.asdict(result))
     restorations = []
     for record in audit_policy_recovery.plans(records):
+        if legacy_restored(records):
+            restorations.append("original-policy-verified")
+            continue
         bound = next(
             (
                 item
@@ -292,10 +322,23 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
         try:
             restored = audit_policy_recovery.reconcile(
                 journal,
-                providers.get(generation, {}).get("cloudflare-account"),
+                clients_for(generation).get("cloudflare-account"),
                 now=now,
                 force_restore=True,
             )
+            if restored == "original-policy-verified":
+                audit_policy_recovery.observation(
+                    journal,
+                    status=restored,
+                    actor="legacy-cleanup",
+                    helper=config.helper_revision,
+                    now=datetime.now(UTC),
+                )
+                restored = (
+                    "original-policy-verified"
+                    if legacy_restored(journal.records())
+                    else "unresolved"
+                )
         except RuntimeError, OSError, ValueError, KeyError, TypeError:
             restored = "unresolved"
         restorations.append(restored)
@@ -311,8 +354,10 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
     if not isinstance(updates, list):
         raise LifecycleError("legacy expiry obligation mapping is unavailable")
     for raw in updates:
-        row = fields(raw, {"plan", "plan_sha256", "generation_id", "result_files"})
-        clients = providers.get(str(row["generation_id"]), {})
+        row = imported_update(raw)
+        if terminal_update(row, targets=config.targets, records=records):
+            continue
+        clients = clients_for(str(row["generation_id"]))
         cloudflare = {
             str(key): value for key, value in clients.items() if isinstance(value, Cloudflare)
         }
@@ -323,6 +368,7 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
                 expected=str(row["plan_sha256"]),
                 providers=cloudflare,
             )
+            journal.persist(event("heartbeat", str(row["generation_id"]), readback_proof(row)))
         except RuntimeError, OSError, ValueError, KeyError, TypeError:
             expiry = "unresolved"
     ready = (
@@ -404,11 +450,18 @@ def sweep_leases(  # noqa: PLR0912, PLR0913, PLR0915 - independent cleanup and c
         # A fully transferred generation need not retain its old access. Any
         # unknown or untransferred role still selects that missing generation
         # during reconciliation and remains unresolved.
+        # Keep the original and every handover generation available: an older
+        # deployed actor may still need a verified fallback in that chain.
+        # Reconciliation validates the chain before using any provider.
+        required = {manifest.cleanup.generation_id} | {
+            slot.rsplit(":", 1)[-1] for slot in own if slot.startswith("handover:")
+        }
         generations = {
             key: roles["cleanup"].providers(
                 targets=config.targets, now=now, tolerate_unavailable=True, reader=connect_client
             )
             for key, roles in config.generations.items()
+            if key in required
         }
         providers = generations.get(manifest.cleanup.generation_id, {})
         lifecycle = LeaseLifecycle(manifest, inventory, state, providers={})

@@ -305,7 +305,7 @@ def observation(journal: Journal, *, status: str, actor: str, helper: str, now: 
         and row["payload"].get("plan_sha256") == digest(selected[0])
     ]
     latest = max(previous, key=lambda row: str(row.get("observed_at"))) if previous else None
-    if latest is None or latest.get("status") != status or actor == "github":
+    if latest is None or latest.get("status") != status or actor in {"github", "legacy-cleanup"}:
         journal.append(event("heartbeat", str(selected[0]["run_id"]), payload))
 
 
