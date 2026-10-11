@@ -1292,7 +1292,10 @@ needs no credentials or new provider observations. It preserves report
 bytes and `packaged_at`. Existing conflicting or truncated published files are
 not overwritten. Checksum-only repair validates the original packaging chronology
 and current candidate inputs/revocations even after evidence ages out; repairing
-a checksum does not make an expired report consumable.
+a checksum does not make an expired report consumable. Legacy M3.10 reports
+without `packaged_at` must retain observations that fit an original 24-hour
+packaging window with their existing five-minute clock tolerance, including the
+destroy observation; that feasible window cannot lie entirely in the future.
 
 Managed recovery can bridge a multi-day interruption within the original approved
 retained lease and actual child credential deadlines. The cleanup reserve never

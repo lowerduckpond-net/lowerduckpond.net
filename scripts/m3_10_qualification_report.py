@@ -482,7 +482,8 @@ def publish_report(  # noqa: PLR0913 - explicit candidate and recovery publicati
         # Repair publication, not qualification. Validate the ORIGINAL chronology
         # at its original packaging time, keeping current input/revocation checks.
         packaged = combined.parse_timestamp(original.get("packaged_at", original["completed_at"]))
-        if packaged > datetime.now(UTC):
+        tolerance = timedelta(0) if "packaged_at" in original else timedelta(minutes=5)
+        if packaged > datetime.now(UTC) + tolerance:
             raise ValueError("original qualification package is future-dated")
         raw = _verify_report(
             path,
@@ -496,7 +497,9 @@ def publish_report(  # noqa: PLR0913 - explicit candidate and recovery publicati
         )
         if raw != combined.canonical_bytes(original):
             raise ValueError("qualification report changed during publication repair")
-        qualification_report_originals.verify(directory, original, phases=PHASES)
+        qualification_report_originals.verify(
+            directory, original, phases=PHASES, now=datetime.now(UTC)
+        )
     else:
         report = create_report(
             directory,

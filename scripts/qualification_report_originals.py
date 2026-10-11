@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -11,6 +11,7 @@ from lowerduckpond_m3_archive.report import ArchiveQualificationReport
 
 from scripts import m3_11_qualification_evidence as evidence
 from scripts.m3_11_private_inputs import read_private
+from scripts.m3_11_recovery_policy import HISTORICAL_SPAN, Window
 
 
 def modified(path: Path) -> datetime:
@@ -28,6 +29,18 @@ def combined_originals(directory: Path, report: dict[str, object]) -> datetime:
     last = evidence.fields(
         phases["owned-teardown"], {"started_at", "completed_at", "checks", "evidence_sha256"}
     )
+    packaged = evidence.parse_timestamp(report["packaged_at"])
+    maximum_age = HISTORICAL_SPAN
+    if "finalization_recovery" in report:
+        maximum_age = Window.from_evidence(
+            cast(dict[str, object], report["managed_credentials"]),
+            cast(dict[str, object], report["finalization_recovery"]),
+        ).maximum_age
+    if any(
+        not packaged - maximum_age <= modified(directory / name) <= packaged
+        for name in ("combined-context.json", "combined-names.json", "combined.json")
+    ):
+        raise ValueError("retained combined observation is stale or future-dated at packaging")
     if (
         raw != evidence.canonical_bytes(report["combined"])
         or context_raw != evidence.canonical_bytes(context)
@@ -45,7 +58,9 @@ def combined_originals(directory: Path, report: dict[str, object]) -> datetime:
     return evidence.parse_timestamp(context["captured_at"])
 
 
-def verify(directory: Path, report: dict[str, object], *, phases: tuple[str, ...]) -> None:
+def verify(
+    directory: Path, report: dict[str, object], *, phases: tuple[str, ...], now: datetime
+) -> None:
     """Compare original bytes/observations after the report's historical validation."""
     if (directory / "diagnostic-origin.json").exists() or (
         directory / "diagnostic-origin.json"
@@ -109,6 +124,12 @@ def verify(directory: Path, report: dict[str, object], *, phases: tuple[str, ...
     times.extend(managed_originals(directory, report))
     if min(times) != evidence.parse_timestamp(report["oldest_evidence_at"]):
         raise ValueError("published report differs from retained oldest evidence time")
+    if "packaged_at" not in report:
+        # M3.10 did not record its packaging instant. Require a feasible original
+        # 24-hour window, preserving its explicit five-minute future tolerance.
+        earliest_package = max(times) - timedelta(minutes=5)
+        if earliest_package > min(times) + HISTORICAL_SPAN or earliest_package > now:
+            raise ValueError("retained original evidence has no valid historical packaging window")
     if "finalization_recovery" in report:
         recovery = cast(dict[str, object], report["finalization_recovery"])
         if not any(
