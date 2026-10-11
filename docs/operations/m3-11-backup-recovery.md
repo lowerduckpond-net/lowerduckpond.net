@@ -1225,9 +1225,9 @@ targets to finish, including when ownership markers are already gone.
 
 ### Interrupted combined teardown
 
-A failed qualification retains its original attempt and cannot be rerun into a
+A failed functional test retains its original attempt and cannot be rerun into a
 pass. If `owned-teardown/intent.json` exists, the fixed installed test already
-completed and deletion was authorized. In the same private environment, this
+completed and deletion was authorized. In the same private environment, these
 commands, from the repository root, reload the runtime keys from encrypted state
 inside a disposable subshell and finish that exact cleanup after a lost response:
 
@@ -1253,6 +1253,46 @@ observation and returns the private removal receipt; it never creates
 `combined.json` or packages a qualification report. Without the prior teardown
 intent, retain the fixture and use the existing bounded failure diagnostics to
 resolve its outstanding authority before any removal.
+
+### Same-run finalization recovery
+
+For a managed qualification whose functional assertions completed successfully,
+use the original clean checkout and original private run directory:
+
+```bash
+uv run --frozen python -m scripts.m3_11_finalization /absolute/original/private/run
+```
+
+The command requires the original `functional-completion.json`, including the
+exact collection, setup/call/teardown reports and zero pytest exit status. It
+verifies unchanged original inputs, artifact and phase receipts, takes the
+controller, credential-use, storage-target and run locks, and requires the
+original controller's host commands to have drained. It reuses only the
+original credential identities under approved failure retention, before their expiry and without
+issuance, lease extension or a new delivery bundle. Cancellation, closure,
+release or changed ownership stops recovery, including between cleanup mutations.
+
+Recovery has its own 30-minute execution allowance and bounded shutdown. It
+resumes authorized deletion, or freshly authorizes deletion when no committed
+intent exists, then obtains fresh absence observations, completes remaining
+wrapper checks and packages the report. Original failures and timestamps stay
+intact; each recovery invocation appends a private `finalization-*` directory.
+The original controller status remains failed/interrupted. The completed report
+records recovery separately. Credential closure/release still uses the existing
+lease lifecycle; finalization does not retire credentials or cleanup authorities.
+
+If a complete `qualification.json` already exists, recovery validates it against
+its original evidence and only completes the report/checksum publication pair.
+That path needs no credentials or new provider observations. It preserves report
+bytes and `packaged_at`. Existing conflicting or truncated published files are
+not overwritten. Existing evidence freshness limits still apply.
+
+This is not functional phase retry: public-CA, reconstruction and all other
+assertions remain one ordered shared-history journey. A missing completion
+checkpoint, failed pytest teardown, altered input, diagnostic workspace, released
+lease or expired runtime credential cannot be promoted into qualification.
+Older manually supplied runs retain the cleanup-only command above; the managed
+finalizer does not infer their credential authority.
 
 ### Failed-fixture archive retirement
 

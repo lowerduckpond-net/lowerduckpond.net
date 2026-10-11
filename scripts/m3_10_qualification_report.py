@@ -13,6 +13,7 @@ from pathlib import Path
 from lowerduckpond_m3_archive.report import ArchiveQualificationReport
 
 from scripts import m3_11_qualification_evidence as combined
+from scripts.m3_11_private_inputs import publish_bytes, read_private, read_private_bytes
 from scripts.m3_11_unattended import inputs as managed_inputs
 from scripts.m3_11_unattended.model import digest as managed_digest
 from scripts.m3_11_unattended.model import instant
@@ -90,6 +91,8 @@ def verify_report(  # noqa: PLR0912, PLR0913 - independent evidence gates and ex
         else set()
     )
     expected_fields |= {"managed_credentials"} if managed else set()
+    if milestone == "3.11" and "finalization_recovery" in report:
+        expected_fields.add("finalization_recovery")
     expected_fields |= (
         {"combined", "combined_report_sha256", "packaged_at", "legacy_observations"}
         if milestone == "3.11"
@@ -123,6 +126,7 @@ def verify_report(  # noqa: PLR0912, PLR0913 - independent evidence gates and ex
         if raw != combined.canonical_bytes(report):
             raise ValueError("M3.11 qualification envelope must be canonical")
         _verify_combined(report, maximum_age=maximum_age)
+        _verify_finalization(report, maximum_age=maximum_age)
         if managed:
             _verify_managed(report, maximum_age=maximum_age, binding=managed_binding)
     if (
@@ -254,7 +258,7 @@ def _evidence_time(path: Path) -> datetime:
     )
 
 
-def create_report(
+def create_report(  # noqa: PLR0912 - legacy, managed, and recovered evidence gates
     directory: Path,
     *,
     repository: Path | None = None,
@@ -324,7 +328,114 @@ def create_report(
     if milestone == "3.11":
         _add_combined(report, directory)
         _add_managed(report, directory)
+        if (directory / "finalization-recovery.json").exists():
+            report["finalization_recovery"] = recovery_summary(directory)
+            _verify_finalization(report, maximum_age=timedelta(hours=24))
     return report
+
+
+def recovery_summary(directory: Path) -> dict[str, object]:
+    """Retain the original recovery time, but reject stale original-evidence bindings."""
+    value = read_private(directory / "finalization-recovery.json")
+    checkpoint = read_private(directory / "functional-completion.json")
+    original = read_private(directory.parent.parent / "journey-result.json")
+    if value != {
+        "functional_completed_at": checkpoint["completed_at"],
+        "completed_at": value.get("completed_at"),
+        "original_outcome": original["outcome"],
+        "original_result_sha256": managed_digest(original),
+        "checkpoint_sha256": managed_digest(checkpoint),
+    }:
+        raise ValueError("finalization recovery lost its original evidence binding")
+    return value
+
+
+def _verify_finalization(report: dict[str, object], *, maximum_age: timedelta) -> None:
+    if "finalization_recovery" not in report:
+        return
+    value = combined.fields(
+        report["finalization_recovery"],
+        {
+            "functional_completed_at",
+            "completed_at",
+            "original_outcome",
+            "original_result_sha256",
+            "checkpoint_sha256",
+        },
+    )
+    proof = combined.fields(
+        report["combined"],
+        {
+            "format",
+            "environment",
+            "context",
+            "phases",
+            "recovery",
+            "public_ca",
+            "accounting",
+            "teardown",
+        },
+    )
+    phases = combined.fields(proof["phases"], set(combined.PHASE_CHECKS))
+    completed = _fresh_timestamp(value["functional_completed_at"], maximum_age=maximum_age)
+    accounting = combined.fields(
+        phases["paired-accounting"], {"started_at", "completed_at", "evidence_sha256", "checks"}
+    )
+    teardown = combined.fields(
+        phases["owned-teardown"], {"started_at", "completed_at", "evidence_sha256", "checks"}
+    )
+    if (
+        value["original_outcome"] not in {"failed", "interrupted"}
+        or not _fresh_timestamp(accounting["completed_at"], maximum_age=maximum_age)
+        <= completed
+        <= _fresh_timestamp(teardown["started_at"], maximum_age=maximum_age)
+        or not _fresh_timestamp(report["completed_at"], maximum_age=maximum_age)
+        <= _fresh_timestamp(value["completed_at"], maximum_age=maximum_age)
+        <= _fresh_timestamp(report["packaged_at"], maximum_age=maximum_age)
+    ):
+        raise ValueError("finalization recovery chronology or original outcome is invalid")
+    for key in ("original_result_sha256", "checkpoint_sha256"):
+        combined.digest(value[key])
+
+
+def write_once(path: Path, raw: bytes) -> None:
+    """Retry only missing output; never replace conflicting or partial bytes."""
+    if path.exists() or path.is_symlink():
+        if read_private_bytes(path) != raw:
+            raise ValueError("existing qualification output differs from original evidence")
+        return
+    publish_bytes(path, raw)
+
+
+def publish_report(
+    directory: Path, *, repository: Path, storage_target: str, milestone: str
+) -> None:
+    report = create_report(
+        directory, repository=repository, storage_target=storage_target, milestone=milestone
+    )
+    path = directory / "qualification.json"
+    if path.exists() or path.is_symlink():
+        original = read_private(path)
+        # Rebuilding may advance packaging time, but cannot refresh the original
+        # package or any of the observations underlying it.
+        if "packaged_at" in report:
+            report["packaged_at"] = original.get("packaged_at")
+        if original != report:
+            raise ValueError("existing qualification report differs from its original inputs")
+        verify_report(
+            path,
+            source=str(report["source_revision"]),
+            artifact=str(report["artifact_sha256"]),
+            repository=repository,
+            storage_target=storage_target,
+            milestone=milestone,
+        )
+    raw = combined.canonical_bytes(report)
+    write_once(path, raw)
+    write_once(
+        directory / "qualification.sha256",
+        (hashlib.sha256(raw).hexdigest() + "  qualification.json\n").encode("ascii"),
+    )
 
 
 def _add_managed(report: dict[str, object], directory: Path) -> None:
@@ -460,17 +571,12 @@ def main() -> int:
             return 0
         if arguments.source or arguments.artifact:
             raise ValueError("unexpected evidence creation options")
-        report = create_report(
+        publish_report(
             arguments.path,
             repository=ROOT,
             storage_target=storage_target_digest(),
             milestone=arguments.milestone,
         )
-        raw = combined.canonical_bytes(report)
-        with (arguments.path / "qualification.json").open("xb") as stream:
-            stream.write(raw)
-        with (arguments.path / "qualification.sha256").open("x", encoding="ascii") as stream:
-            stream.write(hashlib.sha256(raw).hexdigest() + "  qualification.json\n")
     except ValueError, OSError, TypeError, AttributeError, RecursionError:
         parser.exit(1, f"M{arguments.milestone} qualification evidence is incomplete or invalid.\n")
     print(f"Sanitized M{arguments.milestone} installed Spaces qualification report created.")

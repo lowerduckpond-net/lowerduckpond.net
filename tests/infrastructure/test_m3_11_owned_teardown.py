@@ -216,6 +216,31 @@ def fixture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Fixture:
     return Fixture(tmp_path, monkeypatch)
 
 
+def test_empty_interrupted_authorization_can_be_freshly_authorized(fixture: Fixture) -> None:
+    fixture.controller.root.mkdir(mode=0o700)
+    fixture.authorize()
+    fixture.controller.run()
+    assert fixture.actions == list(teardown.STEPS)
+    fixture.storage.require_source.assert_called()
+
+
+def test_guard_stops_cleanup_after_late_access_loss(fixture: Fixture) -> None:
+    fixture.authorize()
+    checks = 0
+
+    def guard() -> None:
+        nonlocal checks
+        checks += 1
+        if checks > 1:
+            raise ValueError("access expired during ownership read")
+
+    fixture.controller.guard = guard
+    with pytest.raises(ValueError, match="access expired"):
+        fixture.controller.run()
+    assert fixture.actions == []
+    assert not (fixture.controller.root / "removed.json").exists()
+
+
 def test_complete_teardown_proves_absence_before_emitting_its_receipt(fixture: Fixture) -> None:
     fixture.authorize()
     result = fixture.controller.run()

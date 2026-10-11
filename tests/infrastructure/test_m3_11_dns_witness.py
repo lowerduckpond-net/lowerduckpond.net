@@ -13,6 +13,7 @@ from typing import Literal
 from unittest.mock import Mock
 
 import pytest
+from lowerduckpond_static_host_agent import durable
 
 from scripts import m3_11_debug_files as debug_files
 from scripts import m3_11_dns_witness as dns
@@ -136,6 +137,33 @@ def test_cleanup_after_a_failed_attempt_appends_without_replacing_original_dns(r
     assert all(path.read_bytes() == raw for path, raw in before.items())
     run.policy.assert_called_once()  # Cleanup never starts or authorizes another issuer.
     assert not (run.directory / "combined.json").exists()
+
+
+@pytest.mark.parametrize("after", [False, True])
+def test_interrupted_cleanup_observation_retries_without_poisoning_sequence(
+    run: Run, monkeypatch: pytest.MonkeyPatch, after: bool
+) -> None:
+    original = authorize_removal(run)
+    before = {path: path.read_bytes() for path in original.path.parent.iterdir()}
+    zone_responses = list(run.client.get.side_effect)
+    run.client.get.side_effect = zone_responses * 2
+    rename = durable._rename_noreplace
+
+    def interrupt(fd: int, source: str, destination: str, *, destination_fd: int) -> None:
+        if after:
+            rename(fd, source, destination, destination_fd=destination_fd)
+        raise OSError("interrupted teardown observation publication")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(durable, "_rename_noreplace", interrupt)
+        with pytest.raises(OSError):
+            dns.removal_absence(run.directory, run.storage)
+    assert not list((run.directory / "public-dns").glob(".publication-*"))
+    assert bool(list(run.directory.glob(".publication-*"))) is not after
+    observation = dns.removal_absence(run.directory, run.storage)
+    assert observation.path.name == ("0003.json" if after else "0002.json")
+    assert observation.record_count == 0
+    assert all(path.read_bytes() == raw for path, raw in before.items())
 
 
 @pytest.mark.parametrize(

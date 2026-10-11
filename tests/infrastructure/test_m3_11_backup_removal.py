@@ -208,6 +208,34 @@ def removal(tmp_path: Path) -> tuple[Removal, Storage]:
     return value, storage
 
 
+def test_empty_backup_authorization_rechecks_ownership_before_recovery(
+    removal: tuple[Removal, Storage],
+) -> None:
+    controller, storage = removal
+    controller.directory.mkdir(mode=0o700)
+    controller.run()
+    assert storage.versions == {("backups/production/untouched", "production-version"): "version"}
+
+
+def test_access_loss_between_backup_deletions_stops_further_mutations(
+    removal: tuple[Removal, Storage],
+) -> None:
+    controller, storage = removal
+    checks = 0
+
+    def guard() -> None:
+        nonlocal checks
+        checks += 1
+        if checks > 1:
+            raise ValueError("expired lease")
+
+    controller.guard = guard
+    with pytest.raises(ValueError, match="expired lease"):
+        controller.run()
+    assert len(storage.operations) == 1
+    assert (controller.target.owner_key, "owner-version") in storage.versions
+
+
 def test_only_owned_exact_versions_are_removed_and_owner_is_last(
     removal: tuple[Removal, Storage],
 ) -> None:

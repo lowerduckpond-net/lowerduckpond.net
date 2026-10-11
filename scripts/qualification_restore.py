@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from scripts.qualification_case import private_document
@@ -355,7 +356,12 @@ print('blocked-as-expected')
     command(environment, "docker", "exec", identity, "python3", "-I", "-B", "-c", code)
 
 
-def remove_pair(environment: dict[str, str], expected: dict[str, str]) -> None:
+def remove_pair(
+    environment: dict[str, str],
+    expected: dict[str, str],
+    *,
+    guard: Callable[[], None] | None = None,
+) -> None:
     from scripts.qualification_restore_removal import remove_pair as resume  # noqa: PLC0415
 
-    resume(environment, expected)
+    resume(environment, expected, guard=guard)

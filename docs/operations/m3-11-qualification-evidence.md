@@ -47,9 +47,12 @@ In addition to the existing private run files, packaging requires:
 All three inputs must exist before their corresponding observations can be
 packaged: context and names precede the first combined phase; the final combined
 receipt precedes the existing final independent provider proof. Packaging does
-not rewrite these files or repair their chronology. An interrupted or failed
-run keeps its original receipts and resources under the existing diagnostic and
-resumption rules; it produces no passing envelope.
+not rewrite these files or repair their chronology. A failed functional test
+cannot be retried into a pass. Once the exact collected pytest node has passed
+setup, call, teardown and exit status, the producer saves
+`functional-completion.json` before teardown's external reads. It binds original
+phase receipts, assertions, source, artifact, run inputs and their timestamps.
+Only that durable boundary permits [same-run finalization recovery](m3-11-backup-recovery.md#same-run-finalization-recovery).
 
 The context's `storage_run_id` and `storage_report_sha256` must match the enclosing
 legacy report at both packaging and consumption. Identical candidate inputs and
@@ -111,7 +114,19 @@ child cleanup, restored signal handlers and retained final diagnostics. Further
 cases cover repeated signals during shutdown and cancellation with launch failure.
 `qualification-exit.json` is diagnostic-only and cannot supply missing combined
 receipts. The [live deadline amendment](../plans/milestone-3.11.md#live-qualification-deadline-amendment)
-changes the execution ceiling, not this envelope or its uninterrupted proof.
+changes the execution ceiling, not the ordered functional proof. A timeout stops
+the attempt without implicitly cancelling an approved retained credential lease.
+Explicit cancellation, credential expiry and required revocation still apply.
+
+Recovered finalization adds `finalization_recovery` to a newly packaged report:
+the original functional completion time, finalization completion time, original
+failed/interrupted outcome, original result hash and checkpoint hash. The
+controller's original failure and exit status remain unchanged. A report that
+was already completely written keeps its exact bytes and original packaging
+time when only its checksum needs repair. Output publication uses atomic
+no-replace rename; existing corrupt or conflicting files are preserved and
+rejected. Old attempts lacking the completion boundary cannot reconstruct it
+from logs, assertions alone or diagnostic continuation.
 
 Every phase below has original UTC start/end times, a private evidence digest,
 and its exact named checks all marked `passed`. Missing, additional, failed or

@@ -71,6 +71,15 @@ def inputs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Mock:
     )
     for phase in ("create", "prepare", "converge", "idempotence"):
         (tmp_path / f"{phase}.passed").write_bytes(b"passed\n")
+        (tmp_path / f"{phase}.passed").chmod(0o600)
+    for name in (
+        "qualification-inputs.json",
+        "source-revision",
+        "storage.json",
+        "live-storage.json",
+        "paired-accounting.json",
+    ):
+        write_private(tmp_path / name, {"synthetic": name})
     monkeypatch.setattr(LiveStorage, "load", Mock(return_value=storage))
     return storage
 

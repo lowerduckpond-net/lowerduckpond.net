@@ -706,9 +706,7 @@ def test_cli_preserves_explicit_milestone_and_never_overwrites_evidence(
     original = path.read_bytes()
     checksum = (run.directory / "qualification.sha256").read_text()
     assert checksum == hashlib.sha256(original).hexdigest() + "  qualification.json\n"
-    with pytest.raises(SystemExit) as caught:
-        reports.main()
-    assert caught.value.code == 1
+    assert reports.main() == 0
     assert path.read_bytes() == original
     monkeypatch.setattr(
         "sys.argv",

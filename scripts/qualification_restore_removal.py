@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -55,8 +56,11 @@ def present(environment: dict[str, str], receipts: dict[str, object]) -> dict[st
     return result
 
 
-def remove_pair(  # noqa: PLR0912 - explicit stop/remove recovery states
-    environment: dict[str, str], expected: dict[str, str]
+def remove_pair(  # noqa: PLR0912, PLR0915 - explicit guarded stop/remove recovery states
+    environment: dict[str, str],
+    expected: dict[str, str],
+    *,
+    guard: Callable[[], None] | None = None,
 ) -> None:
     root = restore.directory(environment)
     receipts = {kind: document(root / f"{kind}.json") for kind in restore.KINDS}
@@ -136,11 +140,15 @@ def remove_pair(  # noqa: PLR0912 - explicit stop/remove recovery states
                     identity,
                     negative=completed.get("outcome") == "blocked-as-expected",
                 )
+            if guard is not None:
+                guard()
             restore.command(environment, "docker", "stop", "--time", "20", identity, timeout=30)
             stopped = snapshot(environment, identity)
             if stopped["running"] or incarnation(stopped) != starts[kind]:
                 raise ValueError("restore fixture did not stop unchanged")
         elif kind in current:
+            if guard is not None:
+                guard()
             restore.command(environment, "docker", "rm", "--volumes", identity)
             if kind in present(environment, cast(dict[str, object], receipts)):
                 raise ValueError("restore fixture removal is incomplete")

@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from scripts import m3_11_qualification_evidence as evidence
-from scripts.m3_11_private_inputs import read_private, write_private
+from scripts.m3_11_private_inputs import publish_private, read_private, write_private
 
 FORMAT = "lowerduckpond-m3-11-private-phase-v1"
 
@@ -73,7 +73,8 @@ class Recorder:
             "phase": name,
             "started_at": _timestamp(started),
         }
-        write_private(self.destination / f"{name}.started.json", opening)
+        publish = publish_private if name == "owned-teardown" else write_private
+        publish(self.destination / f"{name}.started.json", opening)
         details: dict[str, object] = {}
         try:
             yield details
@@ -86,7 +87,7 @@ class Recorder:
                 "completed_at": _timestamp(completed),
                 "observations": details,
             }
-            write_private(self.destination / f"{name}.json", document)
+            publish(self.destination / f"{name}.json", document)
             self._receipts[name] = {
                 "started_at": _timestamp(started),
                 "completed_at": _timestamp(completed),
