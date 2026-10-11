@@ -151,6 +151,7 @@ class TokenFixture:
         (timedelta(days=365), timedelta(), "must expire within 8 days from now"),
         (timedelta(days=365), timedelta(seconds=-1), "must expire within 8 days from now"),
         (timedelta(days=365), timedelta(days=8, seconds=1), "must expire within 8 days from now"),
+        (timedelta(days=365), timedelta(days=14), "must expire within 8 days from now"),
         (timedelta(seconds=-1), timedelta(days=1), "issue date is in the future"),
     ],
 )

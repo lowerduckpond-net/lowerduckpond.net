@@ -401,8 +401,9 @@ def check_caddy_token(
     account_id: str,
     now: datetime,
     minimum_audit_remaining: timedelta = timedelta(),
+    approved_audit: tuple[str, datetime] | None = None,
 ) -> None:
-    """Bind the live runtime token to its exact non-expiring two-zone policy."""
+    """Keep production Caddy policy exact; an approved audit lease pins ID hash and expiry."""
     edge_token = required(environment, "CLOUDFLARE_API_TOKEN")
     caddy_token = required(environment, "CADDY_CLOUDFLARE_API_TOKEN")
     audit_token = required(environment, "M3_10_TOKEN_AUDIT_TOKEN")
@@ -427,6 +428,7 @@ def check_caddy_token(
         zone_ids=frozenset(zone_id for zone_id, _ in zones),
         now=now,
         minimum_audit_remaining=minimum_audit_remaining,
+        approved_audit=approved_audit,
     )
 
 

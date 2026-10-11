@@ -18,17 +18,52 @@ from scripts import check_m3_10_provider as production
 from scripts import m3_11_fixture_tokens as fixture
 from scripts.check_m3_7_production_edge import ProductionEdgePreflightError
 from scripts.m3_11_private_inputs import write_private
-from scripts.m3_11_unattended import cloudflare, config, connect_configuration
+from scripts.m3_11_unattended import cloudflare, config, connect_configuration, inputs
 from scripts.m3_11_unattended import production as isolated
 from scripts.m3_11_unattended.cloudflare import Cloudflare
 from scripts.m3_11_unattended.http import Api, Response
 from scripts.m3_11_unattended.journal import _note_content
-from scripts.m3_11_unattended.model import ROLES, Credential, LifecycleError, stamp
+from scripts.m3_11_unattended.model import ROLES, Credential, LeasePolicy, LifecycleError, stamp
 from scripts.m3_11_unattended.spaces import Spaces
 
 from .test_m3_10_runtime_token import _ACCOUNT, _AUDIT, _RUNTIME, _SECRETS, _ZONES, TokenFixture
 from .test_m3_11_lease_configuration import reader_document
 from .test_m3_11_unattended_lifecycle import CANARY, TARGETS, Case
+
+
+def audit_lease_receipt(
+    binding: dict[str, object], *, issued: datetime | None = None
+) -> dict[str, object]:
+    now = datetime.now(UTC).replace(microsecond=0)
+    issued = issued or now - timedelta(minutes=5)
+    policy = LeasePolicy(
+        stamp(issued - timedelta(minutes=1)),
+        stamp(issued + timedelta(hours=1)),
+        stamp(issued + timedelta(hours=2)),
+        14 * 24 * 3600,
+        7 * 24 * 3600,
+        True,
+        "SYNTHETIC-TEST-ONLY-no-live-approval",
+    )
+    return {
+        "receipt": {
+            "format": inputs.LEASE_FIXTURE_FORMAT,
+            **binding,
+            "lease_id": binding["managed_run_id"],
+            "lease_manifest_sha256": "c" * 64,
+            "lease_policy": policy.document(),
+            "lease_issued_at": stamp(issued),
+            "deadline": stamp(policy.deadline(issued)),
+            "started_at": stamp(now - timedelta(minutes=1)),
+            "completed_at": stamp(now),
+            "checks": inputs.FIXTURE_RESULT,
+            "identities_sha256": {
+                role: hashlib.sha256((_AUDIT if role == "audit" else role).encode()).hexdigest()
+                for role in ROLES
+            },
+        },
+        "approved_policy_sha256": policy.sha256,
+    }
 
 
 class Responses:
@@ -350,13 +385,21 @@ def test_production_bootstrap_and_state_passphrase_stay_in_the_short_check_proce
         "connect": reader_document("production", now=datetime.now(UTC).replace(microsecond=0)),
         "references": dict(zip(isolated.REFERENCES, isolated.REFERENCES, strict=True)),
         "targets": dataclasses.asdict(TARGETS),
-        "binding": {},
+        "binding": {
+            "managed_run_id": Case(tmp_path / "journal").run_id,
+            "source_revision": "e" * 40,
+            "helper_revision": "f" * 40,
+            "artifact_sha256": "a" * 64,
+            "qualification_inputs_sha256": "b" * 64,
+            "storage_target_sha256": TARGETS.storage_digest,
+        },
         "output": str(tmp_path / "receipt.json"),
         "fixture": {
             key: "fixture-" + key
             for key in ("audit", "observer", "archive_id", "backup_id", "caddy_id")
         },
     }
+    request["lease"] = audit_lease_receipt(cast(dict[str, object], request["binding"]))
     repository = tmp_path / "source"
     repository.mkdir()
     assert isolated.bootstrap(request, repository) == 0
@@ -418,6 +461,7 @@ def test_production_storage_probe_receives_only_actual_storage_credentials(
         {
             "targets": dataclasses.asdict(TARGETS),
             "binding": binding,
+            "lease": audit_lease_receipt(cast(dict[str, object], binding)),
             "fixture_ids": {key: "fixture-" + key for key in ("archive", "backup", "caddy")},
             "started_at": stamp(datetime.now(UTC)),
             "output": str(output),

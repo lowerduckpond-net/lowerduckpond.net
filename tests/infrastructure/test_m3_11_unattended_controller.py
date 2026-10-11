@@ -329,7 +329,7 @@ def test_worker_terminal_failure_keeps_outcome_and_revokes_all_owned_children(
         raise LifecycleError(CANARY)
 
     monkeypatch.setattr(selected, "_provision", provision)
-    monkeypatch.setattr(selected, "_production", lambda _credentials: {})
+    monkeypatch.setattr(selected, "_production", lambda _credentials, _fixture: {})
     monkeypatch.setattr(selected, "_deliver", deliver)
     assert selected.run() == 1
     status = selected.state.status()

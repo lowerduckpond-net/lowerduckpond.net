@@ -19,7 +19,8 @@ StandardError=journal
 Environment=LDP_ARCHIVE_FAILURE_CAPTURE=1
 BindPaths=/var/log/lowerduckpond-archive-failures
 {% endif %}
-MemoryMax=128M
+# Include Python/TLS overhead and charged file cache during full-size restores.
+MemoryMax=256M
 MemorySwapMax=0
 TasksMax=16
 LimitNOFILE=128

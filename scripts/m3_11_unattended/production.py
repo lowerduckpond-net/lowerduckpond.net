@@ -20,8 +20,21 @@ from scripts.check_m3_10_provider import check_caddy_token
 from scripts.m3_11_private_inputs import write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
 from scripts.m3_11_unattended.connect_diagnostics import retain_failure
-from scripts.m3_11_unattended.inputs import BINDING, PRODUCTION_FORMAT, PRODUCTION_RESULT
-from scripts.m3_11_unattended.model import LifecycleError, Targets, stamp, strings
+from scripts.m3_11_unattended.inputs import (
+    BINDING,
+    LEASE_FIXTURE_FORMAT,
+    PRODUCTION_FORMAT,
+    PRODUCTION_RESULT,
+    validate_receipt,
+)
+from scripts.m3_11_unattended.model import (
+    LeasePolicy,
+    LifecycleError,
+    Targets,
+    instant,
+    stamp,
+    strings,
+)
 from scripts.m3_11_unattended.state import private_directory
 from scripts.production_qualification_inputs import current_candidate, fingerprint, revision
 
@@ -36,6 +49,20 @@ REFERENCES = frozenset(
 )
 MAX_INPUT_BYTES = 256 * 1024
 CHECK_SECONDS = 25 * 60
+
+
+def audit_lease(
+    value: object, *, binding: dict[str, object], now: datetime
+) -> tuple[str, datetime]:
+    """Bind the fresh attempt receipt to its approved policy and original audit deadline."""
+    lease = fields(value, {"receipt", "approved_policy_sha256"})
+    receipt = validate_receipt(lease["receipt"], binding=binding, kind="fixture", now=now)
+    if (
+        receipt["format"] != LEASE_FIXTURE_FORMAT
+        or LeasePolicy.parse(receipt["lease_policy"]).sha256 != lease["approved_policy_sha256"]
+    ):
+        raise LifecycleError("production audit lease differs from the approved inputs")
+    return strings(receipt["identities_sha256"])["audit"], instant(receipt["deadline"])
 
 
 def _output(request: dict[str, object], repository: Path) -> Path:
@@ -90,11 +117,14 @@ def _request() -> dict[str, object]:
 
 def bootstrap(request: dict[str, object], repository: Path) -> int:
     """Provisioning credentials are not accepted here; only the production reader."""
-    value = fields(request, {"connect", "references", "targets", "binding", "fixture", "output"})
+    value = fields(
+        request, {"connect", "references", "targets", "binding", "fixture", "output", "lease"}
+    )
     references = strings(value["references"])
     if set(references) != REFERENCES:
         raise LifecycleError("production-check references are incomplete")
     targets = Targets.parse(value["targets"])
+    audit_lease(value["lease"], binding=fields(value["binding"], BINDING), now=datetime.now(UTC))
     fixture = strings(
         fields(value["fixture"], {"audit", "observer", "archive_id", "backup_id", "caddy_id"})
     )
@@ -118,8 +148,8 @@ def bootstrap(request: dict[str, object], repository: Path) -> int:
         M3_10_TOKEN_AUDIT_TOKEN=fixture["audit"], CLOUDFLARE_API_TOKEN=fixture["observer"]
     )
     # Do not forward the Connect reader or any bootstrap reference to the state
-    # reader. The pipe holds only the non-secret binding/identities/output path.
-    safe = {key: value[key] for key in ("targets", "binding", "output")}
+    # reader. The pipe holds only non-secret bindings, lease receipt and output path.
+    safe = {key: value[key] for key in ("targets", "binding", "output", "lease")}
     safe["fixture_ids"] = {role: fixture[role + "_id"] for role in ("archive", "backup", "caddy")}
     safe["started_at"] = stamp(datetime.now(UTC))
     command = (
@@ -143,10 +173,12 @@ def bootstrap(request: dict[str, object], repository: Path) -> int:
 
 
 def validate(request: dict[str, object], repository: Path) -> None:
-    value = fields(request, {"targets", "binding", "output", "fixture_ids", "started_at"})
+    value = fields(request, {"targets", "binding", "output", "fixture_ids", "started_at", "lease"})
     targets = Targets.parse(value["targets"])
     path = _output(value, repository)
     binding = fields(value["binding"], BINDING)
+    now = datetime.now(UTC)
+    approved_audit = audit_lease(value["lease"], binding=binding, now=now)
     source = revision(binding["source_revision"])
     current_candidate(repository, source)
     if (
@@ -156,8 +188,12 @@ def validate(request: dict[str, object], repository: Path) -> None:
     ):
         raise LifecycleError("production state and approved qualification targets differ")
     fixture = strings(fields(value["fixture_ids"], {"archive", "backup", "caddy"}))
-    now = datetime.now(UTC)
-    check_caddy_token(os.environ, account_id=targets.account_id, now=now)
+    check_caddy_token(
+        os.environ,
+        account_id=targets.account_id,
+        now=now,
+        approved_audit=approved_audit,
+    )
     caddy_id = verify_active_account_token(
         CloudflareClient(os.environ["CADDY_CLOUDFLARE_API_TOKEN"]),
         account_id=targets.account_id,

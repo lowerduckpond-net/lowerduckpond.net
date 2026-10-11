@@ -18,7 +18,7 @@ from scripts import qualification_deadline
 from scripts.m3_10_qualification_report import verify_report
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
-from scripts.m3_11_unattended import cleanup, inputs
+from scripts.m3_11_unattended import cleanup, inputs, production
 from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.connect_diagnostics import retain_failure
 from scripts.m3_11_unattended.creation_outcome import (
@@ -456,13 +456,18 @@ class Worker:
             )
         return self.lifecycle.credentials(binding=self.binding)
 
-    def _production(self, credentials: dict[str, Credential]) -> dict[str, object]:
+    def _production(
+        self, credentials: dict[str, Credential], fixture: dict[str, object]
+    ) -> dict[str, object]:
         if self.config.production is None:
             raise LifecycleError("isolated production reader is unavailable")
+        lease = {"receipt": fixture, "approved_policy_sha256": self.config.approved_policy_sha256}
+        production.audit_lease(lease, binding=self.binding, now=datetime.now(UTC))
         request = {
             **self.config.production,
             "targets": dataclasses.asdict(self.config.targets),
             "binding": self.binding,
+            "lease": lease,
             "output": str(self.directory / "production-check.json"),
             "fixture": {
                 "audit": credentials["audit"].secret,
@@ -748,7 +753,7 @@ class Worker:
                 self.state.update("provisioning", cleanup="pending")
                 credentials, fixture = self._provision()
                 self.state.update("production-check", cleanup="pending")
-                production = self._production(credentials)
+                production = self._production(credentials, fixture)
                 environment = self._deliver(
                     credentials, {"production": production, "fixture": fixture}
                 )
