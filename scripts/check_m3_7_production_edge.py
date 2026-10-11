@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import os
@@ -651,6 +652,7 @@ def _require_account_token_policies(  # noqa: PLR0913 -- all credential roles ar
     zone_ids: frozenset[str],
     now: datetime,
     minimum_audit_remaining: timedelta = timedelta(),
+    approved_audit: tuple[str, datetime] | None = None,
 ) -> None:
     audit_details = _account_token_details(
         audit_client,
@@ -680,7 +682,17 @@ def _require_account_token_policies(  # noqa: PLR0913 -- all credential roles ar
         raise ProductionEdgePreflightError("the temporary token-audit issue date is in the future")
     # Rolled tokens retain their original issue date. Bound remaining validity,
     # including one extra day for the provider's date-based expiry selection.
-    if not now < expires_on <= now + MAXIMUM_AUDIT_TOKEN_REMAINING:
+    if approved_audit is not None:
+        if (
+            hashlib.sha256(audit_id.encode()).hexdigest(),
+            expires_on,
+        ) != approved_audit or not now < expires_on:
+            raise ProductionEdgePreflightError(
+                "the temporary token-audit identity or expiry differs from its approved lease"
+            )
+        if audit_details.get("not_before") and _timestamp(audit_details["not_before"]) > now:
+            raise ProductionEdgePreflightError("the temporary token-audit token is not valid yet")
+    elif not now < expires_on <= now + MAXIMUM_AUDIT_TOKEN_REMAINING:
         raise ProductionEdgePreflightError(
             "the temporary token-audit token must expire within 8 days from now"
         )

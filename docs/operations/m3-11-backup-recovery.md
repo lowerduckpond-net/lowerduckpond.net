@@ -72,6 +72,13 @@ process can read encrypted state and verify the existing non-expiring, exact-pol
 production Caddy credential and production storage capabilities. Fixture credentials
 cannot replace production proof or enter production state.
 
+The production check validates the fresh fixture receipt against the controller's
+approved policy digest before reading production inputs. Its audit child must match
+the receipt's exact native identity and original expiry, including when an approved
+lease is reused by a later attempt. This permits explicitly approved milestone
+lifetimes beyond eight days; ordinary audit-token callers retain their eight-day
+limit and production Caddy still requires its exact non-expiring policy.
+
 Stage the independent bundle using its verified native reader document. Its URL
 placeholder is `https://independent.invalid`; the action substitutes only the
 endpoint of its own freshly started server.

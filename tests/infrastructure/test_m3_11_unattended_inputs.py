@@ -138,7 +138,7 @@ def test_controller_consumers_reject_whole_receipt_transplants(
     selected.source = run.repository
     if consumer == "worker":
         monkeypatch.setattr(selected, "_provision", lambda: ({}, {}))
-        monkeypatch.setattr(selected, "_production", lambda _credentials: {})
+        monkeypatch.setattr(selected, "_production", lambda _credentials, _fixture: {})
         monkeypatch.setattr(selected, "_deliver", lambda *_args: {})
         monkeypatch.setattr(selected, "_journey", journey)
         assert selected.run() == (0 if change == "none" else 1)

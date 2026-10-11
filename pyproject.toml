@@ -104,6 +104,7 @@ files = [
   "tests/infrastructure/test_m3_11_unattended_admission.py",
   "tests/infrastructure/test_m3_11_unattended_docker.py",
   "tests/infrastructure/test_m3_11_unattended_providers.py",
+  "tests/infrastructure/test_m3_11_production_audit.py",
   "tests/infrastructure/test_m3_11_creation_identities.py",
   "tests/infrastructure/test_m3_11_connect_setup.py",
   "tests/infrastructure/test_m3_11_connect_delivery.py",
