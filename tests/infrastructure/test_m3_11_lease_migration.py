@@ -381,9 +381,34 @@ def test_terminal_removal_preserves_original_proof_and_authentication_requiremen
     assert terminal(intent, [*records, _authentication_marker(intent)]) is None
 
 
+@pytest.mark.parametrize("retained", [False, True])
+def test_terminal_rejects_denied_proof_with_empty_explicit_binding(
+    tmp_path: Path, retained: bool
+) -> None:
+    case = Case(tmp_path)
+    intent, credential = case.create()
+    case.lifecycle.request_revocation(case.run_id)
+    assert case.lifecycle.reconcile(intent).status == "verified"
+    records = case.journal.records()
+    resolved = next(row for row in records if row["kind"] == "resolved")
+    cast(dict[str, object], resolved["payload"]).update(
+        negative_authentication="denied", negative_authentication_markers=[]
+    )
+    with pytest.raises(LifecycleError, match="invalid marker bindings"):
+        terminal(intent, records, credential if retained else None)
+
+
 @pytest.mark.parametrize(
     "fault",
-    ["label-only", "missing-created", "wrong-id", "wrong-run", "pending-probe", "unknown-marker"],
+    [
+        "label-only",
+        "missing-created",
+        "wrong-id",
+        "wrong-run",
+        "pending-probe",
+        "unknown-marker",
+        "empty-markers",
+    ],
 )
 def test_import_rejects_unsupported_terminal_claims_before_writing(
     tmp_path: Path, fault: str
@@ -410,7 +435,8 @@ def test_import_rejects_unsupported_terminal_claims_before_writing(
         records.append(_authentication_marker(intent))
     else:
         value.update(
-            negative_authentication="denied", negative_authentication_markers=[str(uuid.uuid7())]
+            negative_authentication="denied",
+            negative_authentication_markers=[] if fault == "empty-markers" else [str(uuid.uuid7())],
         )
     mapping["retained_files"] = {}
     mapping["records"] = {str(row["event_id"]): digest(row) for row in records}

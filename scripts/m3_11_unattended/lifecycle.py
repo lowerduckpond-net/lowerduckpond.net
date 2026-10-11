@@ -147,7 +147,7 @@ def pending_authentication(observations: list[dict[str, object]]) -> set[str]:
             continue
         if "negative_authentication_markers" in value:
             references = value["negative_authentication_markers"]
-            if not isinstance(references, list):
+            if not isinstance(references, list) or not references:
                 raise LifecycleError("authentication proof has invalid marker bindings")
             selected = {identity(reference) for reference in references}
             if not selected <= markers.keys() or len(selected) != len(references):
