@@ -43,7 +43,7 @@ from scripts.m3_11_unattended.production import REFERENCES
 from scripts.m3_11_unattended.state import private_directory
 
 FORMAT = "lowerduckpond-m3-11-operator-inputs-v1"
-HELPER = "aa406a5bcdbf5672ea106f95bd5bd3cd9b2c3ed1"
+HELPER = "181ab29f65d3dde19ddac3411b8b7e8928dd14da"
 CLIENTS = {"provision", "cleanup", "production", "independent_cleanup"}
 ROOT = Path(__file__).resolve().parents[2]
 PROVIDER_KEYS = {
