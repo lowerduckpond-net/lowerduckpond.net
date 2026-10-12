@@ -45,8 +45,10 @@ from scripts.m3_11_unattended.model import (
 )
 from scripts.m3_11_unattended.production import REFERENCES
 from scripts.m3_11_unattended.state import private_directory
+from scripts.production_qualification_inputs import current_candidate, revision
 
 FORMAT = "lowerduckpond-m3-11-operator-inputs-v2"
+RECEIPT_FORMAT = "lowerduckpond-m3-11-operator-inputs-v3"
 HELPER = "6b7c21f9680b4b7858ba29a316c9e5b2ff021665"
 CLIENTS = {"provision", "cleanup", "production", "independent_cleanup"}
 ROOT = Path(__file__).resolve().parents[2]
@@ -91,6 +93,73 @@ def label(value: object) -> str:
     return value
 
 
+def runtime_revision(manifest: dict[str, object], *, checkout: bool = False) -> str:
+    selected = (
+        revision(manifest["runtime_revision"]) if manifest["format"] == RECEIPT_FORMAT else HELPER
+    )
+    if checkout and manifest["format"] == RECEIPT_FORMAT:
+        current_candidate(ROOT, selected)
+    return selected
+
+
+def observation(raw: object, *, receipts: bool, reference: str, now: datetime) -> dict[str, object]:
+    common = {
+        "principal",
+        "scopes",
+        "attested_by",
+        "principal_context",
+        "generation_id",
+        "token_reference",
+    }
+    exact = {"token_created_at", "observed_at", "token_sha256"}
+    optional = set(raw).intersection(exact) if receipts and isinstance(raw, dict) else exact
+    value = fields(raw, common | optional | ({"receipt_evidence"} if receipts else set()))
+    if not receipts:
+        if not instant(value["token_created_at"]) <= instant(value["observed_at"]) <= now:
+            raise LifecycleError("DigitalOcean console observation is incomplete")
+    else:
+        basis = fields(
+            value["receipt_evidence"],
+            {
+                "basis",
+                "created_no_later_than",
+                "creation_receipt",
+                "scope_confirmation_received_at",
+                "scope_receipt",
+                "replacement_reference",
+                "confirmation_applies_to_replacement",
+            },
+        )
+        if (
+            basis["basis"] != "operator-confirmed-replacement"
+            or basis["replacement_reference"] != reference
+            or basis["confirmation_applies_to_replacement"] is not True
+            or not instant(basis["created_no_later_than"])
+            <= instant(basis["scope_confirmation_received_at"])
+            <= now
+        ):
+            raise LifecycleError("replacement receipt evidence is incomplete or contradictory")
+        label(basis["creation_receipt"])
+        label(basis["scope_receipt"])
+        for name, bound in (
+            ("token_created_at", "created_no_later_than"),
+            ("observed_at", "scope_confirmation_received_at"),
+        ):
+            if name in value and instant(value[name]) > instant(basis[bound]):
+                raise LifecycleError("exact observation contradicts its receipt upper bound")
+        if (
+            "token_created_at" in value
+            and "observed_at" in value
+            and instant(value["token_created_at"]) > instant(value["observed_at"])
+        ):
+            raise LifecycleError("exact observation precedes token creation")
+    if "token_sha256" in value:
+        fingerprint(value["token_sha256"])
+    label(value["attested_by"])
+    label(value["principal_context"])
+    return value
+
+
 def generation(
     manifest: dict[str, object], role: str, hashes: dict[str, str]
 ) -> AuthorityGeneration:
@@ -117,6 +186,7 @@ def generation(
 
 def validate(raw: object, *, now: datetime) -> dict[str, object]:  # noqa: PLR0912
     """Check only nonsecret declared inputs. Never infer approvals or provider facts."""
+    receipts = isinstance(raw, dict) and raw.get("format") == RECEIPT_FORMAT
     manifest = fields(
         raw,
         {
@@ -138,10 +208,15 @@ def validate(raw: object, *, now: datetime) -> dict[str, object]:  # noqa: PLR09
             "clients",
             "providers",
             "production_references",
-        },
+        }
+        | ({"runtime_revision"} if receipts else set()),
     )
-    if manifest["format"] != FORMAT or manifest["purpose"] != "initial-legacy-migration":
+    if (
+        manifest["format"] not in {FORMAT, RECEIPT_FORMAT}
+        or manifest["purpose"] != "initial-legacy-migration"
+    ):
         raise LifecycleError("this assembler only stages the initial legacy migration")
+    runtime_revision(manifest)
     targets = Targets.parse(manifest["targets"])
     policy = LeasePolicy.parse(manifest["policy"])
     policy.require_start(now=now, approved_sha256=str(manifest["approved_policy_sha256"]))
@@ -186,19 +261,11 @@ def validate(raw: object, *, now: datetime) -> dict[str, object]:  # noqa: PLR09
             raise LifecycleError("provider secrets and metadata need separate field references")
         for provider_ref in role_references.values():
             reference(provider_ref, vault=vaults[role])
-        observed = fields(
+        observed = observation(
             selected["digitalocean_observation"],
-            {
-                "principal",
-                "scopes",
-                "observed_at",
-                "attested_by",
-                "principal_context",
-                "generation_id",
-                "token_reference",
-                "token_sha256",
-                "token_created_at",
-            },
+            receipts=receipts,
+            reference=role_references["digitalocean"],
+            now=now,
         )
         scopes = (
             DO_READ_SCOPES
@@ -210,12 +277,8 @@ def validate(raw: object, *, now: datetime) -> dict[str, object]:  # noqa: PLR09
             or observed["scopes"] != sorted(scopes)
             or observed["generation_id"] != manifest["generation_id"]
             or observed["token_reference"] != role_references["digitalocean"]
-            or not instant(observed["token_created_at"]) <= instant(observed["observed_at"]) <= now
         ):
             raise LifecycleError("DigitalOcean console observation is incomplete")
-        fingerprint(observed["token_sha256"])
-        label(observed["attested_by"])
-        label(observed["principal_context"])
         declared = generation(manifest, role, dict.fromkeys(PROVIDERS, "0" * 64))
         if not instant(declared.introduced_at) <= now < instant(declared.rotation_due_at):
             raise LifecycleError("generation is outside its approved rotation month")
@@ -301,6 +364,8 @@ def documents(
     manifest: dict[str, object], operator: Operator
 ) -> tuple[dict[str, object], dict[str, object], dict[str, dict[str, object]]]:
     manifest = validate(manifest, now=datetime.now(UTC))
+    helper = runtime_revision(manifest, checkout=True)
+    assembled_at = datetime.now(UTC).isoformat().replace("+00:00", "Z")
     configured = readers(manifest, operator)
     roles, attestations = {}, {}
     for role, raw in fields(manifest["providers"], {"provision", "cleanup"}).items():
@@ -313,7 +378,7 @@ def documents(
             for kind, key in PROVIDER_KEYS.items()
         }
         observed = cast(dict[str, object], selected["digitalocean_observation"])
-        if observed["token_sha256"] != hashes["spaces"]:
+        if "token_sha256" in observed and observed["token_sha256"] != hashes["spaces"]:
             raise LifecycleError("DigitalOcean token differs from its console observation")
         approved = generation(manifest, role, hashes)
         roles[role] = {
@@ -329,10 +394,19 @@ def documents(
             "token_sha256": approved.fingerprints["spaces"],
             "expires_at": approved.expires_at["spaces"],
             "scopes": observed["scopes"],
-            "verified_at": observed["observed_at"],
+            "verified_at": assembled_at
+            if manifest["format"] == RECEIPT_FORMAT
+            else observed["observed_at"],
             "verified_by": "operator-provider-console",
             "attested_by": observed["attested_by"],
-            "principal_context": observed["principal_context"],
+            "principal_context": (
+                "receipt-based operator-confirmed replacement attestation; input="
+                + digest(manifest)
+                + "; basis="
+                + digest(observed["receipt_evidence"])
+                if manifest["format"] == RECEIPT_FORMAT
+                else observed["principal_context"]
+            ),
         }
     config = {
         "format": "lowerduckpond-m3-11-lease-config-v1",
@@ -348,13 +422,15 @@ def documents(
             "references": manifest["production_references"],
         },
         "independent_server_id": manifest["independent_server_id"],
-        "helper_revision": HELPER,
+        "helper_revision": helper,
         "migration_sha256": manifest["migration_sha256"],
     }
     return config, configured["independent_cleanup"], attestations
 
 
 def run(manifest: dict[str, object], *, credentials: Path, output: Path) -> None:
+    manifest = validate(manifest, now=datetime.now(UTC))
+    helper = runtime_revision(manifest, checkout=True)
     private_directory(output.parent)
     private_directory(credentials.parent)
     if (
@@ -383,8 +459,17 @@ def run(manifest: dict[str, object], *, credentials: Path, output: Path) -> None
             "format": "lowerduckpond-m3-11-operator-assembly-receipt-v1",
             "status": "staged-only",
             **receipt,
-            "helper_revision": HELPER,
+            "helper_revision": helper,
             "operator_inputs_sha256": digest(manifest),
+            "attestation_sha256": {role: digest(value) for role, value in attestations.items()},
+            "observations": {
+                role: {
+                    "input": fields(manifest["providers"], {"provision", "cleanup"})[role],
+                    "token_sha256": value["token_sha256"],
+                    "assembled_at": value["verified_at"],
+                }
+                for role, value in attestations.items()
+            },
             "provider_verification": "pending",
             "independent_server_verification": "pending",
             "attestation_publication": "pending",

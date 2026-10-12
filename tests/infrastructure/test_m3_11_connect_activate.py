@@ -407,6 +407,14 @@ def test_audit_restoration_must_follow_latest_issuer_fence(
         name=f"ldp-m311-{uuid.UUID(original.run_id).hex}-audit",
         cleanup_authority_sha256=authority.fingerprints["cloudflare-account"],
     )
+    trigger = dataclasses.replace(
+        intent,
+        role="page-rules",
+        provider="cloudflare-user",
+        name=f"ldp-m311-{uuid.UUID(intent.run_id).hex}-page-rules",
+        cleanup_authority_sha256=authority.fingerprints["cloudflare-user"],
+    )
+    monkeypatch.setattr(audit_policy_recovery, "RUN_ID", intent.run_id)
     now = datetime.now(UTC)
     start = now - timedelta(hours=1)
     candidate = {
@@ -421,7 +429,7 @@ def test_audit_restoration_must_follow_latest_issuer_fence(
         "scope": {},
     }
     monkeypatch.setattr(audit_policy_recovery, "CANDIDATE_SHA256", digest(candidate))
-    monkeypatch.setattr(audit_policy_recovery, "INTENT_SHA256", intent.sha256)
+    monkeypatch.setattr(audit_policy_recovery, "INTENT_SHA256", trigger.sha256)
     plan = event(
         "heartbeat",
         intent.run_id,
@@ -429,7 +437,7 @@ def test_audit_restoration_must_follow_latest_issuer_fence(
             "format": audit_policy_recovery.FORMAT,
             "candidate": candidate,
             "helper_revision": intent.helper_revision,
-            "intent_sha256": intent.sha256,
+            "intent_sha256": trigger.sha256,
             "grant_before": stamp(start + audit_policy_recovery.GRANT_WINDOW),
             "restore_after": stamp(start + audit_policy_recovery.RESTORE_WINDOW),
         },
@@ -466,6 +474,26 @@ def test_audit_restoration_must_follow_latest_issuer_fence(
             },
         ),
     ]
+    records.extend(
+        [
+            event("intent", trigger.run_id, trigger.document()),
+            event(
+                "created",
+                trigger.run_id,
+                {"intent_sha256": trigger.sha256, "credential_id": "synthetic-trigger-key"},
+            ),
+            event(
+                "resolved",
+                trigger.run_id,
+                {
+                    "intent_sha256": trigger.sha256,
+                    "credential_id": "synthetic-trigger-key",
+                    "provider_readback": "absent",
+                    "negative_authentication": "unavailable",
+                },
+            ),
+        ]
+    )
     case.mapping.update(
         records={str(row["event_id"]): digest(row) for row in records},
         obligations={
@@ -473,7 +501,12 @@ def test_audit_restoration_must_follow_latest_issuer_fence(
                 "generation_id": case.config.active_generation,
                 "provider_id": credential.identifier,
                 "original_status": "verified",
-            }
+            },
+            trigger.sha256: {
+                "generation_id": case.config.active_generation,
+                "provider_id": "synthetic-trigger-key",
+                "original_status": "verified",
+            },
         },
         issuers=[
             {

@@ -15,6 +15,7 @@ from scripts.m3_11_unattended.connect_api import Connect, Response
 from scripts.m3_11_unattended.inventory import (
     ConnectInventory,
     LocalInventory,
+    _collect,
     fact,
     require_confirmation,
 )
@@ -268,6 +269,44 @@ def confirmation(selected: LeaseManifest) -> dict[str, object]:
             "cleanup_access_expires_at": stamp(NOW + timedelta(days=30)),
         },
     )
+
+
+def test_independent_observations_with_distinct_provenance_are_one_confirmation() -> None:
+    selected = manifest()
+    first = confirmation(selected)
+    second = deepcopy(first)
+    payload = second["payload"]
+    assert isinstance(payload, dict)
+    payload.update(observed_at=stamp(NOW + timedelta(seconds=1)), github_run_id=12346)
+    original = deepcopy([first, second])
+    manifest_fact = fact(selected, "manifest", selected.document())
+    for records in ([first, second, manifest_fact], [manifest_fact, second, first]):
+        result = _collect(records)
+        assert [row for row in result if row["slot"] == "confirmed"] == [first]
+    assert [first, second] == original
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("observed_at", "2026-10-09T00:00:00Z"),
+        ("github_run_id", 0),
+        ("cleanup_access_expires_at", "2026-10-11T00:00:00Z"),
+        ("helper_revision", "f" * 40),
+        ("independent_server_id", "t" * 26),
+    ],
+)
+def test_equivalence_cannot_hide_an_invalid_or_conflicting_observation(
+    field: str, value: object
+) -> None:
+    selected = manifest()
+    first = confirmation(selected)
+    second = deepcopy(first)
+    payload = second["payload"]
+    assert isinstance(payload, dict)
+    payload[field] = value
+    with pytest.raises(LifecycleError):
+        _collect([fact(selected, "manifest", selected.document()), first, second])
 
 
 def test_local_manifest_visibility_is_not_independent_confirmation(tmp_path: Path) -> None:

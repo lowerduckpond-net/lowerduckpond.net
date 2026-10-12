@@ -1,5 +1,5 @@
 {
-  "format": "lowerduckpond-m3-11-operator-inputs-v2",
+  "format": "lowerduckpond-m3-11-operator-inputs-v3",
   "purpose": "initial-legacy-migration",
   "onepassword_account_id": "<normal-account UUID from operator account metadata>",
   "targets": {
@@ -66,7 +66,7 @@
     "provision": {
       "references": {
         "digitalocean": "op://vvvvvvvvvvvvvvvvvvvvvvvvvv/<new-provider-item-id>/password",
-        "digitalocean_metadata": "op://vvvvvvvvvvvvvvvvvvvvvvvvvv/<new-attestation-item-id>/notesPlain",
+        "digitalocean_metadata": "op://vvvvvvvvvvvvvvvvvvvvvvvvvv/<new-provider-item-id>/digitalocean_metadata",
         "cloudflare_account": "op://vvvvvvvvvvvvvvvvvvvvvvvvvv/<new-account-token-item-id>/password",
         "cloudflare_user": "op://vvvvvvvvvvvvvvvvvvvvvvvvvv/<new-user-token-item-id>/password"
       },
@@ -78,8 +78,6 @@
       "digitalocean_observation": {
         "generation_id": "<same approved generation UUIDv7 as this setup>",
         "token_reference": "op://vvvvvvvvvvvvvvvvvvvvvvvvvv/<new-provider-item-id>/password",
-        "token_sha256": "<independently recorded SHA-256 of the exact token whose console policy was observed>",
-        "token_created_at": "<original token creation UTC timestamp; must precede or equal the observation>",
         "principal": "<confirmed DigitalOcean team/principal identity>",
         "scopes": [
           "actions:read",
@@ -90,15 +88,23 @@
           "spaces_key:delete",
           "spaces_key:read"
         ],
-        "observed_at": "<actual console observation UTC timestamp>",
         "attested_by": "<operator identity>",
-        "principal_context": "<supporting provider team context>"
+        "principal_context": "<supporting provider team context>",
+        "receipt_evidence": {
+          "basis": "operator-confirmed-replacement",
+          "created_no_later_than": "<actual creation receipt upper bound in UTC>",
+          "creation_receipt": "<immutable source receipt identifier>",
+          "scope_confirmation_received_at": "<actual confirmation receipt UTC timestamp>",
+          "scope_receipt": "<immutable scope confirmation identifier>",
+          "replacement_reference": "op://vvvvvvvvvvvvvvvvvvvvvvvvvv/<new-provider-item-id>/password",
+          "confirmation_applies_to_replacement": "<explicitly confirmed boolean>"
+        }
       }
     },
     "cleanup": {
       "references": {
         "digitalocean": "op://cccccccccccccccccccccccccc/<new-provider-item-id>/password",
-        "digitalocean_metadata": "op://cccccccccccccccccccccccccc/<new-attestation-item-id>/notesPlain",
+        "digitalocean_metadata": "op://cccccccccccccccccccccccccc/<new-provider-item-id>/digitalocean_metadata",
         "cloudflare_account": "op://cccccccccccccccccccccccccc/<new-account-token-item-id>/password",
         "cloudflare_user": "op://cccccccccccccccccccccccccc/<new-user-token-item-id>/password"
       },
@@ -110,8 +116,6 @@
       "digitalocean_observation": {
         "generation_id": "<same approved generation UUIDv7 as this setup>",
         "token_reference": "op://cccccccccccccccccccccccccc/<new-provider-item-id>/password",
-        "token_sha256": "<independently recorded SHA-256 of the exact token whose console policy was observed>",
-        "token_created_at": "<original token creation UTC timestamp; must precede or equal the observation>",
         "principal": "<confirmed DigitalOcean team/principal identity>",
         "scopes": [
           "actions:read",
@@ -121,9 +125,17 @@
           "spaces_key:delete",
           "spaces_key:read"
         ],
-        "observed_at": "<actual console observation UTC timestamp>",
         "attested_by": "<operator identity>",
-        "principal_context": "<supporting provider team context>"
+        "principal_context": "<supporting provider team context>",
+        "receipt_evidence": {
+          "basis": "operator-confirmed-replacement",
+          "created_no_later_than": "<actual creation receipt upper bound in UTC>",
+          "creation_receipt": "<immutable source receipt identifier>",
+          "scope_confirmation_received_at": "<actual confirmation receipt UTC timestamp>",
+          "scope_receipt": "<immutable scope confirmation identifier>",
+          "replacement_reference": "op://cccccccccccccccccccccccccc/<new-provider-item-id>/password",
+          "confirmation_applies_to_replacement": "<explicitly confirmed boolean>"
+        }
       }
     }
   },
@@ -133,5 +145,6 @@
     "OPENTOFU_STATE_ACCESS_KEY_ID": "op://pppppppppppppppppppppppppp/<existing-item-id>/<existing-field-id>",
     "OPENTOFU_STATE_SECRET_ACCESS_KEY": "op://pppppppppppppppppppppppppp/<existing-item-id>/<existing-field-id>",
     "OPENTOFU_STATE_BUCKET": "op://pppppppppppppppppppppppppp/<existing-item-id>/<existing-field-id>"
-  }
+  },
+  "runtime_revision": "<one reviewed full 40-character runtime/source commit>"
 }

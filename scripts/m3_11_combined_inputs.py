@@ -6,8 +6,12 @@ import argparse
 import hashlib
 import os
 import secrets
+import shutil
+import signal
 import stat
+import subprocess
 import sys
+import time
 import uuid
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
@@ -17,15 +21,19 @@ import yaml  # type: ignore[import-untyped]
 from lowerduckpond_m3_archive.report import ArchiveQualificationReport
 
 from scripts import m3_11_qualification_evidence as evidence
+from scripts import qualification_allocation as allocation
+from scripts import qualification_case
 from scripts import qualification_restore as owned
 from scripts.m3_11_backup_fixture import Target
 from scripts.m3_11_live_storage import LiveStorage
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_restore_reservation import reserve
+from scripts.m3_11_unattended.model import digest as object_digest
 from scripts.production_qualification_inputs import POLICY, candidate_inputs, revision
 from scripts.qualification_context import (
     ARTIFACT_ENV,
     HOST_ENV,
+    IMAGE_ENV,
     RESOURCE_ENV,
     RUN_ENV,
     resource_names,
@@ -72,13 +80,87 @@ def allocate(directory: Path, ambient: Mapping[str, str]) -> dict[str, str]:
     endpoint = _local(ambient)
     if any(key in ambient for key in (*RESOURCE_ENV, "MOLECULE_EPHEMERAL_DIRECTORY")):
         raise ValueError("combined qualification cannot inherit another fixture")
-    run_id = str(uuid.uuid7())
+    managed = allocation.managed(ambient)
+    run_id = str(managed[1]["fixture_run_id"]) if managed is not None else str(uuid.uuid7())
     environment = _environment(directory, run_id, endpoint)
     (directory / "fixture").mkdir(mode=0o700)
     write_private(
         directory / "fixture.json", {"format": FORMAT, "run_id": run_id, "environment": environment}
     )
     return {**ambient, **environment}
+
+
+def begin_create(directory: Path, repository: Path, ambient: Mapping[str, str]) -> None:
+    environment = environment_for(directory, ambient)
+    scenario = repository / "config/ansible/molecule/m3_8"
+    raw = yaml.safe_load((scenario / "molecule.yml").read_text())
+    allocation.begin(
+        environment,
+        {
+            "host": environment[IMAGE_ENV]
+            + ":"
+            + hashlib.sha256(
+                (scenario / "Dockerfile.j2").read_bytes() + (scenario / "molecule.yml").read_bytes()
+            ).hexdigest(),
+            "archive": str(raw["platforms"][1]["image"]),
+        },
+    )
+
+
+def execute_create(directory: Path, repository: Path, ambient: Mapping[str, str]) -> int:
+    from scripts import qualification_deadline as deadline  # noqa: PLC0415
+    from scripts.m3_11_unattended.worker import executing_group  # noqa: PLC0415
+    from scripts.qualification_storage_lease import FD_ENV  # noqa: PLC0415
+
+    environment = environment_for(directory, ambient)
+    uv = shutil.which("uv")
+    if uv is None:
+        raise ValueError("fixture allocation runtime is unavailable")
+    selected = allocation.managed(environment)
+    if selected is not None:
+        roles = evidence.fields(selected[1]["roles"], set(allocation.ROLES))
+        if any(
+            evidence.fields(
+                roles[role], {"state", "name", "image_input", "identity", "command_drained"}
+            )["state"]
+            != "begun-uncertain"
+            for role in ("host", "archive")
+        ):
+            raise ValueError("fixture allocation lacks its original pending submission")
+    # Exclusive durable creation precedes Popen. A lost launch/result must never
+    # let a subsequent invocation submit Molecule CREATE again.
+    write_private(
+        directory / "molecule-submission.json",
+        {
+            "format": "lowerduckpond-m3-11-molecule-submission-v1",
+            "allocation_sha256": object_digest(selected[1]) if selected is not None else None,
+            "fixture": read_private(directory / "fixture.json"),
+        },
+    )
+    with deadline.interrupts() as pending:
+        child = subprocess.Popen(  # noqa: S603 - fixed existing Molecule command
+            [uv, "run", "--frozen", "molecule", "create", "--scenario-name", "m3_8"],
+            cwd=repository / "config/ansible",
+            env=environment,
+            start_new_session=True,
+            pass_fds=(int(environment[FD_ENV]),) if FD_ENV in environment else (),
+        )
+        try:
+            status, reason = deadline._wait(
+                child, time.monotonic() + deadline.LIVE_SECONDS, pending
+            )
+        finally:
+            deadline._kill_group(child, signal.SIGKILL)
+            child.wait(timeout=deadline.GRACE_SECONDS)
+        if executing_group(child.pid) or reason != "command-exit":
+            raise ValueError("fixture allocation command completion is unresolved")
+        try:
+            qualification_case.record_created_containers(directory, environment, status)
+        except ValueError, OSError, RuntimeError:
+            if status == 0:
+                raise
+            print("Partial fixture allocation remains unresolved.", file=sys.stderr)
+        return status
 
 
 def environment_for(directory: Path, ambient: Mapping[str, str]) -> dict[str, str]:
@@ -235,7 +317,15 @@ def capture(directory: Path, repository: Path, ambient: Mapping[str, str]) -> di
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "action", choices=("allocate", "capture-public", "prepare-storage", "capture")
+        "action",
+        choices=(
+            "allocate",
+            "create-begin",
+            "create-command",
+            "capture-public",
+            "prepare-storage",
+            "capture",
+        ),
     )
     parser.add_argument("directory", type=Path)
     arguments = parser.parse_args()
@@ -252,6 +342,10 @@ def main() -> int:
         )
         for key, value in environment.items():
             sys.stdout.buffer.write(key.encode() + b"\0" + str(value).encode() + b"\0")
+    elif arguments.action == "create-begin":
+        begin_create(directory, repository, os.environ)
+    elif arguments.action == "create-command":
+        return execute_create(directory, repository, os.environ)
     elif arguments.action == "capture-public":
         from scripts.m3_11_public_inputs import capture as capture_public  # noqa: PLC0415
 

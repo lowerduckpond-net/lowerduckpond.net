@@ -28,6 +28,7 @@ from scripts.m3_11_unattended.docker import (
     prepare,
     require_current_watchdogs,
     source_volume,
+    utility,
 )
 from scripts.m3_11_unattended.model import (
     AuthorityGeneration,
@@ -47,6 +48,27 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
     prepared = fields(value["prepared"], approval.PREPARED)
     current_candidate(ROOT, source)
     configuration = LeaseConfiguration.load(config)
+    if (
+        len(
+            {
+                configuration.helper_revision,
+                str(prepared["helper_revision"]),
+                str(prepared["source_revision"]),
+                source,
+            }
+        )
+        != 1
+    ):
+        raise LifecycleError(
+            "runtime revision mismatch: configuration="
+            + configuration.helper_revision
+            + ", prepared helper="
+            + str(prepared["helper_revision"])
+            + ", prepared source="
+            + str(prepared["source_revision"])
+            + ", requested="
+            + source
+        )
     if (
         configuration.mode != "controller"
         or value["policy_sha256"] != configuration.approved_policy_sha256
@@ -101,7 +123,32 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
             ) and not historical_absence.retained_failure(
                 previous, progress, status.get("binding")
             ):
-                raise LifecycleError("an active attempt or unresolved revocation blocks new starts")
+                if not isinstance(status.get("binding"), dict) or retained:
+                    raise LifecycleError(
+                        "an active attempt or unresolved revocation blocks new starts"
+                    )
+                container = docker.owned(name)
+                projected = utility(
+                    docker,
+                    prepared=prepared,
+                    operation="admission",
+                    daemon_socket=daemon_socket,
+                    payload={
+                        "configuration": configuration.document(cleanup_only=True),
+                        "run_id": previous,
+                        "container_id": container["Id"],
+                    },
+                )
+                if (
+                    projected.get("run_id") != previous
+                    or projected.get("container_id") != container["Id"]
+                    or projected.get("mapping_sha256") != configuration.migration_sha256
+                    or projected.get("helper_revision") != source
+                    or projected.get("binding_sha256") != digest(status["binding"])
+                ):
+                    raise LifecycleError(
+                        "legacy admission projection differs from the original controller"
+                    )
         require_current_watchdogs(docker, source=source, image=image)
         run_id = str(uuid.uuid7())
         request = {

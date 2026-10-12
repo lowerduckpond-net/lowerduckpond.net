@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -25,6 +26,7 @@ from scripts.m3_11_unattended.lifecycle import LeaseLifecycle, Provider
 from scripts.m3_11_unattended.model import ROLES, LifecycleError, ProviderKind, digest, stamp
 from scripts.m3_11_unattended.state import RunState, cleanup_lock, replace_private
 
+from .operator_process_support import Child
 from .test_m3_11_lease_configuration import document
 from .test_m3_11_lease_inventory import TARGETS, LeaseCase
 from .test_m3_11_unattended_lifecycle import CANARY
@@ -520,3 +522,71 @@ def test_only_started_failed_attempt_may_retain_and_explicit_cancel_revokes(
     selected._terminal()
     assert all(not provider.items for provider in case.providers.values())
     assert selected.state.status()["qualification"] == "failed"
+
+
+@pytest.mark.parametrize(
+    "fault", ["missing-command", "log-open", "spawn", "bookkeeping", "monitor"]
+)
+def test_actual_journey_spawn_boundary_controls_retention_and_drains_before_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+
+    selected, case = subject(tmp_path, monkeypatch)
+    selected.state.begin(selected.binding)
+    case.confirm()
+    case.issue()
+    write_private(selected.directory / "runtime-inputs.json", {"private": CANARY})
+    selected.source.mkdir()
+    spawned: list[Child] = []
+    waited: list[int] = []
+
+    def spawn(*_args: object, **_kwargs: object) -> Child:
+        if fault == "spawn":
+            raise OSError("synthetic spawn failure")
+        child = Child(lambda _value: 1, status=1)
+        spawned.append(child)
+        return child
+
+    original_wait = Child.wait
+
+    def wait(child: Child, timeout: float | None = None) -> int:
+        waited.append(child.pid)
+        return original_wait(child, timeout)
+
+    original_write = write_private
+
+    def store(path: Path, value: dict[str, object]) -> None:
+        if path.name == "attempt-started.json" and fault == "bookkeeping":
+            raise OSError("synthetic post-spawn bookkeeping failure")
+        original_write(path, value)
+
+    def persist(path: Path, value: dict[str, object]) -> None:
+        if path.name == "status.json" and value.get("phase") == "running" and fault == "monitor":
+            raise OSError("synthetic progress storage failure")
+        replace_private(path, value)
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    monkeypatch.setattr(Child, "wait", wait)
+    monkeypatch.setattr(worker, "write_private", store)
+    monkeypatch.setattr("scripts.m3_11_unattended.state.replace_private", persist)
+    monkeypatch.setattr(
+        shutil, "which", lambda _name: None if fault == "missing-command" else "/synthetic/just"
+    )
+    if fault == "log-open":
+        (selected.directory / "controller.log").mkdir()
+    if fault == "monitor":
+        monkeypatch.setattr(Child, "poll", lambda _self: None)
+    with pytest.raises((OSError, LifecycleError)):
+        selected._journey({"DOCKER_HOST": "unix://" + SOCKET})
+    assert selected.attempt_started is bool(spawned)
+    assert bool(waited) is bool(spawned)
+    assert (selected.directory / "host-drained.json").exists() is bool(spawned)
+    selected.state.finish_journey("failed", 1)
+    # A successful spawn without its durable receipt still cannot retain.
+    selected._terminal()
+    if fault == "monitor":
+        assert selected.state.status()["credential_cleanup"] == "pending"
+        selected.state.cancel()
+        selected._terminal()
+    assert all(not provider.items for provider in case.providers.values())
+    assert selected.state.status()["credential_cleanup"] == "verified"

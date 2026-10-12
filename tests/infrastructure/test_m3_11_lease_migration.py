@@ -609,6 +609,14 @@ def test_audit_restoration_retry_persists_new_terminal_evidence(
         name=f"ldp-m311-{uuid.UUID(case.run_id).hex}-audit",
     )
     case.journal.persist(event("intent", intent.run_id, intent.document()))
+    trigger = dataclasses.replace(
+        original,
+        role="page-rules",
+        provider="cloudflare-user",
+        name=f"ldp-m311-{uuid.UUID(case.run_id).hex}-page-rules",
+    )
+    case.journal.persist(event("intent", trigger.run_id, trigger.document()))
+    monkeypatch.setattr(audit_policy_recovery, "RUN_ID", case.run_id)
     candidate: dict[str, object] = {
         "account_id": intent.targets.account_id,
         "authorized": False,
@@ -621,7 +629,7 @@ def test_audit_restoration_retry_persists_new_terminal_evidence(
         "scope": {},
     }
     monkeypatch.setattr(audit_policy_recovery, "CANDIDATE_SHA256", digest(candidate))
-    monkeypatch.setattr(audit_policy_recovery, "INTENT_SHA256", intent.sha256)
+    monkeypatch.setattr(audit_policy_recovery, "INTENT_SHA256", trigger.sha256)
     plan = event(
         "heartbeat",
         intent.run_id,
@@ -629,7 +637,7 @@ def test_audit_restoration_retry_persists_new_terminal_evidence(
             "format": audit_policy_recovery.FORMAT,
             "candidate": candidate,
             "helper_revision": intent.helper_revision,
-            "intent_sha256": intent.sha256,
+            "intent_sha256": trigger.sha256,
             "grant_before": stamp(case.now + audit_policy_recovery.GRANT_WINDOW),
             "restore_after": stamp(case.now + audit_policy_recovery.RESTORE_WINDOW),
         },

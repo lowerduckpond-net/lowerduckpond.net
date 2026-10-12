@@ -10,7 +10,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from scripts.m3_11_private_inputs import read_private
+from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes
 from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.connect_action import bootstrap
@@ -204,6 +204,27 @@ class Delivery:
         self.workspace_identity()
         self.github_protection()
 
+    def migration_utility(
+        self, *, prepared: object, operation: str, payload: dict[str, object], daemon_socket: str
+    ) -> dict[str, object]:
+        from scripts.m3_11_unattended.docker import (  # noqa: PLC0415
+            utility_arguments,
+            utility_result,
+        )
+
+        original = self.workspace_identity()
+        envelope = {
+            "format": "lowerduckpond-m3-11-daemon-utility-v1",
+            "operation": operation,
+            "prepared": prepared,
+            "payload": payload,
+        }
+        arguments = utility_arguments(prepared, operation=operation, daemon_socket=daemon_socket)
+        raw = self.ssh([*PARENT_DOCKER, *arguments], stdin=canonical_bytes(envelope))
+        if self.workspace_identity() != original:
+            raise LifecycleError("migration utility destination workspace changed")
+        return utility_result(raw, envelope)
+
     def install(self, output: Path) -> None:
         controller, cleanup = bundles(output)
         activation = read_private(output / "activation.json")
@@ -269,9 +290,59 @@ def main() -> int:
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--workspace-id", required=True)
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument(
+        "--operation", choices=("deliver", "inspect-import", "import"), default="deliver"
+    )
+    parser.add_argument("--prepared", type=Path)
+    parser.add_argument("--daemon-socket")
+    parser.add_argument("--historical-reader", type=Path)
+    parser.add_argument("--journal-vault")
+    parser.add_argument("--declarations", type=Path)
+    parser.add_argument("--approved-import", type=Path)
     args = parser.parse_args()
     try:
         delivery = Delivery(args.destination, args.workspace, args.workspace_id)
+        if args.operation != "deliver":
+            if args.prepared is None or args.daemon_socket is None:
+                parser.error(
+                    "migration operations need the exact prepared output and daemon socket"
+                )
+            if args.operation == "inspect-import":
+                if (
+                    args.historical_reader is None
+                    or args.journal_vault is None
+                    or args.declarations is None
+                ):
+                    parser.error(
+                        "inspection needs historical reader access, journal vault and declarations"
+                    )
+                payload = {
+                    "historical_reader": read_private(args.historical_reader),
+                    "journal_vault": args.journal_vault,
+                    "declarations": read_private(args.declarations),
+                }
+            else:
+                if not args.apply or args.approved_import is None:
+                    parser.error("import requires --apply and the exact approved mapping")
+                config = LeaseConfiguration.load(args.output / "controller-connect.json")
+                payload = {
+                    "configuration": config.document(cleanup_only=True),
+                    "mapping": read_private(args.approved_import),
+                }
+            observed = delivery.migration_utility(
+                prepared=read_private(args.prepared),
+                operation=args.operation,
+                payload=payload,
+                daemon_socket=args.daemon_socket,
+            )
+            if args.operation == "inspect-import":
+                write_private(args.output, observed)
+            else:
+                from scripts.m3_11_unattended.connect_activate import retain  # noqa: PLC0415
+
+                retain(args.output / "host-import.json", observed)
+            print("Daemon migration evidence verified and retained.")
+            return 0
         bundles(args.output)
         delivery.preflight()
         if args.apply:

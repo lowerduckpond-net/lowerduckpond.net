@@ -13,6 +13,21 @@ FORMAT = "lowerduckpond-m3-11-live-approval-v2"
 PREPARED = {"source_revision", "helper_revision", "controller_image", "artifact_sha256", "daemon"}
 
 
+def preparation(value: object) -> dict[str, object]:
+    prepared = fields(value, PREPARED)
+    revision(prepared["source_revision"])
+    revision(prepared["helper_revision"])
+    sha256(prepared["artifact_sha256"])
+    image = prepared["controller_image"]
+    if not isinstance(image, str) or not image.startswith("sha256:"):
+        raise LifecycleError("approval controller image is invalid")
+    sha256(image.removeprefix("sha256:"))
+    daemon = fields(prepared["daemon"], {"ID", "Name", "DockerRootDir", "ServerVersion"})
+    if any(not isinstance(item, str) or not item for item in daemon.values()):
+        raise LifecycleError("approval Docker host identity is incomplete")
+    return prepared
+
+
 def validate(value: object, *, mode: str, now: datetime) -> dict[str, object]:
     approved = fields(
         value,
@@ -32,18 +47,8 @@ def validate(value: object, *, mode: str, now: datetime) -> dict[str, object]:
     sha256(approved["policy_sha256"])
     if approved["lease_id"] is not None:
         identity(approved["lease_id"])
-    prepared = fields(approved["prepared"], PREPARED)
-    revision(prepared["source_revision"])
-    revision(prepared["helper_revision"])
-    sha256(prepared["artifact_sha256"])
+    preparation(approved["prepared"])
     sha256(approved["qualification_inputs_sha256"])
-    image = prepared["controller_image"]
-    if not isinstance(image, str) or not image.startswith("sha256:"):
-        raise LifecycleError("approval controller image is invalid")
-    sha256(image.removeprefix("sha256:"))
-    daemon = fields(prepared["daemon"], {"ID", "Name", "DockerRootDir", "ServerVersion"})
-    if any(not isinstance(item, str) or not item for item in daemon.values()):
-        raise LifecycleError("approval Docker host identity is incomplete")
     Targets.parse(approved["targets"])
     modes = approved["modes"]
     reference = approved["approval_reference"]
