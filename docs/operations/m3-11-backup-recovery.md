@@ -236,14 +236,32 @@ cache, which returned `404` after deletion. The probe's items were absent from
 active inventory and its owned cache was removed. Original shared-cache state and
 private evidence were preserved. No genuine response captures are committed.
 
-These observations corroborate the ACL correction; they demonstrated no additional
-application defect. They do not exercise the application's `SECURE_NOTE` journal
-payload, stricter publisher template checks, or assembly/publication/import/
-confirmation route. PUT and DELETE establish vendor capabilities; application
-transport remains limited to GET and POST. Expiry/revocation enforcement and
-interrupted edit/POST recovery, including lost replies and 429/5xx/truncation,
-remain untested on real services. The direct cycle does not qualify the application
-or authorize production cutover.
+A supplemental cycle completed at 22:26:13 UTC using the application's
+`SECURE_NOTE`/`notesPlain` field structure with dummy ownership tags and content.
+Create/get/list/update returned `200`, canonical note content survived the actual
+note reader, versions advanced from 1 to 2, and delete returned `204` followed by
+GET `404`. The list entry omitted full fields. A PUT carrying the earlier version
+also returned `200` and its value became visible; that operation did not enforce
+CAS. Application transport remains limited to GET and POST, and native publication
+still requires the exclusive editing interval described above.
+
+The supplemental native edit preserved the actual publisher's complete protected
+comparison, but its strict parser rejected `password_details`. A read-only
+diagnostic of the retained before/after responses identified exactly an object
+containing `strength` as a string; no values were shared. The adapter now permits
+that optional shape only on concealed password fields, carries it unchanged in
+the full JSON template, and retains it in the protected comparison. Additional
+keys or different types remain unsupported. The provenance records the official
+template guidance, a vendor employee's example, and the limits of the available
+schema documentation. The regression fixture's strength value is synthetic.
+
+The corrected parser can be replayed offline against those retained responses;
+no additional live edit is needed for that check. These observations still do not
+exercise the full assembly/publication/import/confirmation route. Expiry/revocation
+enforcement and interrupted edit/POST recovery, including lost replies and
+429/5xx/truncation, remain untested on real services. Neither cycle qualifies the
+application or authorizes production cutover. Both probes' owned items were removed
+from active inventory; the supplemental cycle created no cache resources.
 
 Continue application compatibility from the retained failed assembly after review
 of its exact runtime and proposal bindings. Preserve the original inputs, receipts,

@@ -48,7 +48,7 @@ ITEM_KEYS = {
     "last_edited_by",
     "additional_information",
 }
-FIELD_KEYS = {"id", "type", "purpose", "label", "value", "section", "reference"}
+FIELD_KEYS = {"id", "type", "purpose", "label", "value", "section", "reference", "password_details"}
 MAINTAINED = {"version", "created_at", "updated_at", "last_edited_by", "additional_information"}
 
 
@@ -180,6 +180,18 @@ def item(raw: bytes, destination: dict[str, object]) -> tuple[dict[str, object],
                 for key in ("value", "label", "reference")
             )
             or ("purpose" in row and row["purpose"] not in {"USERNAME", "PASSWORD", "NOTES"})
+            or (
+                "password_details" in row
+                and (
+                    # CLI 2.33.0 observed shape, not a general metadata schema.
+                    # Carry it unchanged and retain it in protected() below.
+                    row.get("type") != "CONCEALED"
+                    or row.get("purpose") != "PASSWORD"
+                    or not isinstance(row["password_details"], dict)
+                    or set(row["password_details"]) != {"strength"}
+                    or not isinstance(row["password_details"]["strength"], str)
+                )
+            )
             or (
                 "section" in row
                 and (

@@ -13,7 +13,7 @@
   },
   "response_fixture_provenance": "synthetic-only",
   "genuine_response_captures": [],
-  "native_contract_status": "An operator-reported allowlisted diagnostic paired op 2.33.0 native allow_viewing with signed grant 48, and allow_viewing plus allow_editing with signed grant 1008. A later user-run direct vendor cycle observed acceptance of these clients and the bounded behaviors below. Native JSON shapes and the numeric Connect JWT encoding remain observed compatibility dependencies, not stable vendor schema guarantees.",
+  "native_contract_status": "Operator-reported allowlisted diagnostics establish the observed 48/1008 native/signed grant mapping and the CLI 2.33.0 password_details object containing only strength:string. Direct vendor cycles corroborate the bounded behaviors below. Full native response schemas and numeric Connect JWT encoding are not stable vendor schema guarantees.",
   "native_acl_contract": {
     "reported_at": "2026-10-12T20:58:43Z",
     "evidence_kind": "operator-reported allowlisted grant diagnostic; no raw response or credential committed",
@@ -42,7 +42,7 @@
     ],
     "interpretation": "Connect WRITE includes item deletion. The old synthetic value 496 omitted DeleteItems (512); it is not equivalent to 1008 and is rejected. Exact 48/1008 acceptance is an observed compatibility contract corroborated by vendor capabilities and SDK bit definitions, not a published stable JWT schema."
   },
-  "live_verification_status": "The 2026-10-12 direct vendor observation completed with no reported findings and corroborates the exact 48/1008 ACL correction. No additional application defect was demonstrated. End-to-end application compatibility remains incomplete; the original failed assembly and its revision/proposal-bound state have not been resumed.",
+  "live_verification_status": "Direct vendor cycles corroborated the ACL correction and exposed an additional publisher rejection of observed password_details metadata. The parser now accepts only the observed strength:string shape while retaining complete protection. Secure Note fields and canonical content round-tripped, but full application orchestration, fault recovery and expiry enforcement remain unverified. Offline replay of retained publisher captures is prepared, not yet reported; the original failed assembly has not been resumed.",
   "direct_vendor_observation": {
     "observed_at": "2026-10-12T21:51:37.881604Z",
     "evidence_kind": "operator-returned allowlisted report from a direct user-run cycle; raw responses and credentials remain private",
@@ -122,6 +122,73 @@
       "PUT and DELETE establish vendor write capabilities; the application transport remains intentionally limited to GET and POST.",
       "No application assembly, publisher, journal import/recovery, activation or confirmation path was run; no lost reply, 429, 5xx or truncated response was injected.",
       "Probe cleanup does not imply permanent deletion, original shared-cache removal, qualification success or production acceptance."
+    ]
+  },
+  "native_password_details_contract": {
+    "reported_at": "2026-10-12T23:46:39Z",
+    "evidence_kind": "operator-returned property-name/type diagnostic of retained native before/after responses; no values shared",
+    "observed_shape": {
+      "password_details": {
+        "strength": "string"
+      }
+    },
+    "fixture": "cli-password-details.json",
+    "fixture_values": "The strength text is synthetic. Only the literal property names and JSON types came from the retained-response diagnostic.",
+    "accepted_scope": "Optional metadata on a CONCEALED field with purpose PASSWORD, containing exactly strength:string; all other nested keys and types remain unsupported.",
+    "handling": "Carry the complete observed metadata through the existing full-item JSON edit and retain it in protected comparison. Do not normalize, remove it or exempt it as server-maintained metadata.",
+    "vendor_sources": [
+      "https://www.1password.dev/cli/item-template-json",
+      "https://www.1password.dev/cli/reference/management-commands/item#edit-an-item-using-a-template",
+      "https://www.1password.community/developers-69/setting-default-section-title-11458"
+    ],
+    "source_limits": "The official CLI template guide does not define a complete password_details schema or its write/read-only semantics. A 1Password employee example includes strength on a CONCEALED/PASSWORD field; official CLI instructions support editing full item JSON. The real retained before/after protected comparison, not a general writable-metadata guarantee, supports preserving the observed field unchanged. No enum is inferred from the undisclosed strength value."
+  },
+  "supplemental_vendor_observation": {
+    "observed_at": "2026-10-12T22:26:13.933577Z",
+    "evidence_kind": "operator-returned allowlisted report from a direct user-run supplemental cycle; raw responses remain private",
+    "probe_archive_sha256": "c5331bb8728a67fd88daedcb5aa83d8c9829725aac401ef0773a846b3fdc0192",
+    "cli_version": "2.33.0",
+    "secure_note": {
+      "create_get_list_update_status": 200,
+      "version_before": 1,
+      "version_after": 2,
+      "category": "SECURE_NOTE",
+      "state_absent_or_null": true,
+      "notes_plain_field_count": 1,
+      "field_type": "STRING",
+      "field_purpose": "NOTES",
+      "field_label": "notesPlain",
+      "field_section_absent_or_null": true,
+      "actual_note_reader_exact_content_before_and_after": true,
+      "canonical_json_preserved_before_and_after": true,
+      "list_entry_category": "SECURE_NOTE",
+      "list_entry_version": 1,
+      "list_entry_fields_present": false,
+      "prior_version_put_status": 200,
+      "prior_version_new_value_observed": true,
+      "delete_status": 204,
+      "get_after_delete_status": 404,
+      "list_after_delete_status": 200
+    },
+    "publisher": {
+      "source_sha256": "7672a53fa517f010fd0a1b723529ffe2ae850efc285c48c5b20e16e90d8edc43",
+      "before_and_after_item_parser_accepted": false,
+      "before_and_after_unknown_top_level_key_count": 0,
+      "before_and_after_unknown_field_key_count": 1,
+      "actual_full_protected_comparison_equal": true,
+      "metadata_visible_in_connect": true,
+      "version_before": 1,
+      "version_after": 2,
+      "finding": "The closed field-key parser rejected password_details; target-match results were false because parsing failed, not because field value readback differed."
+    },
+    "probe_owned_items_absent": true,
+    "cache_resources_created": 0,
+    "transport_errors_observed": false,
+    "limits": [
+      "The Secure Note envelope uses the application notesPlain structure, with dummy ownership title/tag/content. It does not create a lease or qualify journal orchestration.",
+      "The prior-version Connect PUT was accepted, so that observed operation did not enforce CAS. Application transport is GET/POST only; native publication already requires an exclusive editing interval, and its double-read version check is not atomic.",
+      "Native parser rejection and protected comparison are direct calls on real retained before/after documents; the complete publisher workflow and recovery were not exercised.",
+      "No forced transport faults, real expiry/revocation enforcement, independent manifest confirmation or qualification was performed."
     ]
   }
 }
