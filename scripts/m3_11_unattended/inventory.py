@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 from copy import deepcopy
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from pathlib import Path
 from typing import Protocol
@@ -178,7 +178,9 @@ def title(record: dict[str, object]) -> str:
     return PREFIX + str(record["lease_id"]) + "-" + str(record["slot"])
 
 
-def confirmation_binding(record: dict[str, object], manifest: LeaseManifest) -> None:
+def confirmation_binding(
+    record: dict[str, object], manifest: LeaseManifest, *, now: datetime
+) -> None:
     """Validate every observation before any equivalent provenance is reduced."""
     value = record["payload"]
     if (
@@ -187,6 +189,7 @@ def confirmation_binding(record: dict[str, object], manifest: LeaseManifest) -> 
         or not isinstance(value, dict)
         or value["helper_revision"] != manifest.helper_revision
         or instant(value["observed_at"]) < instant(manifest.created_at)
+        or instant(value["observed_at"]) > now
         or instant(value["cleanup_access_expires_at"])
         < manifest.policy.deadline(instant(manifest.created_at))
         + timedelta(seconds=manifest.policy.cleanup_reserve_seconds)
@@ -225,6 +228,7 @@ def _collect(records: list[dict[str, object]]) -> list[dict[str, object]]:
     if len(records) > MAX_ITEMS:
         raise LifecycleError("lease inventory exceeds its bound")
     validated = [validate(raw) for raw in records]
+    now = datetime.now(UTC)
     manifests: dict[str, LeaseManifest] = {}
     for record in validated:
         if record["slot"] == "manifest":
@@ -238,7 +242,7 @@ def _collect(records: list[dict[str, object]]) -> list[dict[str, object]]:
             bound_manifest = manifests.get(str(record["lease_id"]))
             if bound_manifest is None:
                 raise LifecycleError("complete lease manifest is not visible")
-            confirmation_binding(record, bound_manifest)
+            confirmation_binding(record, bound_manifest, now=now)
         key = title(record)
         if key in selected and selected[key] != record:
             if record["slot"] != "confirmed" or confirmation_identity(
@@ -390,17 +394,9 @@ def require_confirmation(
     if len(matches) != 1:
         raise LifecycleError("independent manifest confirmation is unavailable")
     selected = matches[0]
+    confirmation_binding(selected, manifest, now=datetime.now(UTC))
     value = selected["payload"]
-    if (
-        selected["manifest_sha256"] != manifest.sha256
-        or not isinstance(value, dict)
-        or value["helper_revision"] != manifest.helper_revision
-        or value["independent_server_id"] != independent_server_id
-        or instant(value["observed_at"]) < instant(manifest.created_at)
-        or instant(value["cleanup_access_expires_at"])
-        < manifest.policy.deadline(instant(manifest.created_at))
-        + timedelta(seconds=manifest.policy.cleanup_reserve_seconds)
-    ):
+    if not isinstance(value, dict) or value["independent_server_id"] != independent_server_id:
         raise LifecycleError("independent manifest confirmation has the wrong binding")
 
 

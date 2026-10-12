@@ -39,6 +39,7 @@ class Services:
         self.edits: list[dict[str, object]] = []
         self.exchanges: list[dict[str, object]] = []
         self.items: dict[tuple[str, str], dict[str, object]] = {}
+        self.head = SOURCE
         self.dirty = False
         self.unknown_source = False
         self.hide_metadata = False
@@ -106,7 +107,7 @@ class Services:
 
     def git(self, arguments: list[str]) -> bytes:  # noqa: PLR0911 - explicit external protocol branches
         if arguments == ["rev-parse", "HEAD"]:
-            return SOURCE.encode()
+            return self.head.encode()
         if arguments == ["rev-parse", "--is-shallow-repository"]:
             return b"false"
         if arguments[:2] == ["status", "--porcelain"]:

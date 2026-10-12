@@ -26,8 +26,9 @@ from scripts.m3_11_qualification_evidence import canonical_bytes, fields
 from scripts.m3_11_unattended.config import LeaseConfiguration, validate_digitalocean_metadata
 from scripts.m3_11_unattended.connect_setup import Operator
 from scripts.m3_11_unattended.model import LifecycleError, digest, fingerprint, strings
-from scripts.m3_11_unattended.operator_assemble import decode, reference
+from scripts.m3_11_unattended.operator_assemble import ROOT, decode, reference
 from scripts.m3_11_unattended.state import private_directory
+from scripts.production_qualification_inputs import current_candidate
 
 FORMAT = "lowerduckpond-m3-11-attestation-publication-v1"
 CLI_VERSION = "2.33.0"
@@ -65,6 +66,7 @@ def staged(
     ):
         raise LifecycleError("publication differs from reviewed assembly")
     config = LeaseConfiguration.load(controller)
+    current_candidate(ROOT, config.helper_revision)
     destinations = {}
     for role, raw in fields(inputs["providers"], {"provision", "cleanup"}).items():
         selected = fields(raw, {"references", "expires_at", "digitalocean_observation"})
@@ -194,6 +196,9 @@ def item(raw: bytes, destination: dict[str, object]) -> tuple[dict[str, object],
             password.append(row)
         if destination["label"] in {row.get("id"), row.get("label")}:
             target.append(row)
+    # This Password field contains a provider-issued API token. Its SHA-256
+    # fingerprint binds the attestation to those exact bytes; it is not a stored
+    # verifier for a human-chosen password or a replacement for vault encryption.
     if (
         len(password) != 1
         or password[0].get("section") is not None
@@ -338,8 +343,6 @@ def run(  # noqa: PLR0913 - explicit assembly, state, proposal and application b
     if expected_proposal is None or fingerprint(expected_proposal) != digest(proposal):
         raise LifecycleError("publication requires the exact reviewed proposal digest")
     private_directory(state.parent)
-    from scripts.m3_11_unattended.operator_assemble import ROOT  # noqa: PLC0415
-
     if state.resolve().is_relative_to(ROOT):
         raise LifecycleError("publication state must remain outside the source checkout")
     state.mkdir(mode=0o700, exist_ok=True)

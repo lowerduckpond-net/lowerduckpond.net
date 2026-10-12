@@ -17,6 +17,35 @@ from .operator_flow_support import Services
 from .test_m3_11_lease_configuration import mapping
 
 
+@pytest.mark.parametrize("apply", [False, True])
+@pytest.mark.parametrize("fault", ["dirty", "different-head"])
+def test_publication_requires_the_approved_clean_checkout_before_any_native_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, apply: bool, fault: str
+) -> None:
+    services = Services(monkeypatch)
+    manifest, staged, expected = services.stage(tmp_path)
+    state = tmp_path / "publication"
+    proposal = publisher.run(
+        manifest=manifest, directory=staged, expected=expected, state=state, apply=False
+    )
+    original = deepcopy(services.items)
+    calls = len(services.calls)
+    services.dirty = fault == "dirty"
+    if fault == "different-head":
+        services.head = "f" * 40
+    with pytest.raises(ValueError, match="clean, complete candidate checkout"):
+        publisher.run(
+            manifest=manifest,
+            directory=staged,
+            expected=expected,
+            state=state,
+            apply=apply,
+            expected_proposal=digest(proposal),
+        )
+    assert all(Path(call[0]).name == "git" for call in services.calls[calls:])
+    assert not state.exists() and not services.edits and services.items == original
+
+
 def test_publication_preserves_full_items_and_exact_runtime_readback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -28,7 +57,8 @@ def test_publication_preserves_full_items_and_exact_runtime_readback(
     proposal = publisher.run(
         manifest=manifest, directory=staged, expected=expected, state=state, apply=False
     )
-    assert len(services.calls) == before and not state.exists()
+    assert all(Path(call[0]).name == "git" for call in services.calls[before:])
+    assert not state.exists()
     for _ in range(2):
         assert (
             publisher.run(
@@ -253,4 +283,4 @@ def test_publication_cannot_adopt_attestation_provenance_changed_after_assembly(
             state=tmp_path / "publication",
             apply=False,
         )
-    assert len(services.calls) == calls
+    assert all(Path(call[0]).name == "git" for call in services.calls[calls:])

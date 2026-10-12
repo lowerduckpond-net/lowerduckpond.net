@@ -41,9 +41,10 @@ class Cloud:
             "Zone Read",
             "Page Rules Read",
         )
+        # Deterministic synthetic IDs retain the provider's 32-hex-character shape.
         self.groups = [
             {
-                "id": hashlib.md5(name.encode(), usedforsecurity=False).hexdigest(),
+                "id": hashlib.sha256(name.encode()).hexdigest()[:32],
                 "name": name,
                 "scopes": [
                     "com.cloudflare.api.user"
@@ -63,7 +64,7 @@ class Cloud:
                 cast(list[dict[str, object]], services.items[vault, item]["fields"]).append(
                     {"id": field, "label": field, "type": "CONCEALED", "value": secret}
                 )
-                selected = hashlib.md5(secret.encode(), usedforsecurity=False).hexdigest()
+                selected = hashlib.sha256(secret.encode()).hexdigest()[:32]
                 self.secret_ids[secret] = selected
                 user = role.endswith("user")
                 group = next(
@@ -97,7 +98,7 @@ class Cloud:
         monkeypatch.setattr(spaces, "create_client", self.s3)
         monkeypatch.setattr("scripts.m3_11_backup_fixture.create_client", self.s3)
         self.production_secret = "SYNTHETIC-PRODUCTION-CADDY-SECRET-ONLY"  # noqa: S105 - synthetic test value only
-        selected = hashlib.md5(self.production_secret.encode(), usedforsecurity=False).hexdigest()
+        selected = hashlib.sha256(self.production_secret.encode()).hexdigest()[:32]
         self.secret_ids[self.production_secret] = selected
         self.tokens[selected] = {
             "id": selected,
