@@ -93,6 +93,9 @@ def owned_containers(environment: dict[str, str], *, allow_missing: bool = False
 def record_created_containers(
     directory: Path, environment: dict[str, str], status: int
 ) -> dict[str, str]:
+    from scripts import qualification_allocation as allocation  # noqa: PLC0415
+
+    allocation.complete(environment, ("host", "archive"))
     private_document(directory, "case-create.json", {"exit_status": status})
     identities = owned_containers(environment, allow_missing=True)
     private_document(directory, "case-containers.json", identities)

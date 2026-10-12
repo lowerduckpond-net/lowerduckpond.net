@@ -95,6 +95,137 @@ files. Only the second contains the independent native server credentials; it ha
 no provisioning or production reader. Retrying identical staging preserves bytes;
 changed inputs require a new private staging directory.
 
+### Initial operator assembly from receipts
+
+For the initial migration, use the [operator input example](m3-11-operator-inputs.example.json)
+and the local `operator_records`, `operator_assemble` and `operator_publish` entrypoints.
+Keep all inputs, proposals, consent records, staging and pending state outside the
+checkout in private directories. Placeholders are deliberately invalid; the tools
+never supply human decisions, identities or times. Normal-account `op` reads must
+use the explicitly selected account with service-account/Connect environment
+variables removed.
+
+Operator v2 still means an exact, independently recorded token fingerprint and
+exact console observation/creation times, with its historical helper pin. V3 means
+an operator-confirmed replacement at the exact Password reference, supported by
+original receipt identifiers and truthful creation/confirmation upper bounds.
+Only include optional exact times or a historical fingerprint when actually
+recorded. Assembly reads that Password once, computes its current fingerprint,
+and binds a new attestation to the original receipt basis, generation and assembly
+time. This does not turn a receipt timestamp into a console observation.
+
+Choose one reviewed full `runtime_revision`. It must be the clean, non-shallow
+checkout HEAD and the prepared source/helper, independent bundle and live approval
+revision. Prepare this helper before collecting host evidence. Preparation itself
+uses the existing authorized Docker-host route:
+
+```console
+mise exec -- just m3-11-unattended prepare FULL_COMMIT_SHA --output /private/prepared.json
+uv run --frozen python -m scripts.m3_11_unattended.connect_delivery \
+  --operation inspect-import --prepared /private/prepared.json \
+  --daemon-socket /var/run/docker.sock --historical-reader /private/historical-reader.json \
+  --journal-vault JOURNAL_VAULT_ID --declarations /private/legacy-declarations.json \
+  --destination coder@APPROVED_HOST --workspace APPROVED_WORKSPACE \
+  --workspace-id APPROVED_WORKSPACE_UUID --output /private/migration-evidence.json
+uv run --frozen python -m scripts.m3_11_unattended.operator_records policy-proposal \
+  --inputs /private/operator-draft.json --output /private/policy-proposal.json
+uv run --frozen python -m scripts.m3_11_unattended.operator_records migration-proposal \
+  --evidence-index /private/migration-evidence.json --output /private/migration-proposal.json
+```
+
+The declaration format is `lowerduckpond-m3-11-migration-declarations-v1`:
+`retained_files` lists canonical original host paths; `obligations` maps each intent
+digest to its declared `generation_id` and `original_status`; `expiry_updates`
+contains the original approved plans/results; `issuers` gives exact `container_id`,
+actual `stopped_at` and explicit `issuance_disabled: true`. The collector reads
+original files/events and current issuer state twice, refusing drift. It cannot
+stop or fence issuers. Historical reader access is supplied separately before the
+new configuration exists; retained secrets stay on the host.
+
+Review both proposals, then record each actual external consent. The expected
+proposal digest prevents drift; possession of it is not approval. `approved_at`
+and `approval_reference` must come from the decision being recorded.
+
+```console
+uv run --frozen python -m scripts.m3_11_unattended.operator_records record-policy \
+  --proposal /private/policy-proposal.json --expected-proposal-sha256 POLICY_PROPOSAL_SHA256 \
+  --approved-at APPROVED_UTC --approval-reference POLICY_CONSENT_REFERENCE \
+  --output /private/policy
+uv run --frozen python -m scripts.m3_11_unattended.operator_records record-migration \
+  --proposal /private/migration-proposal.json --expected-proposal-sha256 MIGRATION_PROPOSAL_SHA256 \
+  --approved-at APPROVED_UTC --approval-reference MIGRATION_CONSENT_REFERENCE \
+  --output /private/migration
+uv run --frozen python -m scripts.m3_11_unattended.operator_records bind-inputs \
+  --draft /private/operator-draft.json --policy /private/policy/policy.json \
+  --migration /private/migration/legacy-import.json --runtime-revision FULL_COMMIT_SHA \
+  --output /private/bound-inputs.json
+uv run --frozen python -m scripts.m3_11_unattended.operator_assemble check \
+  --manifest /private/bound-inputs.json
+uv run --frozen python -m scripts.m3_11_unattended.operator_assemble assemble \
+  --manifest /private/bound-inputs.json --server-credentials /private/independent-server.json \
+  --output /private/staged
+```
+
+`policy-proposal` extracts the five policy choices from the draft. Before binding,
+leave approval-derived `policy`, `approved_policy_sha256`, `migration_sha256` and
+`runtime_revision` absent or null, or supply their exact approved values; conflicting
+values are rejected. Retain the original policy draft separately when clearing
+these bindings. Record writers re-read and hash every indexed input, write immutable
+companions first and expose the consumable approval last. Identical complete
+records remain readable after expiry; partial or changed outputs cannot be adopted.
+Assembly only stages files and performs no publication or activation.
+
+Publication is a separate authorized operation. Each role's metadata reference is
+a `digitalocean_metadata` STRING field on its existing Password item. The publisher
+requires an exclusive editing interval for those two items: CLI edit has no
+conditional version/CAS guarantee. It reads the full item twice, preserves supported
+fields/sections/URLs/notes/tags, refuses unknown or conflicting content, writes the
+full template through private stdin, then checks exact native and Connect readback.
+Its private persistent state must survive interruption. A pending uncertain edit
+is never replayed; later exact visibility reconciles it. Keep unresolved state and
+stop for operator reconciliation if an external edit conflicts.
+
+```console
+uv run --frozen python -m scripts.m3_11_unattended.operator_publish publish-attestations \
+  --manifest /private/bound-inputs.json --staged /private/staged \
+  --expected-controller-sha256 REVIEWED_CONTROLLER_SHA256 --state /private/publication
+uv run --frozen python -m scripts.m3_11_unattended.operator_publish publish-attestations \
+  --manifest /private/bound-inputs.json --staged /private/staged \
+  --expected-controller-sha256 REVIEWED_CONTROLLER_SHA256 --state /private/publication \
+  --apply --expected-proposal-sha256 REVIEWED_PUBLICATION_SHA256
+uv run --frozen python -m scripts.m3_11_unattended.connect_delivery \
+  --operation import --output /private/staged --prepared /private/prepared.json \
+  --daemon-socket /var/run/docker.sock --approved-import /private/migration/legacy-import.json \
+  --destination coder@APPROVED_HOST --workspace APPROVED_WORKSPACE \
+  --workspace-id APPROVED_WORKSPACE_UUID --apply
+uv run --frozen python -m scripts.m3_11_unattended.connect_activate preflight \
+  --output /private/staged
+```
+
+The host import receives only cleanup configuration and the approved mapping.
+The exact prepared helper mounts original evidence read-only and uses a private,
+persistent mapping-bound pending directory in the existing cleanup volume. A lost
+POST cannot cause a second POST on restart. Activation remains on Studio, followed
+by the existing delivery command below; the independent server document is never
+sent to the controller host. Initial admission uses a read-only projection from
+that same helper to verify terminal legacy originals, retained hashes, issuer
+fencing, separate audit restoration and target-bound expiry outcomes. Stale local
+`unresolved` status is preserved; it is not rewritten into permission.
+
+Interface evidence is currently offline only: the vendored Connect 1.8.1 schema
+is an authoritative artifact; CLI and HTTP response examples are explicitly
+synthetic. The native publication adapter pins CLI 2.33.0; Connect image digests
+remain in `connect_host.py`. No genuine vendor response captures or live cache,
+JWT-signature, denied-access or full-template compatibility result is claimed.
+Before live publication/cutover, separately authorize the dummy-data compatibility
+exercise using disposable items and isolated clients on the existing test identities.
+Run the same proposal/record/bind/assembly/publication/import/confirmation route;
+retain native responses and versions, exact vault and denied-write checks, full-item
+preservation, cold independent-cache visibility, and interrupted edit/POST recovery
+with the original pending state. Use a local fault proxy for lost replies and
+429/5xx/truncation. Do not start qualification or create provider credentials for
+that compatibility exercise. Offline tests do not replace this outstanding check.
+
 ### Migration, activation and cleanup-only rollback
 
 Merging the implementation does not switch scheduled cleanup. The temporary
@@ -112,8 +243,8 @@ For `connect`, the separately approved replacement of the single
 `M3_11_CONNECT_BOOTSTRAP` secret with a validated
 `lowerduckpond-m3-11-independent-lease-bundle-v1` bundle is the explicit switch.
 That bundle selects its own helper and cleanup-only configuration; it does not
-reuse the old selection document. Scheduled/default `reconcile` then maps to
-`cleanup`; `confirm` is an explicit lease-only dispatch. Unknown backends,
+reuse the old selection document. Scheduled/default `reconcile` maps to
+`confirm`, which also runs cleanup; explicit `cleanup` only reconciles. Unknown backends,
 unsupported formats, missing pins and incompatible operations fail closed;
 the selected pinned helper validates the full private configuration before
 accessing providers. A malformed replacement never falls back to legacy cleanup.
@@ -143,7 +274,8 @@ uv run --frozen python -m scripts.m3_11_unattended.connect_activate preflight \
   --output /private/staged
 ```
 
-Preflight reconciles legacy obligations and verifies that staged configuration
+The local import command above is for operators already on the evidence host;
+use the SSH import route for Studio. Preflight reconciles legacy obligations and verifies that staged configuration
 retains every active lease's required cleanup generation. Its private activation
 receipt binds both bundle byte digests. It authorizes no live qualification.
 Delivery checks the exact workspace identity, persistent home and main-only GitHub
@@ -179,14 +311,22 @@ authorization for recovery.
 
 One immutable complete manifest records all seven roles, exact scope, baseline IDs,
 unique names, source/helper, original generations, policy and deadline before any
-CREATE. The independent action authenticates its own cleanup access, observes that
-manifest and confirms it once. A local write acknowledgement cannot substitute.
+CREATE. The independent action authenticates its own cleanup access and observes that
+manifest before publishing a confirmation. A local write acknowledgement cannot substitute.
 The protected workflow's hourly schedule can confirm a pending approved manifest;
 an explicit request avoids waiting for the next schedule:
 
 ```console
 uv run --frozen python -m scripts.m3_11_unattended.connect_control confirm
 ```
+
+Equivalent confirmations may differ only in their actual observation timestamp
+and GitHub run/attempt. Every raw observation is independently validated before a
+deterministic original record is selected; helper/server/deadline and all other
+substantive fields remain exact. Older helpers reject differing observations, so
+new observations require the corrected matching pins. Persistent pending state
+prevents replay on one runner; a fresh scheduled runner can add a truthful new
+observation after lost visibility. No GitHub artifact recovery protocol is used.
 
 Dispatch itself grants no issuance authority. The original uninterrupted controller
 waits until the explicit cutoff and submits each role once. Returned IDs are retained
@@ -207,10 +347,22 @@ cleanup access. A `lowerduckpond-m3-11-live-approval-v2` document has `lease_id:
 for new issuance or the exact existing lease UUID for approved reuse. Its own expiry
 is at most one day; it does not renew a lease deadline.
 
+Use the actual attempt writer before launch; supply `--reuse-status` only for a
+retry, using the exported status of the released prior attempt. It carries the
+validated original manifest and deadline. Obtain fresh attempt consent, without
+changing its policy or extending the lease:
+
 ```console
-mise exec -- just m3-11-unattended prepare FULL_COMMIT_SHA --output /private/prepared.json
+uv run --frozen python -m scripts.m3_11_unattended.operator_records attempt-proposal \
+  --inputs /private/bound-inputs.json --prepared /private/prepared.json \
+  --source FULL_COMMIT_SHA --mode qualification --expires-at APPROVAL_EXPIRY_UTC \
+  --output /private/attempt-proposal.json
+uv run --frozen python -m scripts.m3_11_unattended.operator_records record-attempt \
+  --proposal /private/attempt-proposal.json --expected-proposal-sha256 ATTEMPT_PROPOSAL_SHA256 \
+  --approved-at APPROVED_UTC --approval-reference ATTEMPT_CONSENT_REFERENCE \
+  --output /private/attempt
 mise exec -- just m3-11-unattended start FULL_COMMIT_SHA \
-  --mode rehearsal --approval /private/live-approval.json \
+  --mode qualification --approval /private/attempt/live-approval.json \
   --config /private/controller.json --daemon-socket /docker-sock/docker.sock
 mise exec -- just m3-11-unattended status RUN_UUID
 mise exec -- just m3-11-unattended evidence RUN_UUID
@@ -1572,3 +1724,25 @@ workstation to explore the remaining reconstruction, public-CA and accounting
 stages on a diagnostic branch. It retains the failed run and original backup
 evidence while allowing targeted destination repairs and repeated stages.
 Diagnostic completion cannot satisfy production handoff or qualification.
+
+### Partial managed fixtures and release evidence
+
+New attempts reserve a fixture owner before starting the journey. Each host,
+archive, destination and ACME allocation records the original image inputs before
+CREATE, then records a drained command outcome and exact observed identity or a
+positively empty result. An uncertain submission is never replayed. A reserved,
+stopped destination remains part of the fixture even if later restoration phases
+never started. Retention requires successful process spawn plus durable start
+bookkeeping; failures before spawn revoke instead. Post-spawn errors drain the
+process group before terminal cleanup.
+
+Quiescence verifies the original daemon, binding, all present phase receipts and
+the complete owner-labelled container inventory. It disables restart, stops each
+exact allocated container, and checks them again without removing them. A proven
+empty allocation can release use; a missing or uncertain ledger cannot. Retry
+freshly checks released containers and the owner inventory, including empty
+proofs, before reusing the original lease. Old complete nonempty quiescence proofs
+remain supported. Retained finalization keeps the original exclusive owner and
+credential IDs until the original expiry, including days later; exactly at expiry,
+after cancellation/release or after a binding/identity change it rejects. It writes
+recovery reports without changing the original failed journey result.

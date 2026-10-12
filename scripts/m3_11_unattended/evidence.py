@@ -94,6 +94,15 @@ def export(  # noqa: PLR0912, PLR0915 - each evidence family has its own closed 
                 "policy_sha256": manifest.policy.sha256,
                 "use_released": released,
             }
+            if manifest.lease_id != lease_id:
+                raise LifecycleError("exported manifest differs from the original request")
+            result["retry_basis"] = {
+                "format": "lowerduckpond-m3-11-retry-basis-v1",
+                "manifest": manifest.document(),
+                "manifest_sha256": manifest.sha256,
+                "attempt_binding_sha256": digest(binding),
+                "deadline": stamp(manifest.policy.deadline(instant(manifest.created_at))),
+            }
     for name in ("worker", "cleanup", "production"):
         path = directory / (name + "-failure.json")
         if path.exists():

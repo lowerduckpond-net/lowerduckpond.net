@@ -74,19 +74,24 @@ class Operator:
 
     def __init__(self, *, environment: Mapping[str, str] | None = None) -> None:
         self.environment = dict(os.environ if environment is None else environment)
-        for key in ("OP_SERVICE_ACCOUNT_TOKEN", "OP_CONNECT_HOST", "OP_CONNECT_TOKEN"):
+        for key in ("OP_SERVICE_ACCOUNT_TOKEN", "OP_CONNECT_HOST", "OP_CONNECT_TOKEN", "OP_DEBUG"):
             self.environment.pop(key, None)
         self.executable = shutil.which("op", path=self.environment.get("PATH"))
         if self.executable is None:
             raise LifecycleError("the operator's 1Password CLI is unavailable")
 
-    def command(self, *arguments: str, cwd: Path | None = None) -> bytes:
+    def command(
+        self, *arguments: str, cwd: Path | None = None, stdin: bytes | None = None
+    ) -> bytes:
         action = operation(arguments)
+        if stdin is not None and len(stdin) > MAXIMUM:
+            raise LifecycleError("private operator input exceeds its bound")
         try:
             response = subprocess.run(  # noqa: S603 - fixed op calls; no secret arguments
                 [cast(str, self.executable), *arguments],
                 cwd=cwd,
                 env=self.environment,
+                input=stdin,
                 capture_output=True,
                 check=False,
                 timeout=90,

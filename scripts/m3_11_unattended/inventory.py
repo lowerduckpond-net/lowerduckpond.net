@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 from copy import deepcopy
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from pathlib import Path
 from typing import Protocol
@@ -178,17 +178,80 @@ def title(record: dict[str, object]) -> str:
     return PREFIX + str(record["lease_id"]) + "-" + str(record["slot"])
 
 
+def confirmation_binding(
+    record: dict[str, object], manifest: LeaseManifest, *, now: datetime
+) -> None:
+    """Validate every observation before any equivalent provenance is reduced."""
+    value = record["payload"]
+    if (
+        record["manifest_sha256"] != manifest.sha256
+        or record["lease_id"] != manifest.lease_id
+        or not isinstance(value, dict)
+        or value["helper_revision"] != manifest.helper_revision
+        or instant(value["observed_at"]) < instant(manifest.created_at)
+        or instant(value["observed_at"]) > now
+        or instant(value["cleanup_access_expires_at"])
+        < manifest.policy.deadline(instant(manifest.created_at))
+        + timedelta(seconds=manifest.policy.cleanup_reserve_seconds)
+    ):
+        raise LifecycleError("independent manifest confirmation has the wrong binding")
+
+
+def confirmation_identity(record: dict[str, object]) -> dict[str, object]:
+    """Only these three truthful provenance fields may vary, only for confirmed."""
+    if record["slot"] != "confirmed" or not isinstance(record["payload"], dict):
+        raise LifecycleError("confirmation equivalence requires a confirmation")
+    return {
+        **record,
+        "payload": {
+            key: value
+            for key, value in record["payload"].items()
+            if key not in {"observed_at", "github_run_id", "github_run_attempt"}
+        },
+    }
+
+
+def confirmation_order(record: dict[str, object]) -> tuple[object, ...]:
+    value = record["payload"]
+    if not isinstance(value, dict):
+        raise LifecycleError("confirmation payload is unavailable")
+    return (
+        instant(value["observed_at"]),
+        value["github_run_id"],
+        value["github_run_attempt"],
+        digest(record),
+    )
+
+
 def _collect(records: list[dict[str, object]]) -> list[dict[str, object]]:
     """Identical lost-response duplicates are one fact; conflicting facts fail."""
     if len(records) > MAX_ITEMS:
         raise LifecycleError("lease inventory exceeds its bound")
+    validated = [validate(raw) for raw in records]
+    now = datetime.now(UTC)
+    manifests: dict[str, LeaseManifest] = {}
+    for record in validated:
+        if record["slot"] == "manifest":
+            manifest = LeaseManifest.parse(record["payload"])
+            previous = manifests.setdefault(manifest.lease_id, manifest)
+            if previous != manifest:
+                raise LifecycleError("lease inventory contains conflicting immutable facts")
     selected: dict[str, dict[str, object]] = {}
-    for raw in records:
-        record = validate(raw)
+    for record in validated:
+        if record["slot"] == "confirmed":
+            bound_manifest = manifests.get(str(record["lease_id"]))
+            if bound_manifest is None:
+                raise LifecycleError("complete lease manifest is not visible")
+            confirmation_binding(record, bound_manifest, now=now)
         key = title(record)
         if key in selected and selected[key] != record:
-            raise LifecycleError("lease inventory contains conflicting immutable facts")
-        selected[key] = record
+            if record["slot"] != "confirmed" or confirmation_identity(
+                selected[key]
+            ) != confirmation_identity(record):
+                raise LifecycleError("lease inventory contains conflicting immutable facts")
+            selected[key] = min((selected[key], record), key=confirmation_order)
+        else:
+            selected[key] = record
     return [selected[key] for key in sorted(selected)]
 
 
@@ -270,9 +333,17 @@ class ConnectInventory:
 
     def publish(self, record: dict[str, object]) -> None:
         record = validate(record)
-        existing = [entry for entry in self.records() if title(entry) == title(record)]
+        records = self.records()
+        existing = [entry for entry in records if title(entry) == title(record)]
+        if record["slot"] == "confirmed":
+            # Validate the candidate as well as every existing observation, even if no POST
+            # is needed. This also checks a manifest appearing/disappearing at publication.
+            _collect([*records, record])
         if existing:
-            if existing != [record]:
+            if existing != [record] and not (
+                record["slot"] == "confirmed"
+                and confirmation_identity(existing[0]) == confirmation_identity(record)
+            ):
                 raise LifecycleError("lease inventory fact cannot be replaced")
             return
         pending = self.spool / (digest(title(record)) + ".json")
@@ -323,17 +394,9 @@ def require_confirmation(
     if len(matches) != 1:
         raise LifecycleError("independent manifest confirmation is unavailable")
     selected = matches[0]
+    confirmation_binding(selected, manifest, now=datetime.now(UTC))
     value = selected["payload"]
-    if (
-        selected["manifest_sha256"] != manifest.sha256
-        or not isinstance(value, dict)
-        or value["helper_revision"] != manifest.helper_revision
-        or value["independent_server_id"] != independent_server_id
-        or instant(value["observed_at"]) < instant(manifest.created_at)
-        or instant(value["cleanup_access_expires_at"])
-        < manifest.policy.deadline(instant(manifest.created_at))
-        + timedelta(seconds=manifest.policy.cleanup_reserve_seconds)
-    ):
+    if not isinstance(value, dict) or value["independent_server_id"] != independent_server_id:
         raise LifecycleError("independent manifest confirmation has the wrong binding")
 
 

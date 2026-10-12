@@ -14,7 +14,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from scripts import qualification_deadline
+from scripts import qualification_allocation, qualification_deadline
 from scripts.m3_10_qualification_report import verify_report
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
@@ -533,6 +533,11 @@ class Worker:
         just = shutil.which("just")
         if just is None:
             raise LifecycleError("qualification command is unavailable")
+        if self.lifecycle is None:
+            raise LifecycleError("attempt has no validated lease")
+        qualification_allocation.initialize(
+            self.directory, self.request, environment["DOCKER_HOST"]
+        )
         with (self.directory / "controller.log").open("xb") as stream:
             os.fchmod(stream.fileno(), 0o600)
             child = subprocess.Popen(  # noqa: S603 - existing command in exact clean checkout
@@ -543,8 +548,16 @@ class Worker:
                 stderr=stream,
                 start_new_session=True,
             )
-            self.journey_shutdown_at: float | None = None
             try:
+                self.journey_shutdown_at: float | None = None
+                self.attempt_started = True
+                write_private(
+                    self.directory / "attempt-started.json",
+                    {
+                        "binding_sha256": digest(self.binding),
+                        "manifest_sha256": self.lifecycle.manifest.sha256,
+                    },
+                )
                 return self._monitor_journey(child)
             finally:
                 # Bookkeeping errors must drain the journey before the outer
@@ -796,16 +809,6 @@ class Worker:
                         raise LifecycleError("rehearsal interruption was not observed")
                     self.state.finish_journey("rehearsal-interrupted", 143)
                     return 0
-                if self.lifecycle is None:
-                    raise LifecycleError("attempt has no validated lease")
-                write_private(
-                    self.directory / "attempt-started.json",
-                    {
-                        "binding_sha256": digest(self.binding),
-                        "manifest_sha256": self.lifecycle.manifest.sha256,
-                    },
-                )
-                self.attempt_started = True
                 status = self._journey(environment)
                 if status == 0:
                     paths = list((self.directory / "qualification").glob("*/qualification.json"))

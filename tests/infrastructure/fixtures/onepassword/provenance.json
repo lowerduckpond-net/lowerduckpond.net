@@ -1,0 +1,18 @@
+{
+  "format": "lowerduckpond-onepassword-contract-provenance-v1",
+  "schema": {
+    "source": "https://i.1password.com/media/1password-connect/1password-connect-api_1.8.1.yaml",
+    "version": "1.8.1",
+    "sha256": "77c98db61f39840b136586215b046a2597c950b0fdefae0ab0fa6aebb4dca0f4",
+    "retrieved_at": "2026-10-12"
+  },
+  "cli_version": "2.33.0",
+  "connect_images": {
+    "api": "1password/connect-api:1.8.2@sha256:e915c0c843972f02b0e7e2de502bda8bd4a092288b3f1866098a857bd715a281",
+    "sync": "1password/connect-sync:1.8.2@sha256:6297ca6136c0f0fb096bc64c49e1bc8df2aab35282ebff8c7bb60745ef176d0d"
+  },
+  "response_fixture_provenance": "synthetic-only",
+  "genuine_response_captures": [],
+  "native_contract_status": "Unverified against a real CLI session. Numeric JWT grants 48/496 and native JSON field shapes are private observed dependencies, not vendor schema guarantees.",
+  "live_verification_status": "Not run. Real CLI template preservation, field-ID normalization, JWT authentication, expiry, cache visibility and lost-result compatibility require the separately approved dummy-data verification."
+}

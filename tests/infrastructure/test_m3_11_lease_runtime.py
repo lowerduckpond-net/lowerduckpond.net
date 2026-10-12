@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import json
+import shutil
 import uuid
 from contextlib import ExitStack
 from copy import deepcopy
 from pathlib import Path
-from typing import override
+from typing import cast, override
 
 import pytest
 
 from scripts import m3_11_debug_fixture as debug_fixture
-from scripts import qualification_restore
+from scripts import qualification_allocation, qualification_restore
 from scripts.m3_11_debug_files import MARKER
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_unattended.docker import SOCKET, Docker
@@ -21,9 +22,24 @@ from scripts.m3_11_unattended.state import LeaseState, RunState, replace_private
 from scripts.m3_11_unattended.watchdog import quiesce_runtime, require_released_consumers
 from scripts.qualification_context import ARCHIVE_ENV, HOST_ENV, RUN_ENV
 
+from .test_m3_11_lease_configuration import mapping
 from .test_m3_11_lease_inventory import manifest
 
 DAEMON = dict.fromkeys(("ID", "Name", "DockerRootDir", "ServerVersion"), "synthetic-daemon")
+
+
+def test_prebound_empty_started_attempt_can_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory, state, docker = runtime(tmp_path, monkeypatch)
+    shutil.rmtree(directory / "qualification")
+    docker.rows.clear()
+    request = read_private(directory / "request.json")
+    qualification_allocation.initialize(directory, request, docker.endpoint)
+    proof = quiesce_runtime(directory, docker)
+    assert proof["containers"] == []
+    assert state.released_use(attempt_id=directory.name, binding_sha256=digest(request["binding"]))
+    require_released_consumers(state, docker)
 
 
 class RuntimeDocker(Docker):
@@ -44,7 +60,9 @@ class RuntimeDocker(Docker):
     def command(self, *arguments: str, stdin: bytes | None = None, timeout: int = 1200) -> bytes:
         assert stdin is None
         if arguments[0] == "ps":
-            return ("\n".join([] if self.empty_inventory else self.rows) + "\n").encode()
+            return "".join(
+                selected + "\n" for selected in ([] if self.empty_inventory else self.rows)
+            ).encode()
         selected = arguments[-1]
         row = self.rows[selected]
         if arguments[0] == "inspect":
@@ -221,3 +239,93 @@ def test_diagnostic_holds_exclusive_use_and_cannot_rejoin_after_release(
     quiesce_runtime(directory, docker)
     with pytest.raises(ValueError, match="exclusive lease use"):
         debug_fixture.lease_use(workspace)
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "none",
+        "uncertain",
+        "extra",
+        "wrong-image",
+        "wrong-owner",
+        "malformed-result",
+        "contradictory-result",
+        "receipt",
+    ],
+)
+def test_partial_allocation_release_requires_exact_original_facts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    directory, state, docker = runtime(tmp_path, monkeypatch)
+    request = read_private(directory / "request.json")
+    value = qualification_allocation.initialize(directory, request, docker.endpoint)
+    owner = str(
+        mapping(mapping(docker.rows["1" * 64]["Config"])["Labels"])[qualification_allocation.LABEL]
+    )
+    value.update(owner=owner, fixture_run_id=str(uuid.UUID(owner)))
+    for role, row in cast(dict[str, dict[str, object]], value["roles"]).items():
+        row["name"] = f"/ldp-m3-{owner}-{role}"
+    for role, identifier in (("host", "1" * 64), ("archive", "2" * 64)):
+        row = docker.rows[identifier]
+        mapping(mapping(value["roles"])[role]).update(
+            state="created",
+            image_input="synthetic-image-input",
+            command_drained=True,
+            identity={"id": identifier, "name": row["Name"], "image": row["Image"], "owner": owner},
+        )
+    for kind in ("destination", "acme"):
+        (directory / f"qualification/synthetic-fixture/restore/{kind}.json").unlink()
+    del docker.rows["3" * 64], docker.rows["4" * 64]
+    if fault == "uncertain":
+        mapping(mapping(value["roles"])["destination"]).update(
+            state="begun-uncertain", image_input="synthetic-image-input"
+        )
+    replace_private(directory / "allocation.json", value)
+    if fault == "extra":
+        docker.rows["5" * 64] = deepcopy(docker.rows["1" * 64])
+    elif fault == "wrong-image":
+        docker.rows["1" * 64]["Image"] = "sha256:" + "0" * 64
+    elif fault == "wrong-owner":
+        mapping(mapping(docker.rows["1" * 64]["Config"])["Labels"])[
+            qualification_allocation.LABEL
+        ] = "0" * 32
+    elif fault in {"malformed-result", "contradictory-result"}:
+        result = read_private(directory / "journey-result.json")
+        result["format" if fault == "malformed-result" else "status"] = (
+            "wrong" if fault == "malformed-result" else 0
+        )
+        replace_private(directory / "journey-result.json", result)
+    elif fault == "receipt":
+        path = directory / "qualification/synthetic-fixture/restore/source.json"
+        replace_private(path, {**read_private(path), "image": "sha256:" + "0" * 64})
+    if fault == "none":
+        proof = quiesce_runtime(directory, docker)
+        assert len(cast(list[object], proof["containers"])) == len(docker.rows)
+        require_released_consumers(state, docker)
+        assert set(docker.rows) == {"1" * 64, "2" * 64}
+        docker.rows["1" * 64]["State"] = {"Running": True}
+        with pytest.raises(LifecycleError):
+            require_released_consumers(state, docker)
+    else:
+        with pytest.raises((LifecycleError, ValueError)):
+            quiesce_runtime(directory, docker)
+        assert not docker.mutations
+        assert not list(state.directory.glob("released-*.json"))
+
+
+def test_empty_release_checks_owner_inventory_again_before_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory, state, docker = runtime(tmp_path, monkeypatch)
+    row = deepcopy(docker.rows["1" * 64])
+    shutil.rmtree(directory / "qualification")
+    docker.rows.clear()
+    value = qualification_allocation.initialize(
+        directory, read_private(directory / "request.json"), docker.endpoint
+    )
+    quiesce_runtime(directory, docker)
+    mapping(mapping(row["Config"])["Labels"])[qualification_allocation.LABEL] = value["owner"]
+    docker.rows["1" * 64] = row
+    with pytest.raises(LifecycleError):
+        require_released_consumers(state, docker)

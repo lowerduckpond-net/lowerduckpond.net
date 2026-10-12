@@ -7,16 +7,22 @@ import uuid
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import override
 
 import pytest
 
+from scripts.m3_11_private_inputs import write_private
+from scripts.m3_11_qualification_evidence import canonical_bytes
+from scripts.m3_11_unattended import inventory as lease_inventory
 from scripts.m3_11_unattended.connect_api import Connect, Response
 from scripts.m3_11_unattended.inventory import (
     ConnectInventory,
     LocalInventory,
+    _collect,
     fact,
     require_confirmation,
+    title,
 )
 from scripts.m3_11_unattended.lifecycle import CreationRecorder, LeaseLifecycle
 from scripts.m3_11_unattended.model import (
@@ -268,6 +274,142 @@ def confirmation(selected: LeaseManifest) -> dict[str, object]:
             "cleanup_access_expires_at": stamp(NOW + timedelta(days=30)),
         },
     )
+
+
+@pytest.mark.parametrize("offsets", [(0, 1), (1, 2)])
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("adapter", ["connect", "local"])
+def test_each_future_confirmation_blocks_provider_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    offsets: tuple[int, int],
+    reverse: bool,
+    adapter: str,
+) -> None:
+    # Only the clock and external inventory contents are modeled. Actual readers,
+    # equivalence reduction and the issuance authorization all execute.
+    monkeypatch.setattr(
+        lease_inventory, "datetime", SimpleNamespace(now=lambda _tz: NOW), raising=False
+    )
+    case = LeaseCase(tmp_path)
+    observations = []
+    for index, seconds in enumerate(offsets):
+        record = confirmation(case.manifest)
+        payload = record["payload"]
+        assert isinstance(payload, dict)
+        payload.update(
+            observed_at=stamp(NOW + timedelta(seconds=seconds)), github_run_id=12345 + index
+        )
+        observations.append(record)
+    if reverse:
+        observations.reverse()
+    if adapter == "connect":
+        client = ConnectDouble()
+        inventory = ConnectInventory(client, client.vault, spool=tmp_path / "spool")
+        inventory.publish(fact(case.manifest, "manifest", case.manifest.document()))
+        for record in observations:
+            client.request(
+                "POST",
+                f"/v1/vaults/{client.vault}/items",
+                {
+                    "title": title(record),
+                    "category": "SECURE_NOTE",
+                    "tags": [lease_inventory.TAG],
+                    "fields": [
+                        {
+                            "id": "notesPlain",
+                            "type": "STRING",
+                            "purpose": "NOTES",
+                            "label": "notesPlain",
+                            "value": canonical_bytes(record).decode(),
+                        }
+                    ],
+                },
+            )
+        case.lifecycle.inventory = inventory
+    else:
+        for index, record in enumerate(observations):
+            write_private(case.inventory.directory / f"observation-{index}.json", record)
+    with pytest.raises(LifecycleError, match="confirmation has the wrong binding"):
+        case.issue()
+    assert sum(provider.creates for provider in case.providers.values()) == 0
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_future_publication_is_rejected_before_post_or_equivalent_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing: bool
+) -> None:
+    monkeypatch.setattr(
+        lease_inventory, "datetime", SimpleNamespace(now=lambda _tz: NOW), raising=False
+    )
+    selected = manifest()
+    client = ConnectDouble()
+    inventory = ConnectInventory(client, client.vault, spool=tmp_path / "spool")
+    inventory.publish(fact(selected, "manifest", selected.document()))
+    if existing:
+        inventory.publish(confirmation(selected))
+    record = confirmation(selected)
+    payload = record["payload"]
+    assert isinstance(payload, dict)
+    payload["observed_at"] = stamp(NOW + timedelta(seconds=1))
+    posts = client.posts
+    pending = sorted(inventory.spool.iterdir())
+    with pytest.raises(LifecycleError, match="confirmation has the wrong binding"):
+        inventory.publish(record)
+    assert client.posts == posts and sorted(inventory.spool.iterdir()) == pending
+
+
+@pytest.mark.parametrize("age", [timedelta(), timedelta(days=3)])
+def test_confirmation_upper_bound_allows_present_and_older_observations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, age: timedelta
+) -> None:
+    monkeypatch.setattr(
+        lease_inventory, "datetime", SimpleNamespace(now=lambda _tz: NOW + age), raising=False
+    )
+    selected = manifest()
+    client = ConnectDouble()
+    inventory = ConnectInventory(client, client.vault, spool=tmp_path / "spool")
+    inventory.publish(fact(selected, "manifest", selected.document()))
+    inventory.publish(confirmation(selected))
+    require_confirmation(inventory, selected, independent_server_id="s" * 26)
+
+
+def test_independent_observations_with_distinct_provenance_are_one_confirmation() -> None:
+    selected = manifest()
+    first = confirmation(selected)
+    second = deepcopy(first)
+    payload = second["payload"]
+    assert isinstance(payload, dict)
+    payload.update(observed_at=stamp(NOW + timedelta(seconds=1)), github_run_id=12346)
+    original = deepcopy([first, second])
+    manifest_fact = fact(selected, "manifest", selected.document())
+    for records in ([first, second, manifest_fact], [manifest_fact, second, first]):
+        result = _collect(records)
+        assert [row for row in result if row["slot"] == "confirmed"] == [first]
+    assert [first, second] == original
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("observed_at", "2026-10-09T00:00:00Z"),
+        ("github_run_id", 0),
+        ("cleanup_access_expires_at", "2026-10-11T00:00:00Z"),
+        ("helper_revision", "f" * 40),
+        ("independent_server_id", "t" * 26),
+    ],
+)
+def test_equivalence_cannot_hide_an_invalid_or_conflicting_observation(
+    field: str, value: object
+) -> None:
+    selected = manifest()
+    first = confirmation(selected)
+    second = deepcopy(first)
+    payload = second["payload"]
+    assert isinstance(payload, dict)
+    payload[field] = value
+    with pytest.raises(LifecycleError):
+        _collect([fact(selected, "manifest", selected.document()), first, second])
 
 
 def test_local_manifest_visibility_is_not_independent_confirmation(tmp_path: Path) -> None:

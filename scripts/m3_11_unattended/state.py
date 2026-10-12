@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
@@ -94,6 +95,24 @@ def cleanup_lock(root: Path, *, blocking: bool = True) -> Iterator[None]:
         yield
     finally:
         os.close(descriptor)
+
+
+def journey_result(directory: Path) -> dict[str, object]:
+    """Read a complete terminal result through the original strict schema."""
+    journey = fields(
+        read_private(directory / "journey-result.json"),
+        {"format", "outcome", "status", "observed_at"},
+    )
+    if (
+        journey["format"] != "lowerduckpond-m3-11-unattended-result-v1"
+        or journey["outcome"] not in OUTCOMES
+        or type(journey["status"]) is not int
+        or not 0 <= journey["status"] <= 255  # noqa: PLR2004 - exit status
+        or (journey["outcome"] == "passed") != (journey["status"] == 0)
+    ):
+        raise LifecycleError("controller qualification result is malformed")
+    instant(journey["observed_at"])
+    return journey
 
 
 @dataclass(frozen=True)
@@ -223,16 +242,7 @@ class RunState:
         }
         path = self.directory / "journey-result.json"
         if path.exists():
-            journey = fields(read_private(path), {"format", "outcome", "status", "observed_at"})
-            if (
-                journey["format"] != "lowerduckpond-m3-11-unattended-result-v1"
-                or journey["outcome"] not in OUTCOMES
-                or type(journey["status"]) is not int
-                or not 0 <= journey["status"] <= 255  # noqa: PLR2004 - exit status
-                or (journey["outcome"] == "passed") != (journey["status"] == 0)
-            ):
-                raise LifecycleError("controller qualification result is malformed")
-            instant(journey["observed_at"])
+            journey = journey_result(self.directory)
             result["qualification"] = journey["outcome"]
             result["exit_status"] = journey["status"]
             if journey["outcome"] == "passed" and progress["credential_cleanup"] == "verified":
@@ -386,9 +396,7 @@ class LeaseState:
         # Reuse the complete proof validator; retain() checks the immutable bytes.
         self.release_use(
             attempt_id=attempt_id,
-            quiescence=fields(
-                proof["quiescence"], {"host_commands_drained", "containers", "complete"}
-            ),
+            quiescence=cast(dict[str, object], proof["quiescence"]),
         )
         return True
 
@@ -414,13 +422,23 @@ class LeaseState:
     def release_use(self, *, attempt_id: str, quiescence: dict[str, object]) -> None:
         # This proof is supplied only by the owned host/guest drainer. No timeout
         # or the absence of a local process substitutes for actual guest checks.
-        value = fields(quiescence, {"host_commands_drained", "containers", "complete"})
+        from scripts import qualification_allocation as allocation  # noqa: PLC0415
+
+        modern = (
+            isinstance(quiescence, dict) and quiescence.get("format") == allocation.PROOF_FORMAT
+        )
+        extra = (
+            {"format", "allocation_sha256", "binding_sha256", "daemon_sha256", "endpoint", "owner"}
+            if modern
+            else set()
+        )
+        value = fields(quiescence, {"host_commands_drained", "containers", "complete"} | extra)
         containers = value["containers"]
         if (
             value["host_commands_drained"] is not True
             or value["complete"] is not True
             or not isinstance(containers, list)
-            or not containers
+            or (not modern and not containers)
         ):
             raise LifecycleError("lease consumer quiescence is unresolved")
         seen: set[str] = set()
@@ -433,6 +451,33 @@ class LeaseState:
                 raise LifecycleError("quiescence repeats a retained fixture")
             seen.add(selected)
         use = read_private(self.directory / ("use-" + identity(attempt_id) + ".json"))
+        if modern:
+            directory = self.directory.parent.parent / "runs" / attempt_id
+            journey_result(directory)
+            context = allocation.parse(read_private(directory / "allocation.json"))
+            request = read_private(directory / "request.json")
+            expected = allocation.identities(context)
+            if (
+                value["allocation_sha256"] != digest(context)
+                or value["binding_sha256"] != context["binding_sha256"]
+                or value["binding_sha256"] != use["binding_sha256"]
+                or value["binding_sha256"] != digest(request["binding"])
+                or value["daemon_sha256"] != digest(context["daemon"])
+                or context["daemon"] != request["daemon"]
+                or value["owner"] != context["owner"]
+                or value["endpoint"] != context["endpoint"]
+                or read_private(directory / "host-drained.json")
+                != {"binding_sha256": use["binding_sha256"], "drained": True}
+                or not (directory / "journey-result.json").is_file()
+                or {
+                    str(row["id"]): {key: row[key] for key in allocation.IDENTITY}
+                    for row in containers
+                }
+                != expected
+            ):
+                raise LifecycleError(
+                    "quiescence lacks its bound producer allocation and host drain"
+                )
         self.retain(
             "released-" + attempt_id + ".json", {"use_sha256": digest(use), "quiescence": value}
         )

@@ -185,6 +185,9 @@ def create_stopped(environment: dict[str, str], kind: str) -> dict[str, object]:
         raise ValueError("unknown or unowned restore fixture resource")
     source = inspect(environment, environment[HOST_ENV])
     name = f"ldp-m3-{environment[RUN_ENV]}-{kind}"
+    from scripts import qualification_allocation as allocation  # noqa: PLC0415
+
+    allocation.begin(environment, {kind: str(source["image"])})
     identity = (
         command(
             environment,
@@ -224,6 +227,7 @@ def create_stopped(environment: dict[str, str], kind: str) -> dict[str, object]:
         or current.get("running") is not False
     ):
         raise ValueError("new restore fixture is not the expected stopped image")
+    allocation.complete(environment, (kind,))
     return current
 
 

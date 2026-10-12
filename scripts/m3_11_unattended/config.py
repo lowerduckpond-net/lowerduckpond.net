@@ -127,6 +127,49 @@ def _cloudflare_authority(
     return selected, expiry
 
 
+def validate_digitalocean_metadata(
+    raw: object, generation: AuthorityGeneration, *, now: datetime
+) -> None:
+    """Shared pure runtime/publication parser; no provider calls or authority changes."""
+    metadata = fields(
+        raw,
+        {
+            "format",
+            "token_sha256",
+            "expires_at",
+            "scopes",
+            "verified_at",
+            "verified_by",
+            "generation_id",
+            "digitalocean_principal",
+            "attested_by",
+            "principal_context",
+        },
+    )
+    expected_scopes = (
+        DO_READ_SCOPES
+        | {"spaces_key:delete"}
+        | ({"spaces_key:create_credentials"} if generation.role == "provision" else set())
+    )
+    if (
+        metadata["format"] != "lowerduckpond-digitalocean-bootstrap-v2"
+        or metadata["token_sha256"] != generation.fingerprints["spaces"]
+        or metadata["generation_id"] != generation.generation_id
+        or metadata["digitalocean_principal"] != generation.principals["spaces"]
+        or metadata["scopes"] != sorted(expected_scopes)
+        or metadata["verified_by"] != "operator-provider-console"
+        or instant(metadata["verified_at"]) > now
+        or instant(metadata["expires_at"]) != instant(generation.expires_at["spaces"])
+        or any(
+            not isinstance(metadata[name], str)
+            or not 1 <= len(str(metadata[name])) <= 512  # noqa: PLR2004 - bounded attestation label
+            or any(ord(char) < 32 for char in str(metadata[name]))  # noqa: PLR2004
+            for name in ("attested_by", "principal_context")
+        )
+    ):
+        raise LifecycleError("DigitalOcean generation principal or policy is unverified")
+
+
 @dataclass(frozen=True)
 class LeaseBootstrap:
     """A generation's private reader and public authority metadata, without a journal."""
@@ -220,43 +263,11 @@ class LeaseBootstrap:
         if hashlib.sha256(secret.encode()).hexdigest() != generation.fingerprints[kind]:
             raise LifecycleError("authority secret differs from the approved generation")
         if kind == "spaces":
-            metadata = fields(
+            validate_digitalocean_metadata(
                 json.loads(reader.read(self.references["digitalocean_metadata"])),
-                {
-                    "format",
-                    "token_sha256",
-                    "expires_at",
-                    "scopes",
-                    "verified_at",
-                    "verified_by",
-                    "generation_id",
-                    "digitalocean_principal",
-                    "attested_by",
-                    "principal_context",
-                },
+                generation,
+                now=now,
             )
-            expected_scopes = (
-                DO_READ_SCOPES
-                | {"spaces_key:delete"}
-                | ({"spaces_key:create_credentials"} if generation.role == "provision" else set())
-            )
-            if (
-                metadata["format"] != "lowerduckpond-digitalocean-bootstrap-v2"
-                or metadata["token_sha256"] != generation.fingerprints[kind]
-                or metadata["generation_id"] != generation.generation_id
-                or metadata["digitalocean_principal"] != generation.principals[kind]
-                or metadata["scopes"] != sorted(expected_scopes)
-                or metadata["verified_by"] != "operator-provider-console"
-                or instant(metadata["verified_at"]) > now
-                or instant(metadata["expires_at"]) != instant(generation.expires_at[kind])
-                or any(
-                    not isinstance(metadata[name], str)
-                    or not 1 <= len(str(metadata[name])) <= 512  # noqa: PLR2004 - bounded attestation label
-                    or any(ord(char) < 32 for char in str(metadata[name]))  # noqa: PLR2004
-                    for name in ("attested_by", "principal_context")
-                )
-            ):
-                raise LifecycleError("DigitalOcean generation principal or policy is unverified")
             spaces = Spaces(Api("https://api.digitalocean.com", secret))
             spaces.inventory()
             return spaces

@@ -160,7 +160,7 @@ def quiesce_runtime(directory: Path, docker: Docker) -> dict[str, object]:  # no
     from scripts.m3_11_qualification_evidence import fields  # noqa: PLC0415
     from scripts.m3_11_unattended.inputs import BINDING  # noqa: PLC0415
     from scripts.m3_11_unattended.model import LifecycleError, digest, fingerprint  # noqa: PLC0415
-    from scripts.m3_11_unattended.state import LeaseState  # noqa: PLC0415
+    from scripts.m3_11_unattended.state import LeaseState, journey_result  # noqa: PLC0415
     from scripts.qualification_context import ARCHIVE_ENV, HOST_ENV, RUN_ENV  # noqa: PLC0415
     from scripts.qualification_probe import document  # noqa: PLC0415
 
@@ -168,10 +168,15 @@ def quiesce_runtime(directory: Path, docker: Docker) -> dict[str, object]:  # no
     binding = fields(request["binding"], BINDING)
     state = LeaseState(directory.parent.parent / "leases" / identity(request["lease_id"]))
     with RunState(directory).lock(), state.use_lock():
+        journey_result(directory)
         if not (directory / "journey-result.json").exists() or read_private(
             directory / "host-drained.json"
         ) != {"binding_sha256": digest(binding), "drained": True}:
             raise LifecycleError("host commands have not established quiescence")
+        if (directory / "allocation.json").exists():
+            proof = quiesce_allocated(directory, docker, request)
+            state.release_use(attempt_id=identity(binding["managed_run_id"]), quiescence=proof)
+            return proof
         contexts = list((directory / "qualification").glob("*/fixture.json"))
         if len(contexts) != 1:
             raise LifecycleError("retained runtime fixture identity is unavailable or ambiguous")
@@ -273,6 +278,130 @@ def quiesce_runtime(directory: Path, docker: Docker) -> dict[str, object]:  # no
         proof = {"host_commands_drained": True, "containers": observations, "complete": True}
         state.release_use(attempt_id=identity(binding["managed_run_id"]), quiescence=proof)
         return proof
+
+
+def quiesce_allocated(  # noqa: PLR0912, PLR0915 - original receipts, complete inventory and shutdown
+    directory: Path, docker: Docker, request: dict[str, object]
+) -> dict[str, object]:
+    """Consume original producer facts, including a bound empty allocation."""
+    import json  # noqa: PLC0415
+
+    from scripts import qualification_allocation as allocation  # noqa: PLC0415
+    from scripts import qualification_restore  # noqa: PLC0415
+    from scripts.qualification_context import ARCHIVE_ENV, HOST_ENV, RUN_ENV  # noqa: PLC0415
+    from scripts.qualification_probe import document  # noqa: PLC0415
+
+    value = allocation.parse(read_private(directory / "allocation.json"))
+    if (
+        value["binding_sha256"] != digest(request["binding"])
+        or value["daemon"] != request["daemon"]
+        or docker.info() != request["daemon"]
+        or value["endpoint"] != docker.endpoint
+    ):
+        raise LifecycleError("allocation belongs to another daemon or attempt")
+    owner = str(value["owner"])
+    expected = allocation.identities(value)
+    by_role = {str(row["name"]).rsplit("-", 1)[-1]: row for row in expected.values()}
+    contexts = list((directory / "qualification").glob("*/fixture.json"))
+    if len(contexts) > 1 or (not contexts and expected):
+        raise LifecycleError("allocation fixture context is missing or ambiguous")
+    if contexts:
+        fixture = contexts[0].parent
+        environment = qualification_restore.environment_for(fixture)
+        if environment[RUN_ENV] != owner or environment["DOCKER_HOST"] != docker.endpoint:
+            raise LifecycleError("allocation fixture coordinates changed")
+        created_path = fixture / "case-containers.json"
+        if created_path.exists():
+            created = document(created_path)
+            names = {HOST_ENV: "host", ARCHIVE_ENV: "archive"}
+            if set(created) - set(names) or any(
+                by_role.get(names[key], {}).get("id") != selected
+                for key, selected in created.items()
+            ):
+                raise LifecycleError("allocation contradicts original creation receipts")
+        for role in ("host", "destination", "acme"):
+            path = fixture / "restore" / (("source" if role == "host" else role) + ".json")
+            if path.exists():
+                receipt = document(path)
+                if {key: receipt[key] for key in allocation.IDENTITY} != by_role.get(role):
+                    raise LifecycleError("allocation contradicts original restoration receipts")
+        reservation = fixture / "destination-reservation.json"
+        if reservation.exists():
+            receipt = read_private(reservation)
+            if receipt["source"] != by_role.get("host") or receipt["destination"] != by_role.get(
+                "destination"
+            ):
+                raise LifecycleError("allocation contradicts the stopped destination reservation")
+
+    def inventory() -> list[str]:
+        ids = (
+            docker.command(
+                "ps",
+                "--all",
+                "--filter",
+                f"label={allocation.LABEL}={owner}",
+                "--no-trunc",
+                "--format",
+                "{{.ID}}",
+            )
+            .decode()
+            .splitlines()
+        )
+        if len(ids) != len(set(ids)) or set(ids) != set(expected):
+            raise LifecycleError("allocation inventory differs from its exact original set")
+        return sorted(ids)
+
+    def inspected(selected: str, *, stopped: bool) -> None:
+        raw = json.loads(docker.command("inspect", selected))
+        if not isinstance(raw, list) or len(raw) != 1:
+            raise LifecycleError("allocation identity is unavailable")
+        item = raw[0]
+        row = {
+            "id": item["Id"],
+            "name": item["Name"],
+            "image": item["Image"],
+            "owner": item["Config"]["Labels"].get(allocation.LABEL),
+        }
+        if row != expected[selected] or (
+            stopped
+            and (
+                item["State"]["Running"] is not False
+                or item["HostConfig"]["RestartPolicy"]["Name"] != "no"
+            )
+        ):
+            raise LifecycleError("allocation identity or stopped state changed")
+
+    ids = inventory()
+    for selected in ids:
+        inspected(selected, stopped=False)
+    pending = directory / "quiescence-intent.json"
+    intent: dict[str, object] = {
+        "binding_sha256": digest(request["binding"]),
+        "allocation_sha256": digest(value),
+        "containers": [expected[selected] for selected in ids],
+    }
+    if not pending.exists():
+        write_private(pending, intent)
+    if read_private(pending) != intent:
+        raise LifecycleError("allocation changed during quiescence")
+    for selected in ids:
+        docker.command("update", "--restart=no", selected)
+        docker.command("stop", "--time", "20", selected)
+    for selected in inventory():
+        inspected(selected, stopped=True)
+    return {
+        "format": allocation.PROOF_FORMAT,
+        "allocation_sha256": digest(value),
+        "binding_sha256": value["binding_sha256"],
+        "daemon_sha256": digest(value["daemon"]),
+        "endpoint": value["endpoint"],
+        "owner": owner,
+        "host_commands_drained": True,
+        "complete": True,
+        "containers": [
+            {**expected[selected], "running": False, "restart_policy": "no"} for selected in ids
+        ],
+    }
 
 
 def prepare_lease_cleanup(root: Path, docker: Docker, inventory: Inventory) -> bool:  # noqa: PLR0912, PLR0915 - publication and issuer fencing precede cleanup
@@ -457,6 +586,10 @@ def require_released_consumers(lease: LeaseState, docker: Docker) -> None:
             ):
                 raise LifecycleError("released consumer resumed or its identity changed")
         owners = {str(row["owner"]) for row in rows}
+        if "owner" in proof:
+            owners.add(str(proof["owner"]))
+            if proof["endpoint"] != docker.endpoint:
+                raise LifecycleError("released allocation endpoint changed")
         for owner in owners:
             listed = (
                 docker.command(
@@ -471,5 +604,7 @@ def require_released_consumers(lease: LeaseState, docker: Docker) -> None:
                 .decode()
                 .splitlines()
             )
-            if set(listed) != {row["id"] for row in rows if row["owner"] == owner}:
+            if len(listed) != len(set(listed)) or set(listed) != {
+                row["id"] for row in rows if row["owner"] == owner
+            }:
                 raise LifecycleError("released consumer inventory changed")

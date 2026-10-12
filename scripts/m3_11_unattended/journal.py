@@ -239,30 +239,15 @@ def migration(value: object) -> dict[str, object]:  # noqa: PLR0912 - complete r
     return selected
 
 
-class ConnectObligations:
-    """Cleanup-only reader of original journal records plus monotonic outcomes.
+class LegacyRecords:
+    """Bounded read-only access to original events before an import exists."""
 
-    There is no service-account access, witness, checkpoint, or new legacy intent.
-    The reviewed import's exact minimum inventory may never disappear. New old-
-    format issuance after cutover is a hard error, even when its creator is gone.
-    """
-
-    def __init__(self, client: object, vault: str, *, spool: Path, expected: str) -> None:
+    def __init__(self, client: object, vault: str) -> None:
         from scripts.m3_11_unattended.connect_api import Connect  # noqa: PLC0415
-        from scripts.m3_11_unattended.model import fingerprint  # noqa: PLC0415
-        from scripts.m3_11_unattended.state import private_directory  # noqa: PLC0415
 
         if not isinstance(client, Connect):
-            raise LifecycleError("legacy import requires its authenticated Connect reader")
-        self.client, self.vault, self.expected = (
-            client,
-            Connect._identity(vault),
-            fingerprint(expected),
-        )
-        spool.mkdir(mode=0o700, parents=True, exist_ok=True)
-        private_directory(spool)
-        self.spool = spool
-        self.mapping: dict[str, object] | None = None
+            raise LifecycleError("legacy inventory requires its authenticated Connect reader")
+        self.client, self.vault = client, Connect._identity(vault)
 
     def _items(self) -> list[dict[str, object]]:
         response = self.client.request("GET", f"/v1/vaults/{self.vault}/items")
@@ -306,6 +291,42 @@ class ConnectObligations:
         if full.get("title") != expected_title or item.get("title") != expected_title:
             raise LifecycleError("legacy Connect record identity differs")
         return cast(dict[str, object], value)
+
+    def originals(self) -> list[dict[str, object]]:
+        values: dict[str, dict[str, object]] = {}
+        for item in self._items():
+            if (
+                TAG not in cast(list[str], item.get("tags", []))
+                and re.fullmatch(r"m3-11-[0-9a-f-]{36}-[0-9a-f]{64}", str(item.get("title")))
+                is None
+            ):
+                continue
+            row = self._read(item, tag=TAG)
+            key = str(row["event_id"])
+            if key in values and values[key] != row:
+                raise LifecycleError("legacy original event identity is ambiguous")
+            values[key] = row
+        return [values[key] for key in sorted(values)]
+
+
+class ConnectObligations(LegacyRecords):
+    """Cleanup-only reader of original journal records plus monotonic outcomes.
+
+    There is no service-account access, witness, checkpoint, or new legacy intent.
+    The reviewed import's exact minimum inventory may never disappear. New old-
+    format issuance after cutover is a hard error, even when its creator is gone.
+    """
+
+    def __init__(self, client: object, vault: str, *, spool: Path, expected: str) -> None:
+        from scripts.m3_11_unattended.model import fingerprint  # noqa: PLC0415
+        from scripts.m3_11_unattended.state import private_directory  # noqa: PLC0415
+
+        super().__init__(client, vault)
+        self.expected = fingerprint(expected)
+        spool.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private_directory(spool)
+        self.spool = spool
+        self.mapping: dict[str, object] | None = None
 
     def records(self) -> list[dict[str, object]]:
         items = self._items()

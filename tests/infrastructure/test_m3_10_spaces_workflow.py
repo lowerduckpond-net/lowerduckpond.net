@@ -238,7 +238,11 @@ if 'scripts.production_qualification_inputs' in sys.argv:
     marker.write_text('captured')
 if 'scripts.m3_11_combined_inputs' in sys.argv:
     action, directory = sys.argv[-2], Path(sys.argv[-1])
-    if action == 'allocate':
+    if action == 'create-command':
+        os.execv(sys.argv[0], [
+            sys.argv[0], 'run', '--frozen', 'molecule', 'create', '--scenario-name', 'm3_8'
+        ])
+    elif action == 'allocate':
         fixture = directory / 'fixture'
         fixture.mkdir()
         run_id = '0198d17f6f4a70008000000000000001'

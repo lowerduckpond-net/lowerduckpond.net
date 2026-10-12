@@ -75,6 +75,12 @@ def lease_bundle() -> Row:
     )[1]
 
 
+def test_default_lease_schedule_selects_confirmation(tmp_path: Path) -> None:
+    result, values = select(tmp_path, BOOTSTRAP=json.dumps(lease_bundle()))
+    assert result.returncode == 0
+    assert values["operation"] == "confirm"
+
+
 def select(
     tmp_path: Path, job: str = "connect", **overrides: str
 ) -> tuple[subprocess.CompletedProcess[str], dict[str, str]]:
@@ -194,7 +200,7 @@ def test_explicit_new_bundle_selects_its_own_pin_and_new_action_only(
     assert result.returncode == 0
     assert selected["mode"] == "lease" and selected["configuration"] == ""
     assert selected["helper_revision"] == bundle["configuration"]["helper_revision"]
-    assert selected["operation"] == ("cleanup" if operation == "reconcile" else operation)
+    assert selected["operation"] == ("confirm" if operation == "reconcile" else operation)
     action.bootstrap(bundle, helper=selected["helper_revision"])
     received = deliver(tmp_path, selected, bundle)
     assert received["payload"] == {"bootstrap": bundle, "operation": selected["operation"]}

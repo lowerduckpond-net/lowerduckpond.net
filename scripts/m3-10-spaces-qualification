@@ -138,7 +138,9 @@ uv run --quiet --frozen python -m scripts.qualification_minio \
     >"${run_directory}/local-storage-fixture.log" 2>&1
 combined_step() (
     cd "${repository_root}"
-    uv run --quiet --frozen python -m scripts.m3_11_combined_inputs "$1" "${run_directory}"
+    action=$1
+    shift
+    uv run --quiet --frozen python -m scripts.m3_11_combined_inputs "${action}" "${run_directory}" "$@"
 )
 if [[ ${milestone} == 3.11 ]]; then
     combined_step allocate >"${run_directory}/fixture-environment"
@@ -184,8 +186,19 @@ for phase in create prepare converge idempotence verify; do
         combined_step prepare-storage >"${run_directory}/combined-storage.log" 2>&1
     fi
     printf 'M%s installed Spaces qualification: %s\n' "${milestone}" "${phase}"
-    uv run --frozen molecule "${phase}" --scenario-name m3_8 \
-        >"${run_directory}/${phase}.log" 2>&1
+    if [[ ${milestone} == 3.11 && ${phase} == create ]]; then
+        combined_step create-begin
+        # Keep the real status even when creation partially succeeds. An
+        # interrupted launcher leaves begun allocations unresolved.
+        create_status=0
+        combined_step create-command >"${run_directory}/${phase}.log" 2>&1 || create_status=$?
+        if (( create_status != 0 )); then
+            exit "${create_status}"
+        fi
+    else
+        uv run --frozen molecule "${phase}" --scenario-name m3_8 \
+            >"${run_directory}/${phase}.log" 2>&1
+    fi
     printf '%s\n' passed >"${run_directory}/${phase}.passed"
     if [[ ${milestone} == 3.11 && ${phase} == create ]]; then
         set_phase public-input-capture

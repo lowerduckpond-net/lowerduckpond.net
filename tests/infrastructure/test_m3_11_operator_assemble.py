@@ -30,6 +30,77 @@ EXPECTED_READS = 10
 DIRECTORY_MODE, FILE_MODE = 0o700, 0o600
 
 
+def receipt_fixture() -> tuple[dict[str, object], FakeOperator]:
+    """Truthful upper bounds, with no invented historical fingerprint or UI time."""
+    manifest, operator = fixture()
+    manifest["format"] = "lowerduckpond-m3-11-operator-inputs-v3"
+    manifest["runtime_revision"] = "e" * 40
+    for raw in mapping(manifest["providers"]).values():
+        observation = mapping(mapping(raw)["digitalocean_observation"])
+        created, received = observation.pop("token_created_at"), observation.pop("observed_at")
+        observation.pop("token_sha256")
+        observation["receipt_evidence"] = {
+            "basis": "operator-confirmed-replacement",
+            "created_no_later_than": created,
+            "creation_receipt": "synthetic-created-receipt",
+            "scope_confirmation_received_at": received,
+            "scope_receipt": "synthetic-scope-receipt",
+            "replacement_reference": observation["token_reference"],
+            "confirmation_applies_to_replacement": True,
+        }
+    return manifest, operator
+
+
+def test_receipt_evidence_needs_no_invented_exact_times_or_historical_hash() -> None:
+    manifest, operator = receipt_fixture()
+    checked = assembly.validate(manifest, now=datetime.now(UTC))
+    assert checked == manifest
+    assert not operator.calls
+
+
+def test_receipt_assembly_uses_one_explicit_runtime_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest, operator = receipt_fixture()
+
+    # Checkout inspection is an external process boundary; real binding is tested separately.
+    def git(_root: Path, *arguments: str) -> bytes:
+        if arguments == ("rev-parse", "HEAD"):
+            return str(manifest["runtime_revision"]).encode()
+        if arguments == ("rev-parse", "--is-shallow-repository"):
+            return b"false"
+        if arguments[0] == "show":
+            return json.dumps(
+                {
+                    "format": "lowerduckpond-qualification-revocations-v1",
+                    "sources": [],
+                    "artifacts": [],
+                    "reports": [],
+                    "input_digests": [],
+                }
+            ).encode()
+        assert arguments == ("status", "--porcelain", "--untracked-files=all")
+        return b""
+
+    monkeypatch.setattr("scripts.production_qualification_inputs.git", git)
+    config, _independent, attestations = assembly.documents(
+        manifest, cast(connect_setup.Operator, operator)
+    )
+    assert config["helper_revision"] == manifest["runtime_revision"]
+    for role, attestation in attestations.items():
+        observation = mapping(
+            mapping(mapping(manifest["providers"])[role])["digitalocean_observation"]
+        )
+        assert "receipt" in str(attestation["principal_context"])
+        assert "observed_at" not in observation and "token_sha256" not in observation
+        assert (
+            attestation["token_sha256"]
+            == hashlib.sha256(
+                operator.secrets[str(observation["token_reference"])].encode()
+            ).hexdigest()
+        )
+
+
 class FakeOperator:
     def __init__(self, manifest: dict[str, object], configured: dict[str, object]) -> None:
         self.calls: list[tuple[str, ...]] = []

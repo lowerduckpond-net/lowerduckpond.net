@@ -17,7 +17,8 @@ from pathlib import Path
 from typing import cast
 
 from scripts.m3_11_private_inputs import read_private_bytes
-from scripts.m3_11_unattended.model import LifecycleError
+from scripts.m3_11_qualification_evidence import canonical_bytes, fields
+from scripts.m3_11_unattended.model import LifecycleError, digest
 from scripts.production_qualification_inputs import current_candidate, git, revision
 
 OWNER = "lowerduckpond.m3-11.unattended"
@@ -152,6 +153,103 @@ def collections_volume(source: str) -> str:
 
 def controller_name(run_id: str) -> str:
     return "ldp-m311-controller-" + uuid.UUID(run_id).hex
+
+
+def utility_arguments(prepared: object, *, operation: str, daemon_socket: str) -> list[str]:
+    from scripts.m3_11_unattended.approval import PREPARED  # noqa: PLC0415
+
+    value = fields(prepared, PREPARED)
+    source = revision(value["source_revision"])
+    image = str(value["controller_image"])
+    if (
+        value["helper_revision"] != source
+        or re.fullmatch(r"sha256:[0-9a-f]{64}", image) is None
+        or operation not in {"inspect-import", "import", "admission"}
+        or not daemon_socket.startswith("/")
+        or any(c in daemon_socket for c in (",", "\n", "\0"))
+    ):
+        raise LifecycleError("daemon utility helper, image, operation or socket is invalid")
+    return [
+        "run",
+        "--rm",
+        "--interactive",
+        "--read-only",
+        "--tmpfs",
+        "/tmp:mode=1777",  # noqa: S108 - private ephemeral container mount
+        "--network",
+        "host",
+        "--label",
+        OWNER + "=true",
+        "--env",
+        "DOCKER_HOST=unix://" + SOCKET,
+        "--env",
+        "PYTHONDONTWRITEBYTECODE=1",
+        "--env",
+        "UV_CACHE_DIR=/tmp/uv-cache",
+        "--mount",
+        f"type=bind,source={daemon_socket},target={SOCKET}",
+        "--mount",
+        f"type=volume,source={helper_volume(source)},target=/opt/lifecycle,readonly",
+        "--mount",
+        f"type=volume,source={EVIDENCE_VOLUME},target=/evidence,readonly",
+        *(
+            ["--mount", f"type=volume,source={CLEANUP_VOLUME},target=/cleanup"]
+            if operation == "import"
+            else []
+        ),
+        "--workdir",
+        "/opt/lifecycle",
+        image,
+        "uv",
+        "run",
+        "--no-sync",
+        "--frozen",
+        "python",
+        "-m",
+        "scripts.m3_11_unattended.connect_activate",
+        "daemon-utility",
+    ]
+
+
+def utility_result(raw: bytes, envelope: dict[str, object]) -> dict[str, object]:
+    if len(raw) > 4 * 1024 * 1024:
+        raise LifecycleError("daemon utility output exceeded its bound")
+    result = fields(json.loads(raw), {"format", "input_sha256", "result"})
+    if (
+        result["format"] != envelope["format"]
+        or result["input_sha256"] != digest(envelope)
+        or not isinstance(result["result"], dict)
+    ):
+        raise LifecycleError("daemon utility result belongs to different inputs")
+    return cast(dict[str, object], result["result"])
+
+
+def utility(
+    docker: Docker,
+    *,
+    prepared: object,
+    operation: str,
+    payload: dict[str, object],
+    daemon_socket: str,
+) -> dict[str, object]:
+    from scripts.m3_11_unattended.approval import PREPARED  # noqa: PLC0415
+
+    value = fields(prepared, PREPARED)
+    if value["daemon"] != docker.info():
+        raise LifecycleError("daemon utility destination changed")
+    envelope: dict[str, object] = {
+        "format": "lowerduckpond-m3-11-daemon-utility-v1",
+        "prepared": value,
+        "operation": operation,
+        "payload": payload,
+    }
+    return utility_result(
+        docker.command(
+            *utility_arguments(value, operation=operation, daemon_socket=daemon_socket),
+            stdin=canonical_bytes(envelope),
+        ),
+        envelope,
+    )
 
 
 def require_current_watchdogs(docker: Docker, *, source: str, image: str) -> None:
