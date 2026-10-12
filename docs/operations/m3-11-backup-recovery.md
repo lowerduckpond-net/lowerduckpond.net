@@ -212,10 +212,17 @@ that same helper to verify terminal legacy originals, retained hashes, issuer
 fencing, separate audit restoration and target-bound expiry outcomes. Stale local
 `unresolved` status is preserved; it is not rewritten into permission.
 
-Interface evidence is currently offline only: the vendored Connect 1.8.1 schema
-is an authoritative artifact; CLI and HTTP response examples are explicitly
-synthetic. The native publication adapter pins CLI 2.33.0; Connect image digests
-remain in `connect_host.py`. No genuine vendor response captures or live cache,
+The vendored Connect 1.8.1 schema is an authoritative artifact; committed CLI
+and HTTP response examples remain explicitly synthetic. An operator-reported
+diagnostic on 2026-10-12 paired CLI 2.33.0 native permissions with exact signed
+grants: `48` for read-only and `1008` for journal read/write. Connect's documented
+write permission includes item deletion (`512` in the vendor SDK); the former
+synthetic value `496` omitted deletion and is rejected. The
+[contract provenance](../../tests/infrastructure/fixtures/onepassword/provenance.json)
+records vendor sources and the observation's limits. This numeric JWT mapping
+is an observed compatibility dependency, not a published stable vendor schema.
+The native publication adapter pins CLI 2.33.0; Connect image digests remain in
+`connect_host.py`. No genuine response captures are committed, and no live cache,
 JWT-signature, denied-access or full-template compatibility result is claimed.
 Before live publication/cutover, separately authorize the dummy-data compatibility
 exercise using disposable items and isolated clients on the existing test identities.

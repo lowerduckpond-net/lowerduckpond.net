@@ -13,6 +13,29 @@
   },
   "response_fixture_provenance": "synthetic-only",
   "genuine_response_captures": [],
-  "native_contract_status": "Unverified against a real CLI session. Numeric JWT grants 48/496 and native JSON field shapes are private observed dependencies, not vendor schema guarantees.",
-  "live_verification_status": "Not run. Real CLI template preservation, field-ID normalization, JWT authentication, expiry, cache visibility and lost-result compatibility require the separately approved dummy-data verification."
+  "native_contract_status": "An operator-reported, allowlisted diagnostic on 2026-10-12 paired op 2.33.0 native allow_viewing with signed grant 48, and allow_viewing plus allow_editing with signed grant 1008. This corroborates the observed grant mapping only; native JSON shapes and the numeric Connect JWT encoding are not stable vendor schema guarantees.",
+  "native_acl_contract": {
+    "reported_at": "2026-10-12T20:58:43Z",
+    "evidence_kind": "operator-reported allowlisted grant diagnostic; no raw response or credential committed",
+    "read": 48,
+    "read_write": 1008,
+    "read_native": ["allow_viewing"],
+    "read_write_native": ["allow_viewing", "allow_editing"],
+    "vendor_bit_meanings": {
+      "RevealItemPassword": 16,
+      "ReadItems": 32,
+      "UpdateItems": 64,
+      "CreateItems": 128,
+      "ArchiveItems": 256,
+      "DeleteItems": 512
+    },
+    "vendor_sources": [
+      "https://github.com/1Password/onepassword-sdk-go/blob/5866f43111ffeee5952e43a13da1aafef98200c8/types.go#L1306-L1319",
+      "https://github.com/1Password/onepassword-sdk-js/blob/ec1e4625abca0a883ae31ceb3e17b71771b244bb/client/src/types.ts#L744-L757",
+      "https://www.1password.dev/connect/security#security-model",
+      "https://www.1password.dev/cli/vault-permissions"
+    ],
+    "interpretation": "Connect WRITE includes item deletion. The old synthetic value 496 omitted DeleteItems (512); it is not equivalent to 1008 and is rejected. Exact 48/1008 acceptance is an observed compatibility contract corroborated by vendor capabilities and SDK bit definitions, not a published stable JWT schema."
+  },
+  "live_verification_status": "Full live compatibility verification is incomplete. The operator-reported assembly diagnostic corroborates only signed and native vault grants; real CLI template preservation, field-ID normalization, JWT authentication, expiry, cache visibility and lost-result compatibility still require the separately approved dummy-data verification."
 }

@@ -14,11 +14,13 @@ from scripts.m3_11_unattended.connect_api import Connect, _object
 from scripts.m3_11_unattended.model import LifecycleError, instant, stamp
 
 IDENTITY = re.compile(r"[A-Za-z0-9]{26}")
-# Native op 2.33.0 metadata calls these allow_viewing and allow_editing.
-# These exact signed ACL values were observed for the corresponding issued
-# read-only/read-write clients. Reject unknown bits rather than infer access.
+# Exact grants observed with op 2.33.0; the vendor SDK identifies the bits as
+# read/reveal (32/16), update/create/archive/delete (64/128/256/512).
+# Connect WRITE includes deletion. See fixtures/onepassword/provenance.json
+# under tests/infrastructure for sources and the numeric schema's limits.
+# Reject all other values rather than infer access from partial bit matches.
 READ = 48
-READ_WRITE = 496
+READ_WRITE = 1008
 CLAIM_PREFIX = "1password.com/"
 SKEW = timedelta(minutes=5)
 MAX_LIFETIME = timedelta(days=7)

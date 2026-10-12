@@ -180,7 +180,7 @@ class Services:
         if len(parts) == 4:  # noqa: PLR2004 - concrete synthetic contract cardinality or protocol value
             return {"status": 200, "body": {"id": vault}}
         if len(parts) == 5 and method == "POST":  # noqa: PLR2004 - concrete synthetic contract cardinality or protocol value
-            assert grants[vault] == 496  # noqa: PLR2004 - concrete synthetic contract cardinality or protocol value
+            assert grants[vault] == 1008  # noqa: PLR2004 - concrete synthetic contract cardinality or protocol value
             item_id = (
                 hashlib.sha256(str(len(self.items)).encode())
                 .hexdigest()[:26]
