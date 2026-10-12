@@ -219,19 +219,39 @@ grants: `48` for read-only and `1008` for journal read/write. Connect's document
 write permission includes item deletion (`512` in the vendor SDK); the former
 synthetic value `496` omitted deletion and is rejected. The
 [contract provenance](../../tests/infrastructure/fixtures/onepassword/provenance.json)
-records vendor sources and the observation's limits. This numeric JWT mapping
-is an observed compatibility dependency, not a published stable vendor schema.
-The native publication adapter pins CLI 2.33.0; Connect image digests remain in
-`connect_host.py`. No genuine response captures are committed, and no live cache,
-JWT-signature, denied-access or full-template compatibility result is claimed.
-Before live publication/cutover, separately authorize the dummy-data compatibility
-exercise using disposable items and isolated clients on the existing test identities.
-Run the same proposal/record/bind/assembly/publication/import/confirmation route;
-retain native responses and versions, exact vault and denied-write checks, full-item
-preservation, cold independent-cache visibility, and interrupted edit/POST recovery
-with the original pending state. Use a local fault proxy for lost replies and
-429/5xx/truncation. Do not start qualification or create provider credentials for
-that compatibility exercise. Offline tests do not replace this outstanding check.
+records vendor sources and observation limits. This numeric JWT mapping is an
+observed compatibility dependency, not a published stable vendor schema. The
+native publication adapter pins CLI 2.33.0; Connect image digests remain in
+`connect_host.py`.
+
+A direct user-run cycle completed on 2026-10-12 at 21:51:37 UTC with no reported
+findings. The allowlisted report confirmed all four clients' exact `48`/`1008`
+grants, expected vault visibility, forbidden-vault and read-only-write `403`
+responses, and a `401` response after signature tampering. A dummy Password item
+retained the selected properties listed in the provenance report through a native
+JSON edit; its added field kept the requested ID and value and was visible through
+Connect. In the journal vault, Password-item POST/PUT/DELETE returned
+`200`/`200`/`204`; the write was visible through native `op` and a fresh independent
+cache, which returned `404` after deletion. The probe's items were absent from
+active inventory and its owned cache was removed. Original shared-cache state and
+private evidence were preserved. No genuine response captures are committed.
+
+These observations corroborate the ACL correction; they demonstrated no additional
+application defect. They do not exercise the application's `SECURE_NOTE` journal
+payload, stricter publisher template checks, or assembly/publication/import/
+confirmation route. PUT and DELETE establish vendor capabilities; application
+transport remains limited to GET and POST. Expiry/revocation enforcement and
+interrupted edit/POST recovery, including lost replies and 429/5xx/truncation,
+remain untested on real services. The direct cycle does not qualify the application
+or authorize production cutover.
+
+Continue application compatibility from the retained failed assembly after review
+of its exact runtime and proposal bindings. Preserve the original inputs, receipts,
+failed captures and staging directory. A corrected runtime needs new derived inputs,
+an explicitly reviewed proposal transition and a fresh output path; do not overwrite
+old state or replay completed setup. Exercise the actual application route with the
+existing disposable identities and preserve pending state during recovery checks.
+Do not start qualification or create provider credentials for this exercise.
 
 ### Migration, activation and cleanup-only rollback
 

@@ -13,14 +13,19 @@
   },
   "response_fixture_provenance": "synthetic-only",
   "genuine_response_captures": [],
-  "native_contract_status": "An operator-reported, allowlisted diagnostic on 2026-10-12 paired op 2.33.0 native allow_viewing with signed grant 48, and allow_viewing plus allow_editing with signed grant 1008. This corroborates the observed grant mapping only; native JSON shapes and the numeric Connect JWT encoding are not stable vendor schema guarantees.",
+  "native_contract_status": "An operator-reported allowlisted diagnostic paired op 2.33.0 native allow_viewing with signed grant 48, and allow_viewing plus allow_editing with signed grant 1008. A later user-run direct vendor cycle observed acceptance of these clients and the bounded behaviors below. Native JSON shapes and the numeric Connect JWT encoding remain observed compatibility dependencies, not stable vendor schema guarantees.",
   "native_acl_contract": {
     "reported_at": "2026-10-12T20:58:43Z",
     "evidence_kind": "operator-reported allowlisted grant diagnostic; no raw response or credential committed",
     "read": 48,
     "read_write": 1008,
-    "read_native": ["allow_viewing"],
-    "read_write_native": ["allow_viewing", "allow_editing"],
+    "read_native": [
+      "allow_viewing"
+    ],
+    "read_write_native": [
+      "allow_viewing",
+      "allow_editing"
+    ],
     "vendor_bit_meanings": {
       "RevealItemPassword": 16,
       "ReadItems": 32,
@@ -37,5 +42,86 @@
     ],
     "interpretation": "Connect WRITE includes item deletion. The old synthetic value 496 omitted DeleteItems (512); it is not equivalent to 1008 and is rejected. Exact 48/1008 acceptance is an observed compatibility contract corroborated by vendor capabilities and SDK bit definitions, not a published stable JWT schema."
   },
-  "live_verification_status": "Full live compatibility verification is incomplete. The operator-reported assembly diagnostic corroborates only signed and native vault grants; real CLI template preservation, field-ID normalization, JWT authentication, expiry, cache visibility and lost-result compatibility still require the separately approved dummy-data verification."
+  "live_verification_status": "The 2026-10-12 direct vendor observation completed with no reported findings and corroborates the exact 48/1008 ACL correction. No additional application defect was demonstrated. End-to-end application compatibility remains incomplete; the original failed assembly and its revision/proposal-bound state have not been resumed.",
+  "direct_vendor_observation": {
+    "observed_at": "2026-10-12T21:51:37.881604Z",
+    "evidence_kind": "operator-returned allowlisted report from a direct user-run cycle; raw responses and credentials remain private",
+    "probe_archive_sha256": "c7688a2747224221459be15f847f3e8c6db3b0926a299ee2c4559dad2ed7d9df",
+    "cli_version": "2.33.0",
+    "reported_findings": [],
+    "signed_grants": {
+      "provision": {
+        "provision": 48,
+        "journal": 1008
+      },
+      "cleanup": {
+        "cleanup": 48,
+        "journal": 1008
+      },
+      "production": {
+        "production": 48
+      },
+      "independent_cleanup": {
+        "cleanup": 48,
+        "journal": 1008
+      }
+    },
+    "signed_claim_lifetime_seconds": 2592000,
+    "native_password_item": {
+      "operation": "create from CLI Password template, read full JSON, edit through JSON stdin, read back",
+      "selected_properties_preserved": true,
+      "compared_properties": [
+        "id",
+        "title",
+        "vault",
+        "category",
+        "sections",
+        "tags",
+        "urls",
+        "favorite"
+      ],
+      "compared_field_properties": [
+        "id",
+        "type",
+        "purpose",
+        "label",
+        "value",
+        "section"
+      ],
+      "added_string_field_value_preserved": true,
+      "requested_added_field_id_preserved": true,
+      "edit_visible_in_connect": true
+    },
+    "connect_password_item": {
+      "exact_shared_role_vault_visibility": true,
+      "forbidden_vault_get_status": 403,
+      "journal_vault_post_status": 200,
+      "read_only_vault_post_statuses": {
+        "provision": 403,
+        "cleanup": 403,
+        "production": 403
+      },
+      "journal_vault_put_status": 200,
+      "write_visible_in_native_cli": true,
+      "write_visible_in_fresh_independent_cache": true,
+      "independent_exact_vault_visibility": true,
+      "tampered_signature_get_status": 401,
+      "journal_vault_delete_status": 204,
+      "independent_get_after_delete_status": 404,
+      "transport_errors_observed": false
+    },
+    "cleanup": {
+      "probe_items_absent_from_active_inventory": true,
+      "probe_owned_cache_removed": true
+    },
+    "limits": [
+      "The report contains observations, not genuine native or HTTP response fixtures; committed response examples remain synthetic.",
+      "Only one bounded Password item template was compared. This does not validate every native field or the application publisher strict template checks.",
+      "A Password item in the journal vault does not exercise the application SECURE_NOTE/notesPlain journal serializer, durable publication or recovery.",
+      "A tampered signature was rejected; this is not a general JWT schema guarantee or an expiry/revocation enforcement exercise.",
+      "PUT and DELETE establish vendor write capabilities; the application transport remains intentionally limited to GET and POST.",
+      "No application assembly, publisher, journal import/recovery, activation or confirmation path was run; no lost reply, 429, 5xx or truncated response was injected.",
+      "Probe cleanup does not imply permanent deletion, original shared-cache removal, qualification success or production acceptance."
+    ]
+  }
 }
