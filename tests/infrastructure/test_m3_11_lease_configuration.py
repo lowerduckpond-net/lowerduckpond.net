@@ -14,7 +14,6 @@ import pytest
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_unattended import setup
 from scripts.m3_11_unattended.config import LeaseBootstrap, LeaseConfiguration
-from scripts.m3_11_unattended.connect_auth import READ, READ_WRITE
 from scripts.m3_11_unattended.connect_configuration import PROVIDER_REFERENCES
 from scripts.m3_11_unattended.model import (
     MONTHS_PER_YEAR,
@@ -49,15 +48,16 @@ def reader_document(
     native.update(id=identifier, created_at=stamp(now), expires_at=stamp(expiry))
     entry.update(expires_at=stamp(expiry))
     payload.update(jti=identifier, iat=int(now.timestamp()), exp=int(expiry.timestamp()))
-    grants = {selected_vaults[role]: READ}
+    grants = {selected_vaults[role]: 48}
     if role != "production":
-        grants[selected_vaults["journal"]] = READ_WRITE
+        grants[selected_vaults["journal"]] = 1008
     native["vaults"] = [
         {
             "id": vault.upper(),
-            "acl": ["allow_viewing"] + (["allow_editing"] if acl == READ_WRITE else []),
+            "acl": ["allow_viewing"]
+            + (["allow_editing"] if vault == selected_vaults["journal"] else []),
         }
-        for vault, acl in grants.items()
+        for vault in grants
     ]
     payload["1password.com/vts"] = [{"u": vault.upper(), "a": acl} for vault, acl in grants.items()]
     token(entry, payload)

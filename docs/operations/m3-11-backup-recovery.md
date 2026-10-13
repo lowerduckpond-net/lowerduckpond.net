@@ -212,19 +212,64 @@ that same helper to verify terminal legacy originals, retained hashes, issuer
 fencing, separate audit restoration and target-bound expiry outcomes. Stale local
 `unresolved` status is preserved; it is not rewritten into permission.
 
-Interface evidence is currently offline only: the vendored Connect 1.8.1 schema
-is an authoritative artifact; CLI and HTTP response examples are explicitly
-synthetic. The native publication adapter pins CLI 2.33.0; Connect image digests
-remain in `connect_host.py`. No genuine vendor response captures or live cache,
-JWT-signature, denied-access or full-template compatibility result is claimed.
-Before live publication/cutover, separately authorize the dummy-data compatibility
-exercise using disposable items and isolated clients on the existing test identities.
-Run the same proposal/record/bind/assembly/publication/import/confirmation route;
-retain native responses and versions, exact vault and denied-write checks, full-item
-preservation, cold independent-cache visibility, and interrupted edit/POST recovery
-with the original pending state. Use a local fault proxy for lost replies and
-429/5xx/truncation. Do not start qualification or create provider credentials for
-that compatibility exercise. Offline tests do not replace this outstanding check.
+The vendored Connect 1.8.1 schema is an authoritative artifact; committed CLI
+and HTTP response examples remain explicitly synthetic. An operator-reported
+diagnostic on 2026-10-12 paired CLI 2.33.0 native permissions with exact signed
+grants: `48` for read-only and `1008` for journal read/write. Connect's documented
+write permission includes item deletion (`512` in the vendor SDK); the former
+synthetic value `496` omitted deletion and is rejected. The
+[contract provenance](../../tests/infrastructure/fixtures/onepassword/provenance.json)
+records vendor sources and observation limits. This numeric JWT mapping is an
+observed compatibility dependency, not a published stable vendor schema. The
+native publication adapter pins CLI 2.33.0; Connect image digests remain in
+`connect_host.py`.
+
+A direct user-run cycle completed on 2026-10-12 at 21:51:37 UTC with no reported
+findings. The allowlisted report confirmed all four clients' exact `48`/`1008`
+grants, expected vault visibility, forbidden-vault and read-only-write `403`
+responses, and a `401` response after signature tampering. A dummy Password item
+retained the selected properties listed in the provenance report through a native
+JSON edit; its added field kept the requested ID and value and was visible through
+Connect. In the journal vault, Password-item POST/PUT/DELETE returned
+`200`/`200`/`204`; the write was visible through native `op` and a fresh independent
+cache, which returned `404` after deletion. The probe's items were absent from
+active inventory and its owned cache was removed. Original shared-cache state and
+private evidence were preserved. No genuine response captures are committed.
+
+A supplemental cycle completed at 22:26:13 UTC using the application's
+`SECURE_NOTE`/`notesPlain` field structure with dummy ownership tags and content.
+Create/get/list/update returned `200`, canonical note content survived the actual
+note reader, versions advanced from 1 to 2, and delete returned `204` followed by
+GET `404`. The list entry omitted full fields. A PUT carrying the earlier version
+also returned `200` and its value became visible; that operation did not enforce
+CAS. Application transport remains limited to GET and POST, and native publication
+still requires the exclusive editing interval described above.
+
+The supplemental native edit preserved the actual publisher's complete protected
+comparison, but its strict parser rejected `password_details`. A read-only
+diagnostic of the retained before/after responses identified exactly an object
+containing `strength` as a string; no values were shared. The adapter now permits
+that optional shape only on concealed password fields, carries it unchanged in
+the full JSON template, and retains it in the protected comparison. Additional
+keys or different types remain unsupported. The provenance records the official
+template guidance, a vendor employee's example, and the limits of the available
+schema documentation. The regression fixture's strength value is synthetic.
+
+The corrected parser can be replayed offline against those retained responses;
+no additional live edit is needed for that check. These observations still do not
+exercise the full assembly/publication/import/confirmation route. Expiry/revocation
+enforcement and interrupted edit/POST recovery, including lost replies and
+429/5xx/truncation, remain untested on real services. Neither cycle qualifies the
+application or authorizes production cutover. Both probes' owned items were removed
+from active inventory; the supplemental cycle created no cache resources.
+
+Continue application compatibility from the retained failed assembly after review
+of its exact runtime and proposal bindings. Preserve the original inputs, receipts,
+failed captures and staging directory. A corrected runtime needs new derived inputs,
+an explicitly reviewed proposal transition and a fresh output path; do not overwrite
+old state or replay completed setup. Exercise the actual application route with the
+existing disposable identities and preserve pending state during recovery checks.
+Do not start qualification or create provider credentials for this exercise.
 
 ### Migration, activation and cleanup-only rollback
 

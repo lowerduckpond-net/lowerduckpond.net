@@ -18,7 +18,9 @@ NOW = datetime(2026, 10, 4, 21, tzinfo=UTC)
 CANARY = "Connect-policy-secret-canary"
 SERVER, TOKEN, ACCOUNT = "S" * 26, "T" * 26, "A" * 26
 VAULT, JOURNAL, FORBIDDEN = "v" * 26, "j" * 26, "f" * 26
-EXPECTED = {VAULT: auth.READ, JOURNAL: auth.READ_WRITE}
+# Literal CLI-observed grants, independent of the parser under test. See the
+# vendor bit definitions and observation limits in fixtures/onepassword/provenance.json.
+EXPECTED = {VAULT: 48, JOURNAL: 1008}
 
 
 def encoded(value: object) -> str:
@@ -38,8 +40,8 @@ def example() -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
         "1password.com/token": CANARY,
         "1password.com/fts": ["vaultaccess"],
         "1password.com/vts": [
-            {"u": VAULT.upper(), "a": auth.READ},
-            {"u": JOURNAL.upper(), "a": auth.READ_WRITE},
+            {"u": VAULT.upper(), "a": 48},
+            {"u": JOURNAL.upper(), "a": 1008},
         ],
     }
     entry: dict[str, object] = {
@@ -109,6 +111,46 @@ def test_native_signed_policy_and_authenticated_separation() -> None:
     assert client.paths == ["/v1/vaults/" + FORBIDDEN]
     assert CANARY not in json.dumps(receipt)
     assert CANARY not in repr(access)
+
+
+@pytest.mark.parametrize("permission", [496, 48, True, False, "1008", 1008.0, None, -1])
+def test_journal_rejects_incomplete_grants_and_noninteger_permissions(permission: object) -> None:
+    entry, metadata, payload = example()
+    policies = cast(list[dict[str, object]], payload["1password.com/vts"])
+    policies[1]["a"] = permission
+    token(entry, payload)
+    with pytest.raises(LifecycleError) as caught:
+        auth.inspect(entry, metadata, expected=EXPECTED, now=NOW)
+    assert CANARY not in str(caught.value)
+    assert str(entry["token"]) not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "extra_bit", [1, 2, 4, 8, 1024, 1 << 20, 1 << 21, 1 << 22, 1 << 23, 1 << 31]
+)
+def test_journal_rejects_additional_permissions_and_unknown_bits(extra_bit: int) -> None:
+    entry, metadata, payload = example()
+    policies = cast(list[dict[str, object]], payload["1password.com/vts"])
+    policies[1]["a"] = 1008 | extra_bit
+    token(entry, payload)
+    with pytest.raises(LifecycleError):
+        auth.inspect(entry, metadata, expected=EXPECTED, now=NOW)
+
+
+@pytest.mark.parametrize("native", [False, True])
+def test_casefolded_duplicate_grants_remain_rejected(native: bool) -> None:
+    entry, metadata, payload = example()
+    if native:
+        record = cast(list[dict[str, object]], metadata["tokens"])[0]
+        policies = cast(list[dict[str, object]], record["vaults"])
+        duplicate = {**policies[1], "id": JOURNAL.lower()}
+    else:
+        policies = cast(list[dict[str, object]], payload["1password.com/vts"])
+        duplicate = {**policies[1], "u": JOURNAL.lower()}
+    policies.append(duplicate)
+    token(entry, payload)
+    with pytest.raises(LifecycleError, match="unknown or ambiguous grants"):
+        auth.inspect(entry, metadata, expected=EXPECTED, now=NOW)
 
 
 @pytest.mark.parametrize(
