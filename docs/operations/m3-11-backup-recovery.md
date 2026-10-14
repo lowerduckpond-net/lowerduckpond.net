@@ -229,7 +229,7 @@ separate authorization, in this dependency order:
 | 2 | Fence discovered issuers, including the manual diagnostic; verify restart disabled. Finalize and approve the exact migration, truthfully retaining any unresolved status. | Original issuance retires; both original cleaners and provider access remain. |
 | 3 | Deploy the reviewed bridge beside the unchanged host helper, with the existing cleanup configuration/evidence mounts and read-only bridge/helper mounts. Use `legacy_import_reader.watchdog_command(vault, migration_sha256)` exactly, restart policy `unless-stopped` with `MaximumRetryCount: 0`, and name the container `ldp-m311-import-watchdog-` plus the bridge file hash's first 12 characters. Retain a fresh bound reader receipt and a completed ordinary cleanup receipt; distinguish the known manual unresolved result from new failures. | Stop/disable restart of the unbridged watchdog only after compatible coverage is observed. GitHub cleanup remains available during this switch. |
 | 4 | Set protected-environment variable `M3_11_LEGACY_IMPORT_BRIDGE` to the closed object `{revision, journal_vault, migration_sha256}` using the reviewed full bridge revision and approved mapping. Run the existing `reconcile` workflow and retain its reader/cleanup receipts. Drain or cancel every queued/in-progress job using the old workflow/reader. | Replaces the GitHub reader only; retains its original helper pin, bootstrap secret, checkpoint token, artifact runtime and independent native identity. Host bridge continues throughout. |
-| 5 | Verify every predecessor host watchdog is stopped with restart `no`, not merely currently exited. After publishing the legacy-safe originals, the first-import publisher checks this host gate immediately before retaining/submitting the import; it requires a running exact bridge with restart `unless-stopped` where predecessors exist. Separately verify the GitHub selection and drained jobs; the Docker gate cannot establish those facts. Publish/reconcile the exact required import through `publish_import`. | All executable legacy readers now accept that import; no original cleanup authority is retired. An uncertain original/import POST retains pending state and gets readback only. |
+| 5 | Verify every predecessor host watchdog is stopped with restart `no`, not merely currently exited. After publishing the legacy-safe originals, the first-import publisher checks this host gate immediately before retaining/submitting the import; it requires a running exact bridge with restart `unless-stopped` and the mount bindings below where predecessors exist. Separately verify the GitHub selection and drained jobs; the Docker gate cannot establish those facts. Publish/reconcile the exact required import through `publish_import`. | All executable legacy readers now accept that import; no original cleanup authority is retired. An uncertain original/import POST retains pending state and gets readback only. |
 | 6 | Recover the genuine manual obligation after import with its retained original cleanup connection, original authority fingerprint and exact retained credential. Use the existing `Lifecycle.reconcile(intent, credential)` path with the complete imported journal. Retain fresh provider absence/negative-authentication evidence and any terminal record that real recovery requires. Reuse an existing sufficient terminal proof; do not request a new fact to prove CREATE. | The manual obligation closes only on real evidence. The old automatic watchdog does not discover the separate manual credential directory; it remains available for the other obligations while this explicit recovery uses the retained key. |
 | 7 | Complete separately approved provider expiry repair, original-client readiness and configuration binding. Obtain replacement host and independent cleanup receipts, then complete handoff and launch admission. | Retire each bridge/old authority only after its successor and original terminal proofs are verified; never stop both cleanup paths together. |
 
@@ -237,6 +237,26 @@ Before execution, prepare and review the concrete Docker delivery bindings and
 GitHub run/variable change from the refreshed inventory; the bridge itself neither
 deploys nor changes those resources. After import, rollback must retain compatible
 readers. Do not delete the import or start an unbridged predecessor to roll back.
+
+The host bridge must mount these exact named volumes; bind mounts, missing or
+duplicate destinations, different access modes, volume subpaths and mounts beneath
+these destinations are rejected. The helper revision is the full pinned
+`0b5b198bf06443e61f01b1f7259fea827f79fc23`; the bridge digest is the full SHA-256 of
+the reviewed `legacy_import_reader.py` file. Preserve the existing Docker socket
+transport separately.
+
+| Destination | Named volume | Access |
+| --- | --- | --- |
+| `/cleanup` | `ldp-m311-cleanup-config` | Read-only |
+| `/evidence` | `ldp-m311-evidence` | Read/write |
+| `/opt/lifecycle` | `ldp-m311-helper-` plus the full pinned helper revision | Read-only |
+| `/opt/import-bridge` | `ldp-m311-import-bridge-` plus the full bridge file digest | Read-only |
+
+These bindings and the existing script hashes are checked again after original
+publication, before accepting the bridge for import. A persistent watchdog can
+stay running while reporting configuration errors, so running status and valid
+mounts still do not replace the fresh reader and ordinary cleanup receipts in
+step 3. Keep the fallback cleaner until replacement coverage is verified.
 
 The existing clients remain unchanged. `reader_access` accepts the exact observed
 496 profile only on the journal vault for provision and cleanup roles (including

@@ -22,7 +22,7 @@ from scripts.m3_11_unattended import legacy_actors, legacy_diagnostics
 from scripts.m3_11_unattended import legacy_import_reader as bridge
 from scripts.m3_11_unattended.connect_activate import publish_import
 from scripts.m3_11_unattended.connect_api import Response
-from scripts.m3_11_unattended.docker import OWNER, Docker
+from scripts.m3_11_unattended.docker import CLEANUP_VOLUME, EVIDENCE_VOLUME, OWNER, Docker
 from scripts.m3_11_unattended.journal import TAG, event, record_title
 from scripts.m3_11_unattended.model import LifecycleError, digest
 
@@ -313,6 +313,23 @@ class Host:
             },
             "State": {"Running": True, "Restarting": False, "Paused": False, "Dead": False},
             "HostConfig": {"RestartPolicy": {"Name": "unless-stopped", "MaximumRetryCount": 0}},
+            "Mounts": [
+                {"Type": "volume", "Name": name, "Destination": destination, "RW": writable}
+                for destination, name, writable in (
+                    ("/cleanup", CLEANUP_VOLUME, False),
+                    ("/evidence", EVIDENCE_VOLUME, True),
+                    ("/opt/lifecycle", "ldp-m311-helper-" + bridge.LEGACY_REVISION, False),
+                    ("/opt/import-bridge", "ldp-m311-import-bridge-" + self.bridge_sha256, False),
+                )
+            ]
+            + [
+                {
+                    "Type": "bind",
+                    "Source": "/docker-sock/docker.sock",
+                    "Destination": "/var/run/docker.sock",
+                    "RW": True,
+                }
+            ],
         }
         self.rows = [self.old, self.bridged]
 
@@ -399,7 +416,85 @@ def test_all_host_readers_are_compatible_or_fenced_before_import(
         legacy_actors.require_import_readers(cast(Docker, host), vault=VAULT, expected="a" * 64)
 
 
-@pytest.mark.parametrize("fault", ["stopped", "restart-disabled"])
+@pytest.mark.parametrize(
+    "destination", ["/cleanup", "/evidence", "/opt/lifecycle", "/opt/import-bridge"]
+)
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "missing",
+        "wrong-volume",
+        "bind",
+        "wrong-mode",
+        "missing-mode",
+        "duplicate",
+        "shadow",
+        "subpath",
+    ],
+)
+def test_import_requires_exact_bridge_mounts(
+    monkeypatch: pytest.MonkeyPatch, destination: str, fault: str | None
+) -> None:
+    host = Host()
+    hashes = {
+        bridge.PROGRAM: host.bridge_sha256,
+        "/opt/lifecycle/scripts/m3_11_unattended/connect_ledger.py": bridge.LEDGER_SHA256,
+    }
+    monkeypatch.setattr(legacy_diagnostics, "script_digest", lambda _host, _id, path: hashes[path])
+    mounts = host.bridged["Mounts"]
+    mount = next(row for row in mounts if row["Destination"] == destination)
+    if fault == "missing":
+        mounts.remove(mount)
+    elif fault == "wrong-volume":
+        mount["Name"] += "-other"
+    elif fault == "bind":
+        mount["Type"] = "bind"
+        mount["Source"] = "/some/other/directory"
+    elif fault == "wrong-mode":
+        mount["RW"] = not mount["RW"]
+    elif fault == "missing-mode":
+        del mount["RW"]
+    elif fault == "duplicate":
+        mounts.append(deepcopy(mount))
+    elif fault == "shadow":
+        child = {
+            "/cleanup": "cleanup.json",
+            "/evidence": "runs",
+            "/opt/lifecycle": "scripts/m3_11_unattended/connect_access.py",
+            "/opt/import-bridge": "legacy_import_reader.py",
+        }[destination]
+        mounts.append({**mount, "Destination": destination + "/" + child})
+    elif fault == "subpath":
+        host.bridged["HostConfig"]["Mounts"] = [
+            {"Type": "volume", "Target": destination, "VolumeOptions": {"Subpath": "other"}}
+        ]
+    if fault is None:
+        legacy_actors.require_import_readers(cast(Docker, host), vault=VAULT, expected="a" * 64)
+        assert host.bridged["Id"] not in legacy_actors.inventory(cast(Docker, host))
+    else:
+        # Correct scripts, command and running/restart state cannot mask a bad mount.
+        with pytest.raises(LifecycleError, match="unbridged legacy reader"):
+            legacy_actors.require_import_readers(cast(Docker, host), vault=VAULT, expected="a" * 64)
+        assert host.bridged["Id"] in legacy_actors.inventory(cast(Docker, host))
+
+
+@pytest.mark.parametrize("mounts", [None, {}, [], [None], [{"Destination": 42}]])
+def test_import_rejects_missing_or_malformed_mount_inventory(
+    monkeypatch: pytest.MonkeyPatch, mounts: object
+) -> None:
+    host = Host()
+    host.bridged["Mounts"] = mounts
+    monkeypatch.setattr(
+        legacy_diagnostics, "script_digest", lambda *_: pytest.fail("invalid mounts reached exec")
+    )
+    with pytest.raises(LifecycleError, match="unbridged legacy reader"):
+        legacy_actors.require_import_readers(cast(Docker, host), vault=VAULT, expected="a" * 64)
+
+
+@pytest.mark.parametrize(
+    "fault", ["stopped", "restart-disabled", "missing-cleanup", "wrong-evidence"]
+)
 def test_import_rechecks_reader_after_publishing_originals(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
 ) -> None:
@@ -408,6 +503,7 @@ def test_import_rechecks_reader_after_publishing_originals(
     host.bridged["Id"] = "c" * 64
     expected = digest(mapping)
     host.bridged["Config"]["Cmd"] = bridge.watchdog_command(client.vault, expected)
+    original_mounts = deepcopy(host.bridged["Mounts"])
     hashes = {
         bridge.PROGRAM: host.bridge_sha256,
         "/opt/lifecycle/scripts/m3_11_unattended/connect_ledger.py": bridge.LEDGER_SHA256,
@@ -432,14 +528,24 @@ def test_import_rechecks_reader_after_publishing_originals(
         if method == "POST" and body is not None and body["tags"] == [TAG]:
             if fault == "stopped":
                 host.bridged["State"]["Running"] = False
-            else:
+            elif fault == "restart-disabled":
                 host.bridged["HostConfig"]["RestartPolicy"]["Name"] = "no"
+            elif fault == "missing-cleanup":
+                host.bridged["Mounts"] = [
+                    row for row in host.bridged["Mounts"] if row["Destination"] != "/cleanup"
+                ]
+            elif fault == "wrong-evidence":
+                for row in host.bridged["Mounts"]:
+                    if row["Destination"] == "/evidence":
+                        row["Name"] += "-other"
         return response
 
     monkeypatch.setattr(client, "request", lose_reader)
     spool = tmp_path / "pending"
     before = client.posts
-    with pytest.raises(LifecycleError, match="compatible host cleanup reader"):
+    with pytest.raises(
+        LifecycleError, match=r"compatible host cleanup reader|unbridged legacy reader"
+    ):
         publish_import(
             client, vault=client.vault, approved=mapping, spool=spool, docker=cast(Docker, docker)
         )
@@ -451,6 +557,7 @@ def test_import_rechecks_reader_after_publishing_originals(
 
     host.bridged["State"]["Running"] = True
     host.bridged["HostConfig"]["RestartPolicy"]["Name"] = "unless-stopped"
+    host.bridged["Mounts"] = original_mounts
     assert (
         publish_import(
             client, vault=client.vault, approved=mapping, spool=spool, docker=cast(Docker, docker)
