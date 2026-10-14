@@ -197,9 +197,9 @@ separate authorization, in this dependency order:
 | --- | --- | --- |
 | 1 | Refresh read-only discovery of originals and every owned actor. Resolve omissions before fencing. | None; existing host and GitHub cleanup continue. |
 | 2 | Fence discovered issuers, including the manual diagnostic; verify restart disabled. Finalize and approve the exact migration, truthfully retaining any unresolved status. | Original issuance retires; both original cleaners and provider access remain. |
-| 3 | Deploy the reviewed bridge beside the unchanged host helper, with the existing cleanup configuration/evidence mounts and read-only bridge/helper mounts. Use `legacy_import_reader.watchdog_command(vault, migration_sha256)` exactly and name the container `ldp-m311-import-watchdog-` plus the bridge file hash's first 12 characters. Retain a fresh bound reader receipt and a completed ordinary cleanup receipt; distinguish the known manual unresolved result from new failures. | Stop/disable restart of the unbridged watchdog only after compatible coverage is observed. GitHub cleanup remains available during this switch. |
+| 3 | Deploy the reviewed bridge beside the unchanged host helper, with the existing cleanup configuration/evidence mounts and read-only bridge/helper mounts. Use `legacy_import_reader.watchdog_command(vault, migration_sha256)` exactly, restart policy `unless-stopped` with `MaximumRetryCount: 0`, and name the container `ldp-m311-import-watchdog-` plus the bridge file hash's first 12 characters. Retain a fresh bound reader receipt and a completed ordinary cleanup receipt; distinguish the known manual unresolved result from new failures. | Stop/disable restart of the unbridged watchdog only after compatible coverage is observed. GitHub cleanup remains available during this switch. |
 | 4 | Set protected-environment variable `M3_11_LEGACY_IMPORT_BRIDGE` to the closed object `{revision, journal_vault, migration_sha256}` using the reviewed full bridge revision and approved mapping. Run the existing `reconcile` workflow and retain its reader/cleanup receipts. Drain or cancel every queued/in-progress job using the old workflow/reader. | Replaces the GitHub reader only; retains its original helper pin, bootstrap secret, checkpoint token, artifact runtime and independent native identity. Host bridge continues throughout. |
-| 5 | Verify every predecessor host watchdog is stopped with restart `no`, not merely currently exited. The first-import publisher enforces this host gate and requires a running exact bridge where predecessors exist. Separately verify the GitHub selection and drained jobs; the Docker gate cannot establish those facts. Publish/reconcile the exact required import through `publish_import`. | All executable legacy readers now accept that import; no original cleanup authority is retired. An uncertain original/import POST retains pending state and gets readback only. |
+| 5 | Verify every predecessor host watchdog is stopped with restart `no`, not merely currently exited. After publishing the legacy-safe originals, the first-import publisher checks this host gate immediately before retaining/submitting the import; it requires a running exact bridge with restart `unless-stopped` where predecessors exist. Separately verify the GitHub selection and drained jobs; the Docker gate cannot establish those facts. Publish/reconcile the exact required import through `publish_import`. | All executable legacy readers now accept that import; no original cleanup authority is retired. An uncertain original/import POST retains pending state and gets readback only. |
 | 6 | Recover the genuine manual obligation after import with its retained original cleanup connection, original authority fingerprint and exact retained credential. Use the existing `Lifecycle.reconcile(intent, credential)` path with the complete imported journal. Retain fresh provider absence/negative-authentication evidence and any terminal record that real recovery requires. Reuse an existing sufficient terminal proof; do not request a new fact to prove CREATE. | The manual obligation closes only on real evidence. The old automatic watchdog does not discover the separate manual credential directory; it remains available for the other obligations while this explicit recovery uses the retained key. |
 | 7 | Complete separately approved provider expiry repair, original-client readiness and configuration binding. Obtain replacement host and independent cleanup receipts, then complete handoff and launch admission. | Retire each bridge/old authority only after its successor and original terminal proofs are verified; never stop both cleanup paths together. |
 
@@ -386,8 +386,9 @@ The vendored Connect 1.8.1 schema is an authoritative artifact; committed CLI
 and HTTP response examples remain explicitly synthetic. An operator-reported
 diagnostic on 2026-10-12 paired CLI 2.33.0 native permissions with exact signed
 grants: `48` for read-only and `1008` for journal read/write. Connect's documented
-write permission includes item deletion (`512` in the vendor SDK); the former
-synthetic value `496` omitted deletion and is rejected. The
+write permission includes item deletion (`512` in the vendor SDK); `496` omits
+deletion and is rejected by the generic full-WRITE inspection path. The role-aware
+journal profile described above accepts `496` without treating it as `1008`. The
 [contract provenance](../../tests/infrastructure/fixtures/onepassword/provenance.json)
 records vendor sources and observation limits. This numeric JWT mapping is an
 observed compatibility dependency, not a published stable vendor schema. The
@@ -406,10 +407,12 @@ coverage and cleanup. No expiry grace period is added.
 That discovery also found genuine journal grants of `496` on three existing
 clients. The three shared clients authenticated with exact vault isolation, and
 all eleven dependent item reads passed. These GET observations do not establish
-journal WRITE or equivalence with `1008`; `496` remains rejected by the current
-grant contract. The independent client had matching native identity and claim
-shapes but was not contacted through an independent service. This discovery does
-not reopen the closed compatibility exercise or authorize production activation.
+CREATE or equivalence with `1008`. The role-aware reader contract accepts `496`
+only for the declared provision/cleanup journal scopes; generic full-WRITE
+inspection still rejects it. During that discovery, the independent client had
+matching native identity and claim shapes but was not contacted through an
+independent service. This discovery does not reopen the closed compatibility
+exercise or authorize production activation.
 
 A direct user-run cycle completed on 2026-10-12 at 21:51:37 UTC with no reported
 findings. The allowlisted report confirmed all four clients' exact `48`/`1008`

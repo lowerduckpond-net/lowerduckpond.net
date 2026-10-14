@@ -388,16 +388,18 @@ def require_import_readers(docker: Docker, *, vault: str, expected: str) -> None
         readers += 1
         actual = docker.owned(selected)
         state = cast(dict[str, object], actual.get("State", {}))
+        host = cast(dict[str, object], actual.get("HostConfig", {}))
         if import_watchdog(docker, actual):
             config = cast(dict[str, object], actual["Config"])
             if config["Cmd"] != bridge.watchdog_command(vault, expected):
                 raise LifecycleError("legacy import reader approval differs")
-            if state.get("Running") is True and all(
-                state.get(key) is False for key in ("Restarting", "Paused", "Dead")
+            if (
+                state.get("Running") is True
+                and all(state.get(key) is False for key in ("Restarting", "Paused", "Dead"))
+                and host.get("RestartPolicy") == {"Name": "unless-stopped", "MaximumRetryCount": 0}
             ):
                 compatible += 1
             continue
-        host = cast(dict[str, object], actual.get("HostConfig", {}))
         if (
             state.get("Running") is not False
             or any(state.get(key) is True for key in ("Restarting", "Paused", "Dead"))
@@ -405,7 +407,9 @@ def require_import_readers(docker: Docker, *, vault: str, expected: str) -> None
         ):
             raise LifecycleError("unbridged legacy reader may still execute or restart")
     if readers and not compatible:
-        raise LifecycleError("legacy import has no running compatible host cleanup reader")
+        raise LifecycleError(
+            "legacy import has no running compatible host cleanup reader with restart enabled"
+        )
 
 
 def fenced(docker: Docker, actor: dict[str, object]) -> dict[str, str]:

@@ -544,12 +544,12 @@ def publish_import(
     recheck_import(mapping, docker)
     from scripts.m3_11_unattended.legacy_actors import require_import_readers  # noqa: PLC0415
 
-    require_import_readers(docker, vault=vault, expected=expected)
     for record in imported:
         publish_original(journal, record)
     pending = spool / ("import-" + expected + ".json")
     if pending.exists():
         raise LifecycleError("legacy import POST is uncertain; reconcile its original identity")
+    require_import_readers(docker, vault=vault, expected=expected)
     retain(pending, mapping)
     client.request(
         "POST",

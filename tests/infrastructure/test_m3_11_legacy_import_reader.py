@@ -20,10 +20,13 @@ import pytest
 from scripts.m3_11_qualification_evidence import canonical_bytes
 from scripts.m3_11_unattended import legacy_actors, legacy_diagnostics
 from scripts.m3_11_unattended import legacy_import_reader as bridge
+from scripts.m3_11_unattended.connect_activate import publish_import
 from scripts.m3_11_unattended.connect_api import Response
 from scripts.m3_11_unattended.docker import OWNER, Docker
 from scripts.m3_11_unattended.journal import TAG, event, record_title
 from scripts.m3_11_unattended.model import LifecycleError, digest
+
+from .test_m3_11_lease_migration import local_import
 
 VAULT = "j" * 26
 AUTHOR = "A" * 26
@@ -309,6 +312,7 @@ class Host:
                 "Cmd": bridge.watchdog_command(VAULT, "a" * 64),
             },
             "State": {"Running": True, "Restarting": False, "Paused": False, "Dead": False},
+            "HostConfig": {"RestartPolicy": {"Name": "unless-stopped", "MaximumRetryCount": 0}},
         }
         self.rows = [self.old, self.bridged]
 
@@ -337,6 +341,11 @@ class Host:
         "no-bridge",
         "stopped-bridge",
         "only-bridge-stopped",
+        "missing-restart-policy",
+        "restart-disabled",
+        "restart-on-failure",
+        "restart-always",
+        "restart-retry-limit",
         "wrong-binding",
         "wrong-program",
         "wrong-ledger",
@@ -348,6 +357,15 @@ def test_all_host_readers_are_compatible_or_fenced_before_import(
     fault: str | None,
 ) -> None:
     host = Host()
+    restart_faults = {
+        "missing-restart-policy": {},
+        "restart-disabled": {"RestartPolicy": {"Name": "no", "MaximumRetryCount": 0}},
+        "restart-on-failure": {"RestartPolicy": {"Name": "on-failure", "MaximumRetryCount": 0}},
+        "restart-always": {"RestartPolicy": {"Name": "always", "MaximumRetryCount": 0}},
+        "restart-retry-limit": {
+            "RestartPolicy": {"Name": "unless-stopped", "MaximumRetryCount": 3}
+        },
+    }
     hashes = {
         bridge.PROGRAM: host.bridge_sha256,
         "/opt/lifecycle/scripts/m3_11_unattended/connect_ledger.py": bridge.LEDGER_SHA256,
@@ -364,6 +382,8 @@ def test_all_host_readers_are_compatible_or_fenced_before_import(
     elif fault == "only-bridge-stopped":
         host.rows.remove(host.old)
         host.bridged["State"]["Running"] = False
+    elif fault in restart_faults:
+        host.bridged["HostConfig"] = restart_faults[fault]
     elif fault == "wrong-binding":
         host.bridged["Config"]["Cmd"] = bridge.watchdog_command(VAULT, "b" * 64)
     elif fault == "wrong-program":
@@ -377,3 +397,65 @@ def test_all_host_readers_are_compatible_or_fenced_before_import(
             legacy_actors.require_import_readers(cast(Docker, host), vault=VAULT, expected="a" * 64)
     else:
         legacy_actors.require_import_readers(cast(Docker, host), vault=VAULT, expected="a" * 64)
+
+
+@pytest.mark.parametrize("fault", ["stopped", "restart-disabled"])
+def test_import_rechecks_reader_after_publishing_originals(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    _case, client, mapping, docker = local_import(tmp_path)
+    host = Host()
+    host.bridged["Id"] = "c" * 64
+    expected = digest(mapping)
+    host.bridged["Config"]["Cmd"] = bridge.watchdog_command(client.vault, expected)
+    hashes = {
+        bridge.PROGRAM: host.bridge_sha256,
+        "/opt/lifecycle/scripts/m3_11_unattended/connect_ledger.py": bridge.LEDGER_SHA256,
+    }
+    monkeypatch.setattr(legacy_diagnostics, "script_digest", lambda _host, _id, path: hashes[path])
+    command, owned = docker.command, docker.owned
+
+    def inventory(*args: str) -> bytes:
+        output = command(*args)
+        return output + host.command(*args) if args[-1] == "{{.ID}} {{.Names}}" else output
+
+    monkeypatch.setattr(docker, "command", inventory)
+    monkeypatch.setattr(
+        docker,
+        "owned",
+        lambda selected: owned(selected) if selected == "b" * 64 else host.owned(selected),
+    )
+    request = client.request
+
+    def lose_reader(method: str, path: str, body: Row | None = None) -> Response:
+        response = request(method, path, body)
+        if method == "POST" and body is not None and body["tags"] == [TAG]:
+            if fault == "stopped":
+                host.bridged["State"]["Running"] = False
+            else:
+                host.bridged["HostConfig"]["RestartPolicy"]["Name"] = "no"
+        return response
+
+    monkeypatch.setattr(client, "request", lose_reader)
+    spool = tmp_path / "pending"
+    before = client.posts
+    with pytest.raises(LifecycleError, match="compatible host cleanup reader"):
+        publish_import(
+            client, vault=client.vault, approved=mapping, spool=spool, docker=cast(Docker, docker)
+        )
+    assert client.posts == before + 1  # Only the legacy-safe original was submitted.
+    assert not (spool / ("import-" + expected + ".json")).exists()
+    assert all(item["title"] != "m3-11-import-" + expected for item in client.items.values())
+    originals = {path: path.read_bytes() for path in spool.glob("original-*.json")}
+    assert len(originals) == 1
+
+    host.bridged["State"]["Running"] = True
+    host.bridged["HostConfig"]["RestartPolicy"]["Name"] = "unless-stopped"
+    assert (
+        publish_import(
+            client, vault=client.vault, approved=mapping, spool=spool, docker=cast(Docker, docker)
+        )
+        == expected
+    )
+    assert client.posts == before + 2  # Reconciles the original without replay; imports once.
+    assert all(path.read_bytes() == raw for path, raw in originals.items())
