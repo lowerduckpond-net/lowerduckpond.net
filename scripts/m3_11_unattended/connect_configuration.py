@@ -50,6 +50,7 @@ def reader_access(
         now=datetime.now(UTC),
         approved_expires_at=instant(selected["approved_expires_at"]) if explicit else None,
         allow_expired=allow_expired,
+        journal_role=role if role != "production" else None,
     )
     Connect(url, access.token)  # Validate the bare HTTPS origin without contacting it.
     return selected, access

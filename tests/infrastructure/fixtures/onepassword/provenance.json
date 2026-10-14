@@ -40,7 +40,22 @@
       "https://www.1password.dev/connect/security#security-model",
       "https://www.1password.dev/cli/vault-permissions"
     ],
-    "interpretation": "Connect WRITE includes item deletion. The old synthetic value 496 omitted DeleteItems (512); it is not equivalent to 1008 and is rejected. Exact 48/1008 acceptance is an observed compatibility contract corroborated by vendor capabilities and SDK bit definitions, not a published stable JWT schema."
+    "interpretation": "Connect WRITE includes item deletion. The old synthetic value 496 omitted DeleteItems (512); it is not equivalent to 1008 and remains rejected when full WRITE is requested. Exact 48/1008 acceptance is an observed compatibility contract corroborated by vendor capabilities and SDK bit definitions, not a published stable JWT schema. The later production role profile below is a separate, narrower contract."
+  },
+  "production_role_profile_observation": {
+    "observed_at": "2026-10-14T07:23:33.918928+00:00",
+    "evidence_kind": "operator-returned allowlisted diagnostic of the original production clients; no raw response, JWT or private inventory committed",
+    "result_sha256": "e5744c4ced1e091aa931ef0e4f9a5c2cb18d93470e876a7bb05cf45a3025c353",
+    "journal_signed_grant": 496,
+    "journal_native_labels": ["allow_viewing", "allow_editing"],
+    "roles_with_journal_grant": ["provision", "cleanup", "independent_cleanup"],
+    "own_secret_vault_grant": 48,
+    "production_has_no_journal_grant": true,
+    "shared_authentication_and_exact_vault_isolation_verified": true,
+    "shared_secret_reads_verified": 11,
+    "independent_authentication_and_isolation_verified": false,
+    "create_verified": false,
+    "interpretation": "496 declares read/reveal, create, update and archive, without delete. The application journal transport permits only GET and item-creation POST; the provision and production readers do not publish journal facts. Accept this exact profile only for provision/cleanup journal scopes, preserve the actual signed mask and all native identity/isolation checks. This validates declared operation coverage, not successful CREATE or independent authentication. Neither the closed disposable exercise nor its 1008 observations proves CREATE for these original clients."
   },
   "live_verification_status": "Direct vendor cycles corroborated the ACL correction and exposed an additional publisher rejection of observed password_details metadata. The parser now accepts only the observed strength:string shape while retaining complete protection. Secure Note fields and canonical content round-tripped, but full application orchestration, fault recovery and expiry enforcement remain unverified. Offline replay of retained publisher captures is prepared, not yet reported; the original failed assembly has not been resumed.",
   "direct_vendor_observation": {

@@ -208,7 +208,8 @@ def fixture() -> tuple[dict[str, object], FakeOperator]:
     return manifest, FakeOperator(manifest, configured)
 
 
-def test_assembly_retains_signed_deadline_with_later_native_expiry() -> None:
+@pytest.mark.parametrize("journal_permission", [496, 1008])
+def test_assembly_retains_signed_deadline_with_later_native_expiry(journal_permission: int) -> None:
     manifest, operator = fixture()
     signed_expiries = {}
     for role, raw in mapping(manifest["clients"]).items():
@@ -218,6 +219,9 @@ def test_assembly_retains_signed_deadline_with_later_native_expiry() -> None:
         payload["aud"] = [payload["aud"]]
         expiry = instant(client["expires_at"]) - timedelta(seconds=1)
         payload["exp"] = int(expiry.timestamp())
+        if role != "production":
+            policies = cast(list[dict[str, object]], payload["1password.com/vts"])
+            next(row for row in policies if row["a"] != 48)["a"] = journal_permission  # noqa: PLR2004
         operator.secrets[ref] = token({}, payload)
         client["expires_at"] = stamp(expiry)
         signed_expiries[role] = expiry
@@ -228,6 +232,12 @@ def test_assembly_retains_signed_deadline_with_later_native_expiry() -> None:
     parsed = LeaseConfiguration.parse(controller)
     for role, configured in parsed.generations[parsed.active_generation].items():
         assert instant(configured.generation.connect_expires_at) == signed_expiries[role]
+        _, access = reader_access(configured.reader_settings)
+        assert access.grants[parsed.journal_vault] == journal_permission
+        assert access.receipt()["authenticated"] is False
+        assert access.receipt()["create_verified"] is False
+    _, independent_access = reader_access(independent)
+    assert independent_access.grants[parsed.journal_vault] == journal_permission
     assert parsed.production is not None
     _, production_access = reader_access(parsed.production["connect"])
     assert production_access.expires_at == signed_expiries["production"]

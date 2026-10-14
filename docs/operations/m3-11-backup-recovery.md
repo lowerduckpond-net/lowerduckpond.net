@@ -208,15 +208,60 @@ GitHub run/variable change from the refreshed inventory; the bridge itself neith
 deploys nor changes those resources. After import, rollback must retain compatible
 readers. Do not delete the import or start an unbridged predecessor to roll back.
 
-The existing 496 clients remain unchanged. Shared read/isolation evidence is not
-CREATE evidence. Independent authentication/isolation and CREATE are still pending;
-no provision-client write test is needed. If real recovery produces no independent
-write, independent CREATE remains unverified. That limits claims of independent
-publication capability; it does not invalidate an otherwise verified read-only
-cleanup receipt or require a synthetic event. The current full-WRITE validator
-still rejects 496 and blocks standard assembly/activation. Its role-aware correction
-remains a separately evidenced change in this cutover work; this reader bridge does
-not bypass it. The Cloudflare finite-expiry repair still needs separate approval.
+The existing clients remain unchanged. `reader_access` accepts the exact observed
+496 profile only on the journal vault for provision and cleanup roles (including
+independent cleanup). Their own secret vault stays exactly READ/48; production
+stays READ/48 on its sole vault. Native view/edit labels, signed identity, audience,
+expiry, exact vault scope and authenticated forbidden-vault checks remain required.
+The signed mask is retained as 496 in `Access` and hashed-vault receipts, never
+reported as full WRITE/1008. The general full-WRITE validator still rejects 496.
+
+| Actor | Journal operations in the implementation | Effect of the existing profile |
+| --- | --- | --- |
+| Provision client | None. `LeaseBootstrap.providers` reads its own bootstrap vault; `Worker._inventory` selects the cleanup reader. | Keep its existing 496 journal grant without a write probe. |
+| Production client | None. Production references are read from its own vault. | Keep its sole 48 grant; no journal access is accepted. |
+| Shared cleanup client | GET inventory/items and POST Secure Notes via `publish_original`, `publish_import`, `ConnectObligations.append` and `ConnectInventory.publish`. | 496 declares read/reveal and CREATE. UPDATE/archive are present but unused; DELETE is absent and unused. |
+| Independent cleanup client | Authentication/isolation GETs first, then journal GETs; POST only for genuine recovery, lease confirmation or closure through the same lifecycle/publication code. | Same declared coverage as shared cleanup. Acceptance of 496 does not verify authentication or CREATE. |
+
+The [pinned vendor SDK bit definitions](https://github.com/1Password/onepassword-sdk-go/blob/5866f43111ffeee5952e43a13da1aafef98200c8/types.go#L1306-L1319)
+identify read/reveal as 32/16, CREATE as 128, UPDATE/archive as 64/256 and DELETE as
+512. This is the basis for declared operation coverage, not a live request result
+or a claim that 496 equals vendor full WRITE. `Connect.request` only permits GET
+and item-creation POST; provider credential deletion uses the separate provider
+authority. No journal PUT/PATCH/DELETE is required by these actors. Unknown masks,
+partial subsets, numeric strings, extra vaults and expanded own-vault access fail.
+
+Every independent execution authenticates the original token against its separate
+cache and verifies exact visibility plus forbidden-vault denials **before** opening
+the journal or reading provider secrets. Its separate `authentication.json` receipt
+starts pending and records success only after all checks pass. The protected workflow
+retains that observation; failed authentication stops subsequent work. Policy and
+authentication receipts always say `create_verified: false`. Successful publication
+is evidenced by the actual fact's exact readback and ordinary lifecycle receipts.
+
+As of the retained October 14 diagnostic, shared authentication/isolation and its
+eleven secret reads passed; independent authentication/isolation has not run. There
+is no existing independent endpoint. Its first use must run on the separate cache
+(Studio's default local Docker context for an approved Studio execution, or the
+existing protected GitHub runner); the master credential must stay off the controller
+host. No replacement client or prerequisite test write is needed. If real recovery
+produces no independent write, independent CREATE remains unverified. That limits
+publication claims, not an otherwise verified read-only cleanup receipt. The real
+lease's required independent confirmation still gates issuance; failure to publish
+that confirmation blocks issuance without fabricating a replacement fact.
+
+The dependency check is: reader bridge → import (unresolved obligations allowed) →
+original-authority recovery → activation → replacement-cleaner delivery and handoff
+→ real lease manifest/independent confirmation → issuance. Standard assembly accepts
+496 and does not require prior CREATE success, import or cleanup readiness. Import
+does not require activation; original recovery does not require replacement cleaner
+delivery. Thus those checks do not form a cycle. Do not call `connect_delivery.install`
+before its activation receipt, or require independent CREATE before the real manifest.
+Keep the existing cleaners available until successor receipts and terminal proofs
+permit their retirement. Preserve the same durable spool on uncertain writes; use
+exact readback, never a new spool or an indiscriminate rerun to bypass pending state.
+The Cloudflare finite-expiry repair remains separately pending approval; it is a
+provider activation prerequisite, not a journal CREATE test or import-closure claim.
 
 For this cutover, old-authority work must finish before **2026-10-17 00:00 UTC**
 (October 16, 19:00 America/Chicago). Review/deployment delays, the manual negative
