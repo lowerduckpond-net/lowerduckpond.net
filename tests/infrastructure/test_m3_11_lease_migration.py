@@ -181,6 +181,8 @@ class ImportDocker:
 
     def command(self, *arguments: str) -> bytes:
         assert arguments[0] == "ps"
+        if arguments[-1] == "{{.ID}} {{.Names}}":
+            return ("b" * 64 + " ldp-m311-controller-synthetic\n").encode()
         return ("b" * 64 + "\n").encode()
 
     def owned(self, selected: str) -> dict[str, object]:

@@ -19,9 +19,12 @@ from scripts.m3_11_unattended import connect_setup
 from scripts.m3_11_unattended import operator_assemble as assembly
 from scripts.m3_11_unattended.config import DO_READ_SCOPES, LeaseConfiguration
 from scripts.m3_11_unattended.connect_action import bootstrap
+from scripts.m3_11_unattended.connect_auth import claims
+from scripts.m3_11_unattended.connect_configuration import reader_access
 from scripts.m3_11_unattended.connect_delivery import MAX_SECRET_BYTES
 from scripts.m3_11_unattended.model import LifecycleError, digest, instant, stamp
 
+from .test_m3_11_connect_auth import token
 from .test_m3_11_connect_setup import independent_reader
 from .test_m3_11_lease_configuration import document, mapping
 
@@ -203,6 +206,35 @@ def fixture() -> tuple[dict[str, object], FakeOperator]:
             },
         }
     return manifest, FakeOperator(manifest, configured)
+
+
+def test_assembly_retains_signed_deadline_with_later_native_expiry() -> None:
+    manifest, operator = fixture()
+    signed_expiries = {}
+    for role, raw in mapping(manifest["clients"]).items():
+        client = mapping(raw)
+        ref = str(client["reference"])
+        payload = claims(operator.secrets[ref])
+        payload["aud"] = [payload["aud"]]
+        expiry = instant(client["expires_at"]) - timedelta(seconds=1)
+        payload["exp"] = int(expiry.timestamp())
+        operator.secrets[ref] = token({}, payload)
+        client["expires_at"] = stamp(expiry)
+        signed_expiries[role] = expiry
+    config, independent, _attestations = assembly.documents(
+        manifest, cast(connect_setup.Operator, operator)
+    )
+    controller, _github = connect_setup.assemble(config, independent, {"synthetic": SERVER_SECRET})
+    parsed = LeaseConfiguration.parse(controller)
+    for role, configured in parsed.generations[parsed.active_generation].items():
+        assert instant(configured.generation.connect_expires_at) == signed_expiries[role]
+    assert parsed.production is not None
+    _, production_access = reader_access(parsed.production["connect"])
+    assert production_access.expires_at == signed_expiries["production"]
+    assert all(
+        instant(mapping(raw)["expires_at"]) == signed_expiries[role]
+        for role, raw in mapping(manifest["clients"]).items()
+    )
 
 
 def inputs(tmp_path: Path, manifest: dict[str, object]) -> tuple[Path, Path]:

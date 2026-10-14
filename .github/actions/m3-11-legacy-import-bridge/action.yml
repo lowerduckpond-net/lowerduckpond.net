@@ -1,0 +1,6 @@
+---
+name: Legacy M3.11 import reader
+description: Preserve the installed independent cleanup with one approved migration document.
+runs:
+  using: node24
+  main: index.js

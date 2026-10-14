@@ -333,6 +333,7 @@ def test_workflow_keeps_cleanup_only_dispatch_and_private_pinned_transport() -> 
         "OPERATION": "${{ inputs.operation || 'reconcile' }}",
         "CONFIGURATION": "${{ vars.M3_11_CONNECT_CONFIGURATION }}",
         "BOOTSTRAP": "${{ secrets.M3_11_CONNECT_BOOTSTRAP }}",
+        "IMPORT_BRIDGE": "${{ vars.M3_11_LEGACY_IMPORT_BRIDGE }}",
     }
     legacy_command = step("reconcile", "Reconcile and verify outstanding credentials")["run"]
     assert "--actor github" in legacy_command and "--quiet-empty" in legacy_command
@@ -342,3 +343,128 @@ def test_workflow_keeps_cleanup_only_dispatch_and_private_pinned_transport() -> 
         hashlib.sha256(fixture.read_bytes()).hexdigest()
         == "8c046450e48222b409795f7680c71684fd9a3164dbb9759cb7a4909865f41199"
     )
+
+
+def bridge_binding() -> Row:
+    return {"revision": "b" * 40, "journal_vault": "j" * 26, "migration_sha256": "a" * 64}
+
+
+@pytest.mark.parametrize("fault", ["vault", "revision", "migration", "extra", "helper"])
+def test_import_bridge_requires_explicit_exact_bindings(tmp_path: Path, fault: str) -> None:
+    binding = bridge_binding()
+    _, configuration = legacy_inputs()
+    if fault == "vault":
+        binding["journal_vault"] = "x" * 26
+    elif fault == "revision":
+        binding["revision"] = "main"
+    elif fault == "migration":
+        binding["migration_sha256"] = "a" * 63
+    elif fault == "extra":
+        binding["unreviewed"] = True
+    else:
+        configuration["active_helper"] = "c" * 40
+    result, _ = select(
+        tmp_path, IMPORT_BRIDGE=json.dumps(binding), CONFIGURATION=json.dumps(configuration)
+    )
+    assert result.returncode != 0
+
+
+def test_explicit_bridge_keeps_legacy_pin_separate_and_new_delivery_does_not_inherit_it(
+    tmp_path: Path,
+) -> None:
+    result, selected = select(tmp_path, IMPORT_BRIDGE=json.dumps(bridge_binding()))
+    assert result.returncode == 0
+    assert selected["helper_revision"] == LEGACY
+    assert selected["checkout_path"] == "legacy-helper"
+    assert selected["bridge_revision"] == "b" * 40
+    assert selected["bridge_vault"] == "j" * 26
+    assert selected["bridge_migration"] == "a" * 64
+    assert selected["import_bridge"] == "true"
+    assert step("connect", "Install locked dependencies")["working-directory"] == (
+        "${{ steps.selection.outputs.checkout_path }}"
+    )
+    result, selected = select(
+        tmp_path, BOOTSTRAP=json.dumps(lease_bundle()), IMPORT_BRIDGE=json.dumps(bridge_binding())
+    )
+    assert result.returncode == 0
+    assert selected["import_bridge"] == "false" and selected["checkout_path"] == "."
+
+
+@pytest.mark.parametrize("bad_binding", [False, True])
+def test_bridge_action_preserves_private_stdin_checkpoint_runtime_and_legacy_cwd(
+    tmp_path: Path,
+    bad_binding: bool,
+) -> None:
+    bundle, configuration = legacy_inputs()
+    root = tmp_path / "legacy-helper"
+    receiver = root / ".venv/bin/python"
+    receiver.parent.mkdir(parents=True)
+    receiver.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\nfrom pathlib import Path\n"
+        "Path('received.json').write_text(json.dumps({'payload': json.load(sys.stdin), "
+        "'arguments': sys.argv[1:], 'cwd': os.getcwd(), "
+        "'helper': os.environ['M3_11_HELPER_REVISION'], "
+        "'github': os.environ['GH_TOKEN'], 'runtime': os.environ['ACTIONS_RUNTIME_TOKEN'], "
+        "'private_env': any(k in os.environ for k in "
+        "['M3_11_CONNECT_BOOTSTRAP', 'M3_11_CONNECT_CONFIGURATION'])}))\n"
+        f"print('{CANARY}')\n"
+    )
+    receiver.chmod(0o700)
+    node = shutil.which("node")
+    assert node is not None
+    source = ROOT / ".github/actions/m3-11-legacy-import-bridge/index.js"
+    result = subprocess.run(  # noqa: S603 - real action with synthetic child and credentials
+        [node, str(source)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+        env={
+            "PATH": os.environ["PATH"],
+            "RUNNER_TEMP": str(tmp_path / "private"),
+            "M3_11_LEGACY_ROOT": str(root),
+            "M3_11_HELPER_REVISION": LEGACY,
+            "M3_11_BRIDGE_VAULT": "j" * 26,
+            "M3_11_BRIDGE_MIGRATION": "bad" if bad_binding else "a" * 64,
+            "M3_11_CONNECT_OPERATION": "reconcile",
+            "M3_11_CONNECT_BOOTSTRAP": json.dumps(bundle),
+            "M3_11_CONNECT_CONFIGURATION": json.dumps(configuration),
+            "GH_TOKEN": "synthetic-github",
+            "ACTIONS_RUNTIME_TOKEN": "synthetic-runtime",
+        },
+    )
+    assert CANARY not in result.stdout + result.stderr
+    if bad_binding:
+        assert result.returncode != 0 and not (root / "received.json").exists()
+        return
+    assert result.returncode == 0
+    received = json.loads((root / "received.json").read_text())
+    assert received == {
+        "payload": {
+            "bootstrap": bundle,
+            "selection": configuration,
+            "operation": "reconcile",
+            "run_sha256": "",
+            "dispatch_id": "",
+        },
+        "arguments": [
+            str(ROOT / "scripts/m3_11_unattended/legacy_import_reader.py"),
+            "--legacy-root",
+            str(root),
+            "--journal-vault",
+            "j" * 26,
+            "--migration-sha256",
+            "a" * 64,
+            "--actor",
+            "github",
+            "--receipt",
+            str(tmp_path / "private/m3-11-import-reader/observation.json"),
+        ],
+        "cwd": str(root),
+        "helper": LEGACY,
+        "github": "synthetic-github",
+        "runtime": "synthetic-runtime",
+        "private_env": False,
+    }

@@ -542,6 +542,9 @@ def publish_import(
         raise LifecycleError("reviewed import omits or changes an original obligation")
     validate_claims(mapping, originals)
     recheck_import(mapping, docker)
+    from scripts.m3_11_unattended.legacy_actors import require_import_readers  # noqa: PLC0415
+
+    require_import_readers(docker, vault=vault, expected=expected)
     for record in imported:
         publish_original(journal, record)
     pending = spool / ("import-" + expected + ".json")

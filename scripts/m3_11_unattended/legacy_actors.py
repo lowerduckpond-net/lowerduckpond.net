@@ -296,13 +296,17 @@ def inventory(docker: Docker) -> set[str]:
                 "daemon-utility",
             ]
             permitted = (
-                re.fullmatch(r"ldp-m311-watchdog-[a-f0-9]{12}", name) is not None
-                and command
-                in (
-                    watchdog,
-                    [*watchdog, "--journal-cache", "/evidence/cleanup-journal-cache.json"],
+                (
+                    re.fullmatch(r"ldp-m311-watchdog-[a-f0-9]{12}", name) is not None
+                    and command
+                    in (
+                        watchdog,
+                        [*watchdog, "--journal-cache", "/evidence/cleanup-journal-cache.json"],
+                    )
                 )
-            ) or command == utility
+                or command == utility
+                or import_watchdog(docker, value)
+            )
             if not permitted or config.get("Entrypoint") not in (
                 None,
                 [],
@@ -312,6 +316,96 @@ def inventory(docker: Docker) -> set[str]:
                 # a diagnostic-looking name cannot exempt them.
                 actors.add(fingerprint(selected))
     return actors
+
+
+def import_watchdog(docker: Docker, actual: dict[str, object]) -> bool:
+    """Exempt only the exact reviewed cleanup bridge, never a name-only reader."""
+    from scripts.m3_11_unattended import legacy_import_reader as bridge  # noqa: PLC0415
+    from scripts.m3_11_unattended.legacy_diagnostics import script_digest  # noqa: PLC0415
+
+    config = actual.get("Config")
+    if not isinstance(config, dict) or not str(actual.get("Name", "")).startswith(
+        "/ldp-m311-import-watchdog-"
+    ):
+        return False
+    command, labels = config.get("Cmd"), config.get("Labels")
+    expected = hashlib.sha256(Path(bridge.__file__).read_bytes()).hexdigest()
+    if (
+        actual.get("Name") != "/ldp-m311-import-watchdog-" + expected[:12]
+        or not isinstance(command, list)
+        or len(command) != len(bridge.watchdog_command("", ""))
+        or not isinstance(labels, dict)
+        or labels.get(OWNER + ".source") != bridge.LEGACY_REVISION
+        or config.get("Entrypoint") not in (None, [], ["/usr/local/bin/mise", "exec", "--"])
+        or not isinstance(command[9], str)
+        or re.fullmatch(r"[a-z0-9]{26}", command[9]) is None
+        or not isinstance(command[11], str)
+        or re.fullmatch(r"[a-f0-9]{64}", command[11]) is None
+        or command != bridge.watchdog_command(command[9], command[11])
+    ):
+        return False
+    return (
+        script_digest(docker, str(actual["Id"]), bridge.PROGRAM) == expected
+        and script_digest(
+            docker,
+            str(actual["Id"]),
+            "/opt/lifecycle/scripts/m3_11_unattended/connect_ledger.py",
+        )
+        == bridge.LEDGER_SHA256
+    )
+
+
+def require_import_readers(docker: Docker, *, vault: str, expected: str) -> None:
+    """Before introducing the import, fence every unbridged host reader.
+
+    GitHub jobs and its explicit bridge selection are a separate operator gate.
+    This never stops a reader or treats a running bridge as a cleanup receipt.
+    """
+    from scripts.m3_11_unattended import legacy_import_reader as bridge  # noqa: PLC0415
+
+    rows = (
+        docker.command(
+            "ps",
+            "--all",
+            "--filter",
+            "label=" + OWNER + "=true",
+            "--no-trunc",
+            "--format",
+            "{{.ID}} {{.Names}}",
+        )
+        .decode()
+        .splitlines()
+    )
+    readers = compatible = 0
+    seen = set()
+    for row in rows:
+        selected, name = row.split(" ", 1)
+        if selected in seen:
+            raise LifecycleError("legacy reader inventory repeats an identity")
+        seen.add(fingerprint(selected))
+        if not name.startswith(("ldp-m311-watchdog-", "ldp-m311-import-watchdog-")):
+            continue  # Other actors are checked by the original issuer fence gate.
+        readers += 1
+        actual = docker.owned(selected)
+        state = cast(dict[str, object], actual.get("State", {}))
+        if import_watchdog(docker, actual):
+            config = cast(dict[str, object], actual["Config"])
+            if config["Cmd"] != bridge.watchdog_command(vault, expected):
+                raise LifecycleError("legacy import reader approval differs")
+            if state.get("Running") is True and all(
+                state.get(key) is False for key in ("Restarting", "Paused", "Dead")
+            ):
+                compatible += 1
+            continue
+        host = cast(dict[str, object], actual.get("HostConfig", {}))
+        if (
+            state.get("Running") is not False
+            or any(state.get(key) is True for key in ("Restarting", "Paused", "Dead"))
+            or host.get("RestartPolicy") != {"Name": "no", "MaximumRetryCount": 0}
+        ):
+            raise LifecycleError("unbridged legacy reader may still execute or restart")
+    if readers and not compatible:
+        raise LifecycleError("legacy import has no running compatible host cleanup reader")
 
 
 def fenced(docker: Docker, actor: dict[str, object]) -> dict[str, str]:

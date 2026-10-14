@@ -83,6 +83,12 @@ def _grants(value: object, *, native: bool) -> dict[str, int]:
     return grants
 
 
+def _audience_matches(native: object, signed: object) -> bool:
+    # RFC 7519 permits a string or an array. The observed native client has
+    # exactly one audience; additional or duplicate signed audiences differ.
+    return isinstance(native, str) and bool(native) and signed in (native, [native])
+
+
 @dataclass(frozen=True)
 class Access:
     server_id: str
@@ -133,9 +139,8 @@ def inspect(  # noqa: PLR0913 - separate native policy, time and historical pars
         or native.get("state") != "ACTIVE"
         or native.get("name") != entry.get("name")
         or not isinstance(native.get("issuer"), str)
-        or not isinstance(native.get("audience"), str)
         or native.get("issuer") != payload.get("iss")
-        or native.get("audience") != payload.get("aud")
+        or not _audience_matches(native.get("audience"), payload.get("aud"))
         or native.get("features") != ["vaultaccess"]
         or payload.get(CLAIM_PREFIX + "fts") != ["vaultaccess"]
         or _grants(native.get("vaults"), native=True) != expected
@@ -159,7 +164,11 @@ def inspect(  # noqa: PLR0913 - separate native policy, time and historical pars
         or (approved_expires_at is None and expires_at > issued_at + MAX_LIFETIME + SKEW)
         or (approved_expires_at is not None and expires_at != approved_expires_at)
         or abs(instant(native.get("created_at")) - issued_at) > SKEW
-        or instant(native.get("expires_at")) != expires_at
+        # Observed native expiry may be one second after the signed deadline.
+        # Only this direction is supported. Entry, approval, Access and the
+        # current-time check always use the earlier signed deadline.
+        or instant(native.get("expires_at")) - expires_at
+        not in {timedelta(0), timedelta(seconds=1)}
         or instant(entry.get("expires_at")) != expires_at
     ):
         raise LifecycleError("Connect native and signed lifetimes differ or have expired")
