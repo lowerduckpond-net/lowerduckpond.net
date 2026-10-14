@@ -2,13 +2,15 @@
 
 Run this file with the legacy interpreter, without changing the legacy checkout.
 Only the approved import is separated from legacy events. Physical inventory and
-snapshot checks still include it. No client policy, checkpoint or ACK is changed.
+snapshot checks still include it. Two observed authentication representations are
+backported before dispatch; no client policy, checkpoint or ACK is changed.
 """
 
 # ruff: noqa: ANN401 - the pinned legacy class is absent from the current runtime
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import importlib
 import json
@@ -20,16 +22,54 @@ from collections.abc import Callable
 from contextlib import suppress
 from copy import deepcopy
 from datetime import UTC, datetime
-from http import HTTPStatus
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 LEGACY_REVISION = "0b5b198bf06443e61f01b1f7259fea827f79fc23"
+INSPECTOR_SHA256 = "d000a112403aef5cdcd137b9966bb508f898a26cbf35de764f39a34d4126b28c"
 LEDGER_SHA256 = "5a52d59b3e9315b90b877506a564fa5d9230c18a0b112dfccaa3670c3b25c4a3"
 IMPORT_TAG = "ldp-m3-11-legacy-import-v1"
 FORMAT = "lowerduckpond-m3-11-legacy-import-reader-v1"
 PROGRAM = "/opt/import-bridge/legacy_import_reader.py"
+
+
+def install_authentication(module: ModuleType) -> None:
+    """Backport only two predicates in the hash-pinned legacy inspect function.
+
+    Keep its 496 contract, seven-day lifetime limit, exact declared signed expiry,
+    Access deadline and endpoint authentication. Reusing the current inspector
+    would change that contract and the checkpoint/bootstrap call signatures.
+    """
+    if module.__file__ is None or getattr(module, "import_authentication_installed", False):
+        raise ValueError("legacy authentication bridge binding differs")
+    raw = Path(module.__file__).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != INSPECTOR_SHA256:
+        raise ValueError("legacy authentication bridge binding differs")
+    source = raw.decode()
+    replacements = {
+        'native.get("audience") != payload.get("aud")': (
+            'payload.get("aud") not in (native.get("audience"), [native.get("audience")])'
+        ),
+        'instant(native.get("expires_at")) != expires_at': (
+            'instant(native.get("expires_at")) - expires_at '
+            "not in (timedelta(0), timedelta(seconds=1))"
+        ),
+    }
+    for before, after in replacements.items():
+        if source.count(before) != 1:
+            raise ValueError("legacy authentication predicate differs")
+        source = source.replace(before, after)
+    tree = ast.parse(source, filename=module.__file__)
+    tree.body = [
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "inspect"
+    ]
+    if len(tree.body) != 1:
+        raise ValueError("legacy authentication entry point differs")
+    # Execute only the corrected function, in its original module globals. All
+    # other legacy functions/classes/constants keep their original identities.
+    exec(compile(tree, module.__file__, "exec"), module.__dict__)  # noqa: S102 - exact source hash and closed edits
+    module.__dict__["import_authentication_installed"] = True
 
 
 def watchdog_command(vault: str, expected: str) -> list[str]:
@@ -86,7 +126,7 @@ def install(  # noqa: PLR0915 - keep the bound legacy algorithm together for com
         with self._reading():
             response = self.client.request("GET", "/v1/vaults/" + self.vault + "/items")
         if (
-            response.status != HTTPStatus.OK
+            response.status != module.HTTPStatus.OK
             or not isinstance(response.body, list)
             or len(response.body) > module.MAX_EVENTS
         ):
@@ -253,7 +293,17 @@ def main() -> int:
         if any(name == "scripts" or name.startswith("scripts.") for name in sys.modules):
             raise ValueError("run the bridge as a standalone file with the legacy interpreter")
         os.chdir(root)
-        sys.path.insert(0, str(root))
+        # The Node action executes this file inside scripts/m3_11_unattended,
+        # whose adjacent http.py otherwise shadows the standard library. The
+        # host's standalone copy must obey the same pinned-root import boundary.
+        directory = Path(__file__).resolve().parent
+        sys.path = [str(root), *(path for path in sys.path if Path(path).resolve() != directory)]
+        authentication = importlib.import_module("scripts.m3_11_unattended.connect_auth")
+        if authentication.__file__ is None or Path(authentication.__file__).resolve() != (
+            root / "scripts/m3_11_unattended/connect_auth.py"
+        ):
+            raise ValueError("legacy authentication came from another helper")
+        install_authentication(authentication)
         module = importlib.import_module("scripts.m3_11_unattended.connect_ledger")
         if module.__file__ is None or Path(module.__file__).resolve() != (
             root / "scripts/m3_11_unattended/connect_ledger.py"

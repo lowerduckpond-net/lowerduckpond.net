@@ -181,12 +181,42 @@ formats remain rejected. The import body is reread on each inventory; a persiste
 spool pins its native identity once observed. A cold GitHub spool does not prove
 continuity with an earlier spool; retain its separate reader observation artifact.
 
+Before either legacy entry point is imported, the bridge also checks the pinned
+authentication source hash and backports exactly two `inspect` predicates: a
+native audience string can match the identical signed string or its exact
+singleton list, and native expiry can equal signed expiry or be exactly one
+second later. Extra/duplicate audiences and all other offsets fail. Signed expiry
+remains the runtime deadline. The legacy 48/496 permission contract, seven-day
+lifetime limit, exact declared signed expiry, identities, vault scope and live
+isolation checks remain unchanged. The newer 31-day clients are not substitutes
+for these original legacy clients. The GitHub bootstrap must retain its original
+checkpoint encryption token and active selection. The standalone launch removes
+the bridge's adjacent-module directory from the import path so `http.py` cannot
+shadow the standard library before loading the pinned helper.
+
+Synthetic regressions execute the actual host CLI and Node action against the
+clean pinned checkout, including configuration parsing, authentication, dispatch,
+encrypted checkpoint recovery and the compatible ledger. Only external HTTP,
+Docker and artifact transports are controlled; execution ends after observing a
+real reader receipt. This proves startup compatibility, not live authentication,
+CREATE, cross-server durability or cleanup readiness.
+
 The original publication and reconciliation methods are unchanged. Pending POSTs
 keep their identities and reconcile by reads; the bridge never retries a POST.
 Reader receipts report `snapshot-verified`, **not cleanup readiness**. Require the
 normal cleanup receipt as well. Diagnostic receipt failure must not suppress
 original cleanup. This bridge is transitional: keep new lease issuance disabled
 until both replacement cleaners are ready and legacy readers are retired.
+
+The verified old cleanup-authority expiry is **October 16, 2026 at 21:38:38 UTC
+(4:38:38 p.m. CDT)**. Its 62-hour readiness reserve was exhausted on October 14
+at 07:38:38 UTC; unchanged retries and this representation backport cannot restore
+it. Preserve fallback cleanup until replacement coverage is verified. Complete
+old-authority recovery and the verified successor handoff before the actual
+expiry; an unresolved old readiness receipt is not proof of lost fallback cleanup
+or permission to retire it. Locally retained scheduled receipts establish old
+GitHub authentication and checkpoint continuity; the original host configuration
+still needs its separately bound execution observation.
 
 Preparation consists of code review, offline tests, source/inventory bindings and
 the final cutover proposal. Merging leaves the deployed readers, clients,
