@@ -172,6 +172,11 @@ def retained_legacy(  # noqa: PLR0912 - independent retained-file and rejection-
     journal: ConnectObligations,
 ) -> tuple[dict[str, Credential], bool]:
     """Use only hash-bound original local facts and secrets; absence remains unavailable."""
+    from scripts.m3_11_unattended.legacy_actors import (  # noqa: PLC0415
+        credential_intents,
+        manual_credentials,
+        manual_original,
+    )
     from scripts.m3_11_unattended.worker import (  # noqa: PLC0415
         restore_created,
         retained_credentials,
@@ -227,6 +232,23 @@ def retained_legacy(  # noqa: PLR0912 - independent retained-file and rejection-
             )
             if proof is None or proof.negative_authentication != "denied":
                 complete = False
+    for filename in manual_credentials(journal.mapping):
+        try:
+            path = Path(filename)
+            records = journal.records()
+            intent = credential_intents(journal.mapping, records)[filename]
+            if path.exists() or path.is_symlink():
+                manual_original(path.parent, records, retained)
+                raw = fields(read_private(path), {"identifier", "secret"})
+                available[intent.sha256] = Credential(
+                    str(raw["identifier"]), str(raw["secret"]), {}
+                )
+            else:
+                proof = terminal(intent, records, credential_expected=True)
+                if proof is None or proof.negative_authentication != "denied":
+                    complete = False
+        except RuntimeError, OSError, ValueError, KeyError, TypeError:
+            complete = False
     return available, complete
 
 
@@ -263,11 +285,9 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
     obligations = mapping["obligations"]
     if not isinstance(obligations, dict):
         raise LifecycleError("legacy obligation mapping is unavailable")
-    expected_secrets = {
-        Path(filename).stem
-        for filename in strings(mapping["retained_files"])
-        if Path(filename).parent.name == "credential-cleanup"
-    }
+    from scripts.m3_11_unattended.legacy_actors import credential_intents  # noqa: PLC0415
+
+    expected_secrets = {item.sha256 for item in credential_intents(mapping, records).values()}
     fenced_after = max(
         (instant(row["stopped_at"]) for row in cast(list[dict[str, object]], mapping["issuers"])),
         default=None,
@@ -293,10 +313,20 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
         if intent.targets != config.targets:
             raise LifecycleError("legacy obligation target differs")
         row = fields(
-            obligations[intent.sha256], {"generation_id", "provider_id", "original_status"}
+            obligations[intent.sha256],
+            {"generation_id", "provider_id", "original_status"}
+            | (
+                {"cleanup_authority_sha256"}
+                if mapping["format"] == "lowerduckpond-m3-11-legacy-import-v2"
+                else set()
+            ),
         )
-        generation = str(row["generation_id"])
-        retained = config.generations.get(generation, {}).get("cleanup")
+        generation = row["generation_id"]
+        retained = (
+            config.generations.get(str(generation), {}).get("cleanup")
+            if generation is not None
+            else None
+        )
         if retained is not None and (
             retained.generation.fingerprints[intent.provider] != intent.cleanup_authority_sha256
         ):
@@ -310,7 +340,7 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
         if completed is not None:
             outcomes.append(dataclasses.asdict(completed))
             continue
-        clients = clients_for(generation)
+        clients = clients_for(str(generation)) if generation is not None else {}
         selected = clients.get(intent.provider, UnavailableProvider(intent.provider))
         if selected.authority_sha256 != intent.cleanup_authority_sha256:
             outcomes.append(
@@ -345,15 +375,14 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
         if bound is None:
             restorations.append("unresolved")
             continue
-        generation = str(
-            fields(obligations[bound.sha256], {"generation_id", "provider_id", "original_status"})[
-                "generation_id"
-            ]
-        )
+        generation = cast(dict[str, object], obligations[bound.sha256])["generation_id"]
+        if generation is None:
+            restorations.append("unresolved")
+            continue
         try:
             restored = audit_policy_recovery.reconcile(
                 journal,
-                clients_for(generation).get("cloudflare-account"),
+                clients_for(str(generation)).get("cloudflare-account"),
                 now=now,
                 force_restore=True,
             )
@@ -387,6 +416,9 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
     for raw in updates:
         row = imported_update(raw)
         if terminal_update(row, targets=config.targets, records=records):
+            continue
+        if row["generation_id"] is None:
+            expiry = "unresolved"
             continue
         clients = clients_for(str(row["generation_id"]))
         cloudflare = {

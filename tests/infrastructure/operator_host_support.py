@@ -291,6 +291,10 @@ class Host:
                     for key, row in rows.items()
                     if re.search(name.removeprefix("^/").removesuffix("$"), key)
                 }
+            if arguments[-1] == "{{.ID}} {{.Names}}":
+                return "".join(
+                    str(row["Id"]) + " " + name + "\n" for name, row in rows.items()
+                ).encode()
             return "".join(
                 str(row["Id"] if arguments[-1] == "{{.ID}}" else key) + "\n"
                 for key, row in rows.items()

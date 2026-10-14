@@ -141,10 +141,11 @@ def _note_content(value: object) -> str:
 
 
 MIGRATION_FORMAT = "lowerduckpond-m3-11-legacy-import-v1"
+MIGRATION_FORMAT_V2 = "lowerduckpond-m3-11-legacy-import-v2"
 MIGRATION_TAG = "ldp-m3-11-legacy-import-v1"
 
 
-def migration(value: object) -> dict[str, object]:  # noqa: PLR0912 - complete reviewed obligation schema
+def migration(value: object) -> dict[str, object]:  # noqa: PLR0912, PLR0915 - reviewed obligation schema
     """An approved import is an inventory of obligations, never a success receipt.
 
     Exact old records, retained private-file digests and update intents remain
@@ -168,7 +169,7 @@ def migration(value: object) -> dict[str, object]:  # noqa: PLR0912 - complete r
             "approval_reference",
         },
     )
-    if selected["format"] != MIGRATION_FORMAT:
+    if selected["format"] not in {MIGRATION_FORMAT, MIGRATION_FORMAT_V2}:
         raise LifecycleError("legacy import format is unsupported")
     instant(selected["approved_at"])
     approval = selected["approval_reference"]
@@ -186,8 +187,17 @@ def migration(value: object) -> dict[str, object]:  # noqa: PLR0912 - complete r
         raise LifecycleError("legacy obligation mapping is missing")
     for key, raw in obligations.items():
         fingerprint(key)
-        row = fields(raw, {"generation_id", "provider_id", "original_status"})
-        identity(row["generation_id"])
+        row = fields(
+            raw,
+            {"generation_id", "provider_id", "original_status"}
+            | (
+                {"cleanup_authority_sha256"} if selected["format"] == MIGRATION_FORMAT_V2 else set()
+            ),
+        )
+        if selected["format"] == MIGRATION_FORMAT_V2:
+            fingerprint(row["cleanup_authority_sha256"])
+        if row["generation_id"] is not None or selected["format"] == MIGRATION_FORMAT:
+            identity(row["generation_id"])
         if row["provider_id"] is not None and (
             not isinstance(row["provider_id"], str)
             or re.fullmatch(r"[A-Za-z0-9_-]{8,128}", row["provider_id"]) is None
@@ -206,7 +216,8 @@ def migration(value: object) -> dict[str, object]:  # noqa: PLR0912 - complete r
         row = imported_update(raw)
         if digest(row["plan"]) != fingerprint(row["plan_sha256"]):
             raise LifecycleError("legacy expiry intent digest differs")
-        identity(row["generation_id"])
+        if row["generation_id"] is not None or selected["format"] == MIGRATION_FORMAT:
+            identity(row["generation_id"])
         for path, expected in strings(row["result_files"]).items():
             if strings(selected["retained_files"]).get(path) != fingerprint(expected):
                 raise LifecycleError("legacy expiry evidence was not retained")
@@ -225,10 +236,26 @@ def migration(value: object) -> dict[str, object]:  # noqa: PLR0912 - complete r
                 "running",
                 "restart_policy",
                 "issuance_disabled",
-            },
+            }
+            | ({"actor", "fence_state"} if selected["format"] == MIGRATION_FORMAT_V2 else set()),
         )
         fingerprint(row["container_id"])
         fingerprint(row["daemon_sha256"])
+        if selected["format"] == MIGRATION_FORMAT_V2:
+            from scripts.m3_11_unattended.legacy_actors import (  # noqa: PLC0415
+                DESCRIPTOR,
+                descriptor,
+            )
+
+            actor = fields(row["actor"], DESCRIPTOR | {"identity", "original_sha256"})
+            descriptor({key: actor[key] for key in DESCRIPTOR})
+            if actor["container_id"] != row["container_id"] or not isinstance(
+                actor["identity"], dict
+            ):
+                raise LifecycleError("legacy actor differs from its approved fence")
+            fingerprint(actor["original_sha256"])
+            for timestamp in fields(row["fence_state"], {"StartedAt", "FinishedAt"}).values():
+                instant(timestamp)
         instant(row["stopped_at"])
         if (
             row["running"] is not False

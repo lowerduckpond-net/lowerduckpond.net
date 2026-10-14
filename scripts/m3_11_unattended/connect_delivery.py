@@ -14,6 +14,7 @@ from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes
 from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.connect_action import bootstrap
+from scripts.m3_11_unattended.journal import MAX_OUTPUT
 from scripts.m3_11_unattended.model import LifecycleError
 
 REPOSITORY = "lowerduckpond-net/lowerduckpond.net"
@@ -115,21 +116,27 @@ class Delivery:
             raise LifecycleError("Connect delivery needs explicit SSH and workspace identities")
         self.destination, self.workspace, self.workspace_id = destination, workspace, workspace_id
 
-    def command(self, program: str, *arguments: str, stdin: bytes | None = None) -> bytes:
+    def command(
+        self, program: str, *arguments: str, stdin: bytes | None = None, timeout: int = 90
+    ) -> bytes:
         executable = shutil.which(program)
         if executable is None:
             raise LifecycleError("Connect delivery needs SSH and GitHub CLI on the workstation")
         try:
             result = subprocess.run(  # noqa: S603 - argv contains identities; secrets only on stdin
-                [executable, *arguments], input=stdin, capture_output=True, check=False, timeout=90
+                [executable, *arguments],
+                input=stdin,
+                capture_output=True,
+                check=False,
+                timeout=timeout,
             )
         except OSError, subprocess.SubprocessError:
             raise LifecycleError("Connect delivery failed; private setup files retained") from None
-        if result.returncode or len(result.stdout) > 1024 * 1024:
+        if result.returncode or len(result.stdout) > MAX_OUTPUT:
             raise LifecycleError("Connect delivery failed; private setup files retained")
         return result.stdout
 
-    def ssh(self, arguments: list[str], stdin: bytes | None = None) -> bytes:
+    def ssh(self, arguments: list[str], stdin: bytes | None = None, *, timeout: int = 90) -> bytes:
         return self.command(
             "ssh",
             "-T",
@@ -139,6 +146,7 @@ class Delivery:
             self.destination,
             shlex.join(arguments),
             stdin=stdin,
+            timeout=timeout,
         )
 
     def workspace_identity(self) -> str:
@@ -204,6 +212,29 @@ class Delivery:
         self.workspace_identity()
         self.github_protection()
 
+    def remote_docker(self, arguments: list[str], stdin: bytes) -> bytes:
+        return self.ssh([*PARENT_DOCKER, *arguments], stdin=stdin, timeout=1200)
+
+    def receive(self, identity: str, destination: str, expected: str, controller: bytes) -> bytes:
+        command = PARENT_DOCKER.copy()
+        command.insert(2, "-i")
+        return self.ssh(
+            [
+                *command,
+                "exec",
+                "--user",
+                "1000",
+                "-i",
+                identity,
+                "python3",
+                "-c",
+                RECEIVER,
+                destination,
+                expected,
+            ],
+            stdin=controller,
+        )
+
     def migration_utility(
         self, *, prepared: object, operation: str, payload: dict[str, object], daemon_socket: str
     ) -> dict[str, object]:
@@ -220,7 +251,7 @@ class Delivery:
             "payload": payload,
         }
         arguments = utility_arguments(prepared, operation=operation, daemon_socket=daemon_socket)
-        raw = self.ssh([*PARENT_DOCKER, *arguments], stdin=canonical_bytes(envelope))
+        raw = self.remote_docker(arguments, canonical_bytes(envelope))
         if self.workspace_identity() != original:
             raise LifecycleError("migration utility destination workspace changed")
         return utility_result(raw, envelope)
@@ -246,25 +277,8 @@ class Delivery:
         expected = hashlib.sha256(controller).hexdigest()
         # Pin the immutable container ID after checking its name, workspace ID,
         # and persistent home. Transfer does not depend on its agent process.
-        command = PARENT_DOCKER.copy()
-        command.insert(2, "-i")
-        response = self.ssh(
-            [
-                *command,
-                "exec",
-                "--user",
-                "1000",
-                "-i",
-                identity,
-                "python3",
-                "-c",
-                RECEIVER,
-                destination,
-                expected,
-            ],
-            stdin=controller,
-        )
-        if response.decode().strip() != expected:
+        response = self.receive(identity, destination, expected, controller)
+        if response.decode().strip() != expected or self.workspace_identity() != identity:
             raise LifecycleError("private Connect delivery has no matching readback receipt")
         self.command(
             "gh",
@@ -281,17 +295,22 @@ class Delivery:
         # scheduled cleanup reads this single versioned bundle on its next execution.
 
 
-def main() -> int:
+def main() -> int:  # noqa: PLR0912, PLR0915 - explicit transport and operation CLI boundaries
     import argparse  # noqa: PLC0415 - operator-only entry point
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--destination", required=True)
-    parser.add_argument("--workspace", required=True)
+    parser.add_argument("--transport", choices=("ssh", "coder"), default="ssh")
+    parser.add_argument("--destination")
+    parser.add_argument("--workspace")
+    parser.add_argument("--coder-workspace")
+    parser.add_argument("--daemon-id")
     parser.add_argument("--workspace-id", required=True)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument(
-        "--operation", choices=("deliver", "inspect-import", "import"), default="deliver"
+        "--operation",
+        choices=("deliver", "discover-import", "inspect-import", "import"),
+        default="deliver",
     )
     parser.add_argument("--prepared", type=Path)
     parser.add_argument("--daemon-socket")
@@ -301,13 +320,26 @@ def main() -> int:
     parser.add_argument("--approved-import", type=Path)
     args = parser.parse_args()
     try:
-        delivery = Delivery(args.destination, args.workspace, args.workspace_id)
+        delivery: Delivery
+        if args.transport == "coder":
+            from scripts.m3_11_unattended.coder_delivery import CoderDelivery  # noqa: PLC0415
+
+            if not args.coder_workspace or not args.daemon_id or args.destination or args.workspace:
+                parser.error(
+                    "Coder delivery needs --coder-workspace and --daemon-id, "
+                    "without SSH destination flags"
+                )
+            delivery = CoderDelivery(args.coder_workspace, args.workspace_id, args.daemon_id)
+        else:
+            if not args.destination or not args.workspace or args.coder_workspace or args.daemon_id:
+                parser.error("SSH delivery needs --destination and --workspace")
+            delivery = Delivery(args.destination, args.workspace, args.workspace_id)
         if args.operation != "deliver":
             if args.prepared is None or args.daemon_socket is None:
                 parser.error(
                     "migration operations need the exact prepared output and daemon socket"
                 )
-            if args.operation == "inspect-import":
+            if args.operation in {"discover-import", "inspect-import"}:
                 if (
                     args.historical_reader is None
                     or args.journal_vault is None
@@ -319,7 +351,7 @@ def main() -> int:
                 payload = {
                     "historical_reader": read_private(args.historical_reader),
                     "journal_vault": args.journal_vault,
-                    "declarations": read_private(args.declarations),
+                    "declarations": read_private(args.declarations, maximum=MAX_OUTPUT),
                 }
             else:
                 if not args.apply or args.approved_import is None:
@@ -327,7 +359,7 @@ def main() -> int:
                 config = LeaseConfiguration.load(args.output / "controller-connect.json")
                 payload = {
                     "configuration": config.document(cleanup_only=True),
-                    "mapping": read_private(args.approved_import),
+                    "mapping": read_private(args.approved_import, maximum=MAX_OUTPUT),
                 }
             observed = delivery.migration_utility(
                 prepared=read_private(args.prepared),
@@ -335,8 +367,8 @@ def main() -> int:
                 payload=payload,
                 daemon_socket=args.daemon_socket,
             )
-            if args.operation == "inspect-import":
-                write_private(args.output, observed)
+            if args.operation in {"discover-import", "inspect-import"}:
+                write_private(args.output, observed, maximum=MAX_OUTPUT)
             else:
                 from scripts.m3_11_unattended.connect_activate import retain  # noqa: PLC0415
 

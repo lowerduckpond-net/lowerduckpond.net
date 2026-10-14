@@ -117,23 +117,69 @@ time. This does not turn a receipt timestamp into a console observation.
 Choose one reviewed full `runtime_revision`. It must be the clean, non-shallow
 checkout HEAD and the prepared source/helper, independent bundle and live approval
 revision. Prepare this helper before collecting host evidence. Preparation itself
-uses the existing authorized Docker-host route:
+uses the existing authorized Docker-host route. Preparation changes Docker
+resources; run it only in the separately authorized execution phase. Historical
+discovery then precedes issuer fencing:
 
 ```console
 mise exec -- just m3-11-unattended prepare FULL_COMMIT_SHA --output /private/prepared.json
 uv run --frozen python -m scripts.m3_11_unattended.connect_delivery \
-  --operation inspect-import --prepared /private/prepared.json \
-  --daemon-socket /var/run/docker.sock --historical-reader /private/historical-reader.json \
+  --operation discover-import --prepared /private/prepared.json \
+  --daemon-socket /docker-sock/docker.sock --historical-reader /private/historical-reader.json \
   --journal-vault JOURNAL_VAULT_ID --declarations /private/legacy-declarations.json \
-  --destination coder@APPROVED_HOST --workspace APPROVED_WORKSPACE \
-  --workspace-id APPROVED_WORKSPACE_UUID --output /private/migration-evidence.json
+  --transport coder --coder-workspace OWNER/WORKSPACE --daemon-id APPROVED_DAEMON_UUID \
+  --workspace-id APPROVED_WORKSPACE_UUID --output /private/legacy-discovery.json
 uv run --frozen python -m scripts.m3_11_unattended.operator_records policy-proposal \
   --inputs /private/operator-draft.json --output /private/policy-proposal.json
+```
+
+V2 declarations use `format: lowerduckpond-m3-11-migration-declarations-v2`,
+`retained_files`, `obligations`, `expiry_updates` and `actors`. Each actor has
+`container_id`, `kind`, `run_id` and `directory`. Controller originals bind their
+request/attempt and complete local and external issuance evidence. Empty failed
+attempts need their actual failed journey result and no issuance evidence. A
+`manual-page-rules` actor binds its actual worker/run/intent/creation records and
+two-field retained key, without inventing a controller request. Every issuer must
+appear, including the manual actor. Known retained local diagnostics use
+`retained-diagnostic` with null run/directory and their reviewed program bindings;
+they claim no journal run or successful outcome. Unknown programs fail discovery.
+
+An obligation predating generation IDs uses `generation_id: null`, its original
+`cleanup_authority_sha256`, and `original_status`. This representation is **terminal
+evidence only**: neither a missing denial nor an outstanding restoration can use
+replacement authority. Reconcile such obligations with retained old access during
+the authorized cleanup phase, before the old authority deadline. Preserve every
+local pending marker; an older denial covering a different marker is insufficient.
+Expiry updates can likewise use null generation with exact original
+`result_contents` and `result_files`. Embedded nonsecret result bytes can travel
+across hosts; they do not assert that the original workspace path exists inside
+the helper. Existing changed files or unsafe links still fail verification.
+
+Discovery uses GETs and read-only Docker inspection/copy; it neither fences nor
+produces an approvable import. Two collections must agree on originals, file
+hashes, actor identity, commands, mounts and declarations. Cleanup facts may append;
+new run/intent/creation records require rediscovery. Resolve discovery failures
+before stopping issuance. Keep old cleanup operational.
+
+After separately authorized fencing, create a private object with
+`format: lowerduckpond-m3-11-migration-fences-v2`, the exact `discovery` object, and
+`fences`: one `{container_id, stopped_at, issuance_disabled: true}` per discovered
+actor. Final collection independently observes each stopped, nonrestarting actor,
+records conservative observation times and start/finish timestamps, and rechecks
+all originals. Any required restoration proof must follow the observed fence.
+
+```console
+uv run --frozen python -m scripts.m3_11_unattended.connect_delivery \
+  --operation inspect-import --prepared /private/prepared.json \
+  --daemon-socket /docker-sock/docker.sock --historical-reader /private/historical-reader.json \
+  --journal-vault JOURNAL_VAULT_ID --declarations /private/legacy-fences.json \
+  --transport coder --coder-workspace OWNER/WORKSPACE --daemon-id APPROVED_DAEMON_UUID \
+  --workspace-id APPROVED_WORKSPACE_UUID --output /private/migration-evidence.json
 uv run --frozen python -m scripts.m3_11_unattended.operator_records migration-proposal \
   --evidence-index /private/migration-evidence.json --output /private/migration-proposal.json
 ```
 
-The declaration format is `lowerduckpond-m3-11-migration-declarations-v1`:
+The earlier `lowerduckpond-m3-11-migration-declarations-v1` remains supported:
 `retained_files` lists canonical original host paths; `obligations` maps each intent
 digest to its declared `generation_id` and `original_status`; `expiry_updates`
 contains the original approved plans/results; `issuers` gives exact `container_id`,
@@ -141,6 +187,11 @@ actual `stopped_at` and explicit `issuance_disabled: true`. The collector reads
 original files/events and current issuer state twice, refusing drift. It cannot
 stop or fence issuers. Historical reader access is supplied separately before the
 new configuration exists; retained secrets stay on the host.
+
+Migration transport and private evidence have a 16 MiB ceiling; utility execution
+is bounded at 1,200 seconds. Other delivery commands retain a 90-second limit.
+An interrupted import preserves its original pending state and requires readback;
+it never authorizes a fresh write retry.
 
 Review both proposals, then record each actual external consent. The expected
 proposal digest prevents drift; possession of it is not approval. `approved_at`
@@ -337,6 +388,16 @@ Omitting `--apply` checks the destination only. The independent protected enviro
 receives the single `M3_11_CONNECT_BOOTSTRAP` secret. Enable the replacement cleanup
 path and demonstrate independent access before enabling new issuance; retain old
 cleanup until that handoff is verified. Do not operate two active issuance paths.
+
+For a Coder-only destination, replace `--destination` and `--workspace` with
+`--transport coder --coder-workspace OWNER/WORKSPACE --daemon-id APPROVED_DAEMON_UUID`
+for discovery, import and delivery; keep the exact `--workspace-id`. The existing
+workspace must already be running with one connected agent. Coder uses its
+forwarded `/docker-sock/docker.sock`, verifies the workspace UUID, build/agent,
+UID 1000, persistent `/home/coder` volume and daemon before and after transfer,
+and checks runtime identity again immediately before receiving private stdin.
+Autostart, terminal allocation and agent/GPG forwarding are disabled. The remote
+command is one shell-quoted argument, matching Coder's argument-joining contract.
 
 Rollback retains the new helper's inventory reader and all required cleanup access:
 

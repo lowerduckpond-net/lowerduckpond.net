@@ -31,7 +31,9 @@ class Client(Delivery):
         self.approver = False
         self.branch = "main"
 
-    def command(self, program: str, *arguments: str, stdin: bytes | None = None) -> bytes:
+    def command(
+        self, program: str, *arguments: str, stdin: bytes | None = None, timeout: int = 90
+    ) -> bytes:
         self.calls.append((program, arguments, stdin))
         assert CANARY not in json.dumps(arguments)
         if program == "ssh":

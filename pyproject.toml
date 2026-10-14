@@ -121,6 +121,8 @@ files = [
   "tests/infrastructure/test_m3_11_onepassword_contract.py",
   "tests/infrastructure/test_m3_11_allocation_producers.py",
   "tests/infrastructure/test_m3_11_connect_delivery.py",
+  "tests/infrastructure/test_m3_11_coder_delivery.py",
+  "tests/infrastructure/test_m3_11_legacy_discovery.py",
   "tests/infrastructure/test_m3_11_connect_api.py",
   "tests/infrastructure/test_m3_11_connect_auth.py",
   "tests/infrastructure/test_m3_11_connect_configuration.py",
