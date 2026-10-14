@@ -132,12 +132,12 @@ def test_companion_write_failure_never_exposes_a_consumable_approval(
     original = write_private
     count = 0
 
-    def fail(path: Path, value: dict[str, object]) -> None:
+    def fail(path: Path, value: dict[str, object], *, maximum: int) -> None:
         nonlocal count
         count += 1
         if count == failed_write:
             raise OSError("synthetic durable write failure")
-        original(path, value)
+        original(path, value, maximum=maximum)
 
     monkeypatch.setattr(records, "write_private", fail)
     output = tmp_path / "approved-policy"

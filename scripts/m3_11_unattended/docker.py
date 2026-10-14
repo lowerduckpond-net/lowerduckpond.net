@@ -164,7 +164,7 @@ def utility_arguments(prepared: object, *, operation: str, daemon_socket: str) -
     if (
         value["helper_revision"] != source
         or re.fullmatch(r"sha256:[0-9a-f]{64}", image) is None
-        or operation not in {"inspect-import", "import", "admission"}
+        or operation not in {"discover-import", "inspect-import", "import", "admission"}
         or not daemon_socket.startswith("/")
         or any(c in daemon_socket for c in (",", "\n", "\0"))
     ):
@@ -212,7 +212,7 @@ def utility_arguments(prepared: object, *, operation: str, daemon_socket: str) -
 
 
 def utility_result(raw: bytes, envelope: dict[str, object]) -> dict[str, object]:
-    if len(raw) > 4 * 1024 * 1024:
+    if len(raw) > 16 * 1024 * 1024:
         raise LifecycleError("daemon utility output exceeded its bound")
     result = fields(json.loads(raw), {"format", "input_sha256", "result"})
     if (

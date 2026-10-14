@@ -13,7 +13,12 @@ from scripts.m3_11_private_inputs import publish_private, read_private, write_pr
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended import approval, operator_assemble
 from scripts.m3_11_unattended.inputs import BINDING
-from scripts.m3_11_unattended.journal import MIGRATION_FORMAT, migration
+from scripts.m3_11_unattended.journal import (
+    MAX_OUTPUT,
+    MIGRATION_FORMAT,
+    MIGRATION_FORMAT_V2,
+    migration,
+)
 from scripts.m3_11_unattended.journal import validate as event_validate
 from scripts.m3_11_unattended.legacy_terminal import validate_claims
 from scripts.m3_11_unattended.lifecycle import _intents, _known_id
@@ -67,7 +72,7 @@ def local(path: Path) -> Path:
 
 
 def read(path: Path) -> dict[str, object]:
-    return read_private(local(path))
+    return read_private(local(path), maximum=MAX_OUTPUT)
 
 
 def policy_body(value: object) -> dict[str, object]:
@@ -96,7 +101,11 @@ def migration_body(value: object) -> dict[str, object]:
     evidence = fields(
         value, {"format", "records", "obligations", "retained_files", "expiry_updates", "issuers"}
     )
-    if evidence["format"] != EVIDENCE_FORMAT or not isinstance(evidence["records"], list):
+    modern = evidence["format"] == "lowerduckpond-m3-11-migration-evidence-v2"
+    if evidence["format"] not in {
+        EVIDENCE_FORMAT,
+        "lowerduckpond-m3-11-migration-evidence-v2",
+    } or not isinstance(evidence["records"], list):
         raise LifecycleError("migration requires original collected evidence")
     records = [event_validate(row) for row in evidence["records"]]
     by_id = {str(row["event_id"]): row for row in records}
@@ -108,10 +117,16 @@ def migration_body(value: object) -> dict[str, object]:
         raise LifecycleError("migration declarations do not cover original obligations")
     obligations = {}
     for intent in intents:
-        row = fields(declared[intent.sha256], {"generation_id", "original_status"})
+        row = fields(
+            declared[intent.sha256],
+            {"generation_id", "original_status"}
+            | ({"cleanup_authority_sha256"} if modern else set()),
+        )
+        if modern and row["cleanup_authority_sha256"] != intent.cleanup_authority_sha256:
+            raise LifecycleError("legacy generation declaration differs from original authority")
         obligations[intent.sha256] = {**row, "provider_id": _known_id(records, intent)}
     result = {
-        "format": MIGRATION_FORMAT,
+        "format": MIGRATION_FORMAT_V2 if modern else MIGRATION_FORMAT,
         "records": {key: digest(row) for key, row in by_id.items()},
         "obligations": obligations,
         "retained_files": evidence["retained_files"],
@@ -270,7 +285,7 @@ def propose(
         if read(output) != value:
             raise LifecycleError("proposal output conflicts with retained original")
     else:
-        publish_private(output, value)
+        publish_private(output, value, maximum=MAX_OUTPUT)
     return value
 
 
@@ -346,8 +361,8 @@ def record(  # noqa: PLR0912, PLR0913 - explicit source, consent, output and tim
         approval.validate(result, mode=str(proposed["parameters"]["mode"]), now=now)
     output.mkdir(mode=0o700)
     for name, value in companions.items():
-        write_private(output / name, value)
-    publish_private(output / filename, result)
+        write_private(output / name, value, maximum=MAX_OUTPUT)
+    publish_private(output / filename, result, maximum=MAX_OUTPUT)
     return result
 
 

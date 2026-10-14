@@ -38,8 +38,34 @@ from scripts.m3_11_unattended.state import journey_result
 from scripts.production_qualification_inputs import revision
 
 
+def retained_bytes(mapping: dict[str, object], path: Path) -> bytes:
+    """Read an original, or its exact embedded nonsecret expiry result on another host.
+
+    Detached result bytes do not claim that the original path exists on this host.
+    Existing files still have to agree; never hide a changed file or unsafe link.
+    """
+    try:
+        return read_private_bytes(path)
+    except FileNotFoundError:
+        if path.is_symlink():
+            raise
+        matches = []
+        for raw in cast(list[object], mapping.get("expiry_updates", [])):
+            row = cleanup_expiry.imported_update(raw)
+            contents = strings(row.get("result_contents", {}))
+            if str(path) in contents:
+                matches.append(contents[str(path)].encode())
+        if len(matches) != 1:
+            raise
+        return matches[0]
+
+
 def original_run(  # noqa: PLR0912 - original request, attempt, local and external intent bindings
-    directory: Path, records: list[dict[str, object]], retained: dict[str, str]
+    directory: Path,
+    records: list[dict[str, object]],
+    retained: dict[str, str],
+    *,
+    allow_empty: bool = False,
 ) -> dict[str, object]:
     """Bind an original run without synthesizing a journey result or status."""
     request_path = directory / "request.json"
@@ -86,7 +112,7 @@ def original_run(  # noqa: PLR0912 - original request, attempt, local and extern
             raise LifecycleError("original legacy intent identity differs")
         local[intent.sha256] = intent
     if (
-        not owned
+        (not owned and not allow_empty)
         or local != owned
         or any(
             item.source_revision != binding["source_revision"]
@@ -96,6 +122,23 @@ def original_run(  # noqa: PLR0912 - original request, attempt, local and extern
         )
     ):
         raise LifecycleError("original legacy intent coverage is incomplete or misbound")
+    if not owned and (
+        not result_path.is_file()
+        or journey_result(directory)["status"] == 0
+        or any(
+            list((directory / kind).glob("*.json"))
+            for kind in ("credential-created", "credential-aborted", "credential-cleanup")
+        )
+        or any(
+            row["run_id"] == directory.name
+            and (
+                row["kind"] in {"created", "cleanup", "resolved"}
+                or (isinstance(row["payload"], dict) and "intent_sha256" in row["payload"])
+            )
+            for row in records
+        )
+    ):
+        raise LifecycleError("empty legacy attempt has issuance evidence or no original result")
     for row in records:
         if row["run_id"] == directory.name and row["kind"] == "run":
             payload = cast(dict[str, object], row["payload"])
@@ -117,8 +160,15 @@ def require_terminal_run(  # noqa: PLR0912 - retained evidence and all terminal 
 ) -> dict[str, object]:
     """Read-only migration closure; retained keys require original denial proof."""
     retained = strings(mapping["retained_files"])
-    request = original_run(directory, records, retained)
-    originals = {intent.sha256: intent for intent in _intents(records)}
+    request = original_run(
+        directory,
+        records,
+        retained,
+        allow_empty=mapping.get("format") == "lowerduckpond-m3-11-legacy-import-v2",
+    )
+    from scripts.m3_11_unattended.legacy_actors import credential_intents  # noqa: PLC0415
+
+    keys = credential_intents(mapping, records)
     owned = {
         intent.sha256: intent for intent in _intents(records) if intent.run_id == directory.name
     }
@@ -128,25 +178,32 @@ def require_terminal_run(  # noqa: PLR0912 - retained evidence and all terminal 
     expected_secrets = set()
     for filename, expected in retained.items():
         path = Path(filename)
-        is_secret = path.parent.name == "credential-cleanup"
+        is_secret = filename in keys
         if is_secret:
-            if path.stem not in originals or path.parent.parent.name != originals[path.stem].run_id:
-                raise LifecycleError("retained legacy credential has no original intent")
-            expected_secrets.add(path.stem)
+            expected_secrets.add(keys[filename].sha256)
         if not path.exists() and is_secret:
-            proof = terminal(originals[path.stem], records, credential_expected=True)
+            proof = terminal(keys[filename], records, credential_expected=True)
             if proof is None or proof.negative_authentication != "denied":
                 raise LifecycleError("missing retained secret lacks original denial proof")
             continue
-        if hashlib.sha256(read_private_bytes(path)).hexdigest() != expected:
+        if hashlib.sha256(retained_bytes(mapping, path)).hexdigest() != expected:
             raise LifecycleError("reviewed legacy retained file changed")
         if is_secret:
-            raw = fields(read_private(path), {"intent_sha256", "identifier", "secret"})
-            if raw["intent_sha256"] != path.stem or raw["identifier"] != _known_id(
-                records, originals[path.stem]
+            manual = path.parent.parent.name == "manual-page-rules"
+            raw = fields(
+                read_private(path),
+                {"identifier", "secret"} | (set() if manual else {"intent_sha256"}),
+            )
+            if (not manual and raw["intent_sha256"] != path.stem) or raw["identifier"] != _known_id(
+                records, keys[filename]
             ):
                 raise LifecycleError("retained legacy credential identity differs")
-    for intent in owned.values():
+    required = (
+        _intents(records)
+        if mapping.get("format") == "lowerduckpond-m3-11-legacy-import-v2"
+        else list(owned.values())
+    )
+    for intent in required:
         if terminal(intent, records, credential_expected=intent.sha256 in expected_secrets) is None:
             raise LifecycleError("legacy terminal removal or negative authentication is unresolved")
     issuers = cast(list[dict[str, object]], mapping["issuers"])
@@ -251,6 +308,12 @@ def validate_claims(mapping: dict[str, object], records: list[dict[str, object]]
         cleanup_expiry.terminal_update(update, records=records)
     obligations = cast(dict[str, dict[str, object]], mapping["obligations"])
     for intent in _intents(records):
+        row = obligations[intent.sha256]
+        if (
+            "cleanup_authority_sha256" in row
+            and row["cleanup_authority_sha256"] != intent.cleanup_authority_sha256
+        ):
+            raise LifecycleError("legacy authority differs from its original intent")
         result = terminal(intent, records)
         claimed = obligations[intent.sha256]["original_status"]
         if claimed == "unresolved":
