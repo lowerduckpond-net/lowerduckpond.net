@@ -14,14 +14,9 @@ from typing import cast
 
 from scripts.m3_11_private_inputs import read_private, read_private_bytes
 from scripts.m3_11_qualification_evidence import fields
+from scripts.m3_11_unattended import legacy_bridge_contract as bridge_contract
 from scripts.m3_11_unattended.creation_outcome import run_payload
-from scripts.m3_11_unattended.docker import (
-    CLEANUP_VOLUME,
-    EVIDENCE_VOLUME,
-    OWNER,
-    Docker,
-    helper_volume,
-)
+from scripts.m3_11_unattended.docker import EVIDENCE_VOLUME, OWNER, Docker, helper_volume
 from scripts.m3_11_unattended.inputs import BINDING
 from scripts.m3_11_unattended.journal import validate
 from scripts.m3_11_unattended.legacy_terminal import original_run, terminal
@@ -245,7 +240,7 @@ def observe(
     return {**actor, "identity": actual, "original_sha256": digest(original)}
 
 
-def inventory(docker: Docker) -> set[str]:
+def inventory(docker: Docker, *, reader_images: set[str] | None = None) -> set[str]:
     rows = (
         docker.command(
             "ps",
@@ -311,7 +306,7 @@ def inventory(docker: Docker) -> set[str]:
                     )
                 )
                 or command == utility
-                or import_watchdog(docker, value)
+                or import_watchdog(docker, value, images=reader_images or set())
             )
             if not permitted or config.get("Entrypoint") not in (
                 None,
@@ -324,64 +319,7 @@ def inventory(docker: Docker) -> set[str]:
     return actors
 
 
-def _whole_volume_mounts(actual: dict[str, object], destinations: set[str]) -> bool:
-    # Docker may retain a volume subpath only in the requested mount options.
-    # It must not select a different cleanup configuration/evidence subtree.
-    host = actual.get("HostConfig")
-    if not isinstance(host, dict):
-        return False
-    requested = host.get("Mounts", [])
-    if not isinstance(requested, list):
-        return False
-    for mount in requested:
-        if not isinstance(mount, dict) or not isinstance(mount.get("Target"), str):
-            return False
-        if mount["Target"] in destinations:
-            options = mount.get("VolumeOptions", {})
-            if not isinstance(options, dict) or options.get("Subpath") not in (None, ""):
-                return False
-    return True
-
-
-def _import_watchdog_mounts(actual: dict[str, object], bridge_sha256: str) -> bool:
-    from scripts.m3_11_unattended import legacy_import_reader as bridge  # noqa: PLC0415
-
-    expected = {
-        "/cleanup": (CLEANUP_VOLUME, False),
-        "/evidence": (EVIDENCE_VOLUME, True),
-        "/opt/lifecycle": (helper_volume(bridge.LEGACY_REVISION), False),
-        "/opt/import-bridge": ("ldp-m311-import-bridge-" + bridge_sha256, False),
-    }
-    mounts = actual.get("Mounts")
-    if not isinstance(mounts, list) or not _whole_volume_mounts(actual, set(expected)):
-        return False
-    seen = set()
-    for mount in mounts:
-        if not isinstance(mount, dict) or not isinstance(mount.get("Destination"), str):
-            return False
-        destination = mount["Destination"]
-        path = Path(destination)
-        if not path.is_absolute() or str(path) != destination or ".." in path.parts:
-            return False
-        # An otherwise correct parent mount cannot attest an overmounted config,
-        # runs directory, module or bridge program.
-        if any(Path(root) in path.parents for root in expected):
-            return False
-        if destination in expected:
-            name, writable = expected[destination]
-            if (
-                destination in seen
-                or mount.get("Type") != "volume"
-                or mount.get("Name") != name
-                or mount.get("RW") is not writable
-                or mount.get("SubPath") not in (None, "")
-            ):
-                return False
-            seen.add(destination)
-    return seen == set(expected)
-
-
-def import_watchdog(docker: Docker, actual: dict[str, object]) -> bool:
+def import_watchdog(docker: Docker, actual: dict[str, object], *, images: set[str]) -> bool:
     """Exempt only the exact reviewed cleanup bridge, never a name-only reader."""
     from scripts.m3_11_unattended import legacy_import_reader as bridge  # noqa: PLC0415
     from scripts.m3_11_unattended.legacy_diagnostics import script_digest  # noqa: PLC0415
@@ -405,7 +343,8 @@ def import_watchdog(docker: Docker, actual: dict[str, object]) -> bool:
         or not isinstance(command[11], str)
         or re.fullmatch(r"[a-f0-9]{64}", command[11]) is None
         or command != bridge.watchdog_command(command[9], command[11])
-        or not _import_watchdog_mounts(actual, expected)
+        or not bridge_contract.configuration(actual, images)
+        or not bridge_contract.mounts(actual, expected)
     ):
         return False
     return (
@@ -416,10 +355,15 @@ def import_watchdog(docker: Docker, actual: dict[str, object]) -> bool:
             "/opt/lifecycle/scripts/m3_11_unattended/connect_ledger.py",
         )
         == bridge.LEDGER_SHA256
+        and script_digest(
+            docker, str(actual["Id"]), "/opt/lifecycle/scripts/m3_11_unattended/connect_auth.py"
+        )
+        == bridge.INSPECTOR_SHA256
+        and bridge_contract.source(docker, str(actual["Id"]))
     )
 
 
-def require_import_readers(docker: Docker, *, vault: str, expected: str) -> None:
+def require_import_readers(docker: Docker, *, vault: str, expected: str, images: set[str]) -> None:
     """Before introducing the import, fence every unbridged host reader.
 
     GitHub jobs and its explicit bridge selection are a separate operator gate.
@@ -453,7 +397,7 @@ def require_import_readers(docker: Docker, *, vault: str, expected: str) -> None
         actual = docker.owned(selected)
         state = cast(dict[str, object], actual.get("State", {}))
         host = cast(dict[str, object], actual.get("HostConfig", {}))
-        if import_watchdog(docker, actual):
+        if import_watchdog(docker, actual, images=images):
             config = cast(dict[str, object], actual["Config"])
             if config["Cmd"] != bridge.watchdog_command(vault, expected):
                 raise LifecycleError("legacy import reader approval differs")

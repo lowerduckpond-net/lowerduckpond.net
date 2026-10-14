@@ -238,25 +238,59 @@ GitHub run/variable change from the refreshed inventory; the bridge itself neith
 deploys nor changes those resources. After import, rollback must retain compatible
 readers. Do not delete the import or start an unbridged predecessor to roll back.
 
-The host bridge must mount these exact named volumes; bind mounts, missing or
-duplicate destinations, different access modes, volume subpaths and mounts beneath
-these destinations are rejected. The helper revision is the full pinned
+The host bridge must use exactly these five mounts. Missing, extra or duplicate
+mounts, different access modes, volume subpaths and mounts that hide any required
+path are rejected. The helper revision is the full pinned
 `0b5b198bf06443e61f01b1f7259fea827f79fc23`; the bridge digest is the full SHA-256 of
-the reviewed `legacy_import_reader.py` file. Preserve the existing Docker socket
-transport separately.
+the reviewed `legacy_import_reader.py` file.
 
-| Destination | Named volume | Access |
+| Destination | Type and source | Access |
 | --- | --- | --- |
-| `/cleanup` | `ldp-m311-cleanup-config` | Read-only |
-| `/evidence` | `ldp-m311-evidence` | Read/write |
-| `/opt/lifecycle` | `ldp-m311-helper-` plus the full pinned helper revision | Read-only |
-| `/opt/import-bridge` | `ldp-m311-import-bridge-` plus the full bridge file digest | Read-only |
+| `/cleanup` | Named volume `ldp-m311-cleanup-config` | Read-only |
+| `/evidence` | Named volume `ldp-m311-evidence` | Read/write |
+| `/opt/lifecycle` | Named volume `ldp-m311-helper-` plus the full pinned helper revision | Read-only |
+| `/opt/import-bridge` | Named volume `ldp-m311-import-bridge-` plus the full bridge file digest | Read-only |
+| `/var/run/docker.sock` | Bind from daemon-host `/docker-sock/docker.sock`, propagation `rprivate` | Read/write |
 
-These bindings and the existing script hashes are checked again after original
-publication, before accepting the bridge for import. A persistent watchdog can
-stay running while reporting configuration errors, so running status and valid
-mounts still do not replace the fresh reader and ordinary cleanup receipts in
-step 3. Keep the fallback cleaner until replacement coverage is verified.
+The socket source comes from the retained Coder daemon inventory. It is not the
+import utility's container-local socket path. The bridge must have exactly this
+environment, taken from the pinned qualification Dockerfile and launcher:
+
+```text
+DOCKER_HOST=unix:///var/run/docker.sock
+MISE_DATA_DIR=/opt/mise-data
+MISE_CONFIG_DIR=/opt/mise-config
+MISE_YES=1
+MISE_TRUSTED_CONFIG_PATHS=/opt/qualification-tools:/opt/lifecycle:/work/source
+PATH=/opt/mise-data/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+```
+
+Duplicate keys and additional environment overrides are rejected, including
+`DOCKER_CONTEXT`, which the pinned Docker client selects ahead of `DOCKER_HOST`.
+The contract also requires the pinned mise entrypoint, `/opt/lifecycle` working
+directory, default root user, observed `runc` runtime, host networking, writable
+root filesystem and the launcher's default security/resource settings. Additional tmpfs/volumes-from,
+DNS, security or resource overrides are rejected. Kernel path restrictions are
+limited to reviewed proc/sys masks from
+[Moby's defaults](https://github.com/moby/moby/blob/v28.5.1/oci/defaults.go);
+they cannot hide cleanup inputs or make evidence read-only. Environment/startup
+expectations come from pinned source. A read-only inspection of the original
+watchdog confirmed that its deployed environment, launch settings and kernel masks
+match this contract; the earlier retained inventory projection omitted those fields.
+
+The immutable image ID must match the single image bound to the pinned original
+controller in the approved v2 migration. The bridge cannot authorize its own image
+or use a mutable tag; missing or ambiguous original bindings fail closed. The
+v2-only reader bridge gains no image authority from a v1 import. Read-only Git
+inspection checks the helper HEAD and clean tracked/untracked source, in addition
+to the bridge, ledger and authentication file hashes.
+
+All these bindings are checked again after original publication, before accepting
+the bridge for import. A persistent watchdog can stay running while reporting
+configuration errors: structural checks do not prove configuration contents,
+socket connectivity, provider access or successful cleanup. Retain the fresh
+reader and ordinary cleanup receipts required by step 3. Keep fallback cleanup
+until replacement coverage is verified.
 
 The existing clients remain unchanged. `reader_access` accepts the exact observed
 496 profile only on the journal vault for provision and cleanup roles (including
@@ -289,13 +323,14 @@ retains that observation; failed authentication stops subsequent work. Policy an
 authentication receipts always say `create_verified: false`. Successful publication
 is evidenced by the actual fact's exact readback and ordinary lifecycle receipts.
 
-As of the retained October 14 diagnostic, shared authentication/isolation and its
-eleven secret reads passed; independent authentication/isolation has not run. There
-is no existing independent endpoint. Its first use must run on the separate cache
-(Studio's default local Docker context for an approved Studio execution, or the
-existing protected GitHub runner); the master credential must stay off the controller
-host. No replacement client or prerequisite test write is needed. If real recovery
-produces no independent write, independent CREATE remains unverified. That limits
+The retained Studio result from October 14 at 11:04 UTC verified shared and
+independent cleanup authentication with exact forbidden-vault isolation (seven GETs,
+zero POSTs); the owned local cache was removed afterward. Earlier shared diagnostics
+also verified eleven secret reads. Every later independent use must authenticate
+on its separate cache (Studio's default local Docker context for an approved Studio
+execution, or the protected GitHub runner); its master credential stays off the
+controller host. No replacement client or prerequisite test write is needed. If
+real recovery produces no independent write, independent CREATE remains unverified. That limits
 publication claims, not an otherwise verified read-only cleanup receipt. The real
 lease's required independent confirmation still gates issuance; failure to publish
 that confirmation blocks issuance without fabricating a replacement fact.
@@ -313,9 +348,9 @@ exact readback, never a new spool or an indiscriminate rerun to bypass pending s
 The Cloudflare finite-expiry repair remains separately pending approval; it is a
 provider activation prerequisite, not a journal CREATE test or import-closure claim.
 
-For this cutover, old-authority work must finish before **2026-10-17 00:00 UTC**
-(October 16, 19:00 America/Chicago). Review/deployment delays, the manual negative
-probe, independent authentication, or waiting for an unnecessary CREATE test can
+For this cutover, old-authority work and verified successor handoff must finish
+before **October 16, 2026 at 21:38:38 UTC (4:38:38 p.m. CDT)**. Review/deployment
+delays, the manual negative probe, independent authentication, or waiting for an unnecessary CREATE test can
 consume that window. Prioritize genuine original-authority recovery and retain its
 access until verified. A missed deadline cannot be repaired by relabeling the
 obligation or silently substituting replacement credentials. The closed disposable

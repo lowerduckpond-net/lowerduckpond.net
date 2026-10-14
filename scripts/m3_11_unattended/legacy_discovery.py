@@ -13,6 +13,7 @@ from typing import cast
 
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended import legacy_actors
+from scripts.m3_11_unattended import legacy_bridge_contract as bridge_contract
 from scripts.m3_11_unattended.connect_api import Connect
 from scripts.m3_11_unattended.docker import Docker
 from scripts.m3_11_unattended.journal import LegacyRecords, validate
@@ -94,7 +95,7 @@ def collect(
         if (
             len(ids) != len(actors)
             or len(runs) != sum(row["run_id"] is not None for row in actors)
-            or ids != legacy_actors.inventory(docker)
+            or ids != legacy_actors.inventory(docker, reader_images=bridge_contract.images(actors))
             or not {item.run_id for item in _intents(records)} <= runs
         ):
             raise LifecycleError("historical discovery lacks complete original actor coverage")
@@ -207,7 +208,13 @@ def finalize(
                 "actor": actors[selected],
             }
         )
-    if used != set(actors) or legacy_actors.inventory(docker) != used:
+    if (
+        used != set(actors)
+        or legacy_actors.inventory(
+            docker, reader_images=bridge_contract.images(list(actors.values()))
+        )
+        != used
+    ):
         raise LifecycleError("final fences do not cover every discovered issuer")
     return {
         "format": EVIDENCE,
