@@ -76,14 +76,23 @@ def execute(
     with independent_server(Docker(), credentials) as endpoint:
         client = Connect(endpoint, access.token, local_cleanup=True)
         until = time.monotonic() + SYNC_SECONDS
+        replace_private(
+            directory / "authentication.json", {**access.receipt(), "status": "pending"}
+        )
         while True:
             try:
-                authenticate(client, access, forbidden=set(vaults.values()) - access.grants.keys())
+                authentication = authenticate(
+                    client, access, forbidden=set(vaults.values()) - access.grants.keys()
+                )
                 break
             except LifecycleError:
                 if time.monotonic() >= until:
                     raise
                 time.sleep(POLL_SECONDS)
+        replace_private(
+            directory / "authentication.json",
+            {**authentication, "status": "verified", "observed_at": stamp(datetime.now(UTC))},
+        )
         inventory = ConnectInventory(client, config.journal_vault, spool=directory / "pending")
         confirmation = None
         if selected["operation"] == "confirm":

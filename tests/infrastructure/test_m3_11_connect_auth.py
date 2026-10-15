@@ -113,6 +113,58 @@ def test_native_signed_policy_and_authenticated_separation() -> None:
     assert CANARY not in repr(access)
 
 
+@pytest.mark.parametrize("array", [False, True])
+def test_exact_single_audience_representation(array: bool) -> None:
+    entry, metadata, payload = example()
+    if array:
+        payload["aud"] = [payload["aud"]]
+    token(entry, payload)
+    assert auth.inspect(entry, metadata, expected=EXPECTED, now=NOW).grants == EXPECTED
+
+
+@pytest.mark.parametrize(
+    "audience", [[], ["example-connect", "unexpected"], ["example-connect"] * 2, [None], None, 1]
+)
+def test_single_audience_does_not_accept_additional_or_malformed_values(audience: object) -> None:
+    entry, metadata, payload = example()
+    payload["aud"] = audience
+    token(entry, payload)
+    with pytest.raises(LifecycleError, match="exact policy differs"):
+        auth.inspect(entry, metadata, expected=EXPECTED, now=NOW)
+
+
+@pytest.mark.parametrize("native_offset", [-1, 0, 1, 2])
+def test_native_expiry_representation_never_extends_signed_lifetime(native_offset: int) -> None:
+    entry, metadata, payload = example()
+    signed_expiry = NOW + timedelta(days=7)
+    native = cast(list[dict[str, object]], metadata["tokens"])[0]
+    native["expires_at"] = stamp(signed_expiry + timedelta(seconds=native_offset))
+    payload["aud"] = [payload["aud"]]
+    token(entry, payload)
+    if native_offset not in {0, 1}:
+        with pytest.raises(LifecycleError, match="lifetimes differ"):
+            auth.inspect(entry, metadata, expected=EXPECTED, now=NOW)
+        return
+    access = auth.inspect(
+        entry, metadata, expected=EXPECTED, now=NOW, approved_expires_at=signed_expiry
+    )
+    assert access.expires_at == signed_expiry
+    assert access.receipt()["expires_at"] == stamp(signed_expiry)
+    with pytest.raises(LifecycleError, match="lifetimes differ"):
+        auth.inspect(entry, metadata, expected=EXPECTED, now=signed_expiry)
+    with pytest.raises(LifecycleError, match="lifetimes differ"):
+        auth.inspect(
+            entry,
+            metadata,
+            expected=EXPECTED,
+            now=NOW,
+            approved_expires_at=signed_expiry + timedelta(seconds=1),
+        )
+    entry["expires_at"] = stamp(signed_expiry + timedelta(seconds=1))
+    with pytest.raises(LifecycleError, match="lifetimes differ"):
+        auth.inspect(entry, metadata, expected=EXPECTED, now=NOW)
+
+
 @pytest.mark.parametrize("permission", [496, 48, True, False, "1008", 1008.0, None, -1])
 def test_journal_rejects_incomplete_grants_and_noninteger_permissions(permission: object) -> None:
     entry, metadata, payload = example()

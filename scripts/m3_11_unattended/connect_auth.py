@@ -18,9 +18,13 @@ IDENTITY = re.compile(r"[A-Za-z0-9]{26}")
 # read/reveal (32/16), update/create/archive/delete (64/128/256/512).
 # Connect WRITE includes deletion. See fixtures/onepassword/provenance.json
 # under tests/infrastructure for sources and the numeric schema's limits.
-# Reject all other values rather than infer access from partial bit matches.
+# Accept only enumerated profiles, never arbitrary partial bit matches.
 READ = 48
 READ_WRITE = 1008
+# Observed production profile: read/reveal, create, update and archive, but no
+# delete. Only the provision/cleanup journal role may select it. This is a
+# declaration of permissions, not evidence that a CREATE request succeeded.
+JOURNAL_NO_DELETE = 496
 CLAIM_PREFIX = "1password.com/"
 SKEW = timedelta(minutes=5)
 MAX_LIFETIME = timedelta(days=7)
@@ -77,10 +81,20 @@ def _grants(value: object, *, native: bool) -> dict[str, int]:
                 permission = READ_WRITE
             else:
                 raise LifecycleError("Connect native policy contains an unexpected permission")
-        if type(permission) is not int or permission not in {READ, READ_WRITE} or vault in grants:
+        if (
+            type(permission) is not int
+            or permission not in {READ, READ_WRITE, JOURNAL_NO_DELETE}
+            or vault in grants
+        ):
             raise LifecycleError("Connect signed policy contains unknown or ambiguous grants")
         grants[vault] = permission
     return grants
+
+
+def _audience_matches(native: object, signed: object) -> bool:
+    # RFC 7519 permits a string or an array. The observed native client has
+    # exactly one audience; additional or duplicate signed audiences differ.
+    return isinstance(native, str) and bool(native) and signed in (native, [native])
 
 
 @dataclass(frozen=True)
@@ -98,7 +112,12 @@ class Access:
             "token_id_sha256": hashlib.sha256(self.token_id.encode()).hexdigest(),
             "expires_at": stamp(self.expires_at),
             "exact_native_and_signed_policy": True,
+            "signed_grants_by_vault_sha256": {
+                hashlib.sha256(vault.encode()).hexdigest(): permission
+                for vault, permission in sorted(self.grants.items())
+            },
             "authenticated": False,
+            "create_verified": False,
         }
 
 
@@ -110,6 +129,7 @@ def inspect(  # noqa: PLR0913 - separate native policy, time and historical pars
     now: datetime,
     approved_expires_at: datetime | None = None,
     allow_expired: bool = False,
+    journal_role: str | None = None,
 ) -> Access:
     """Parse policy privately. Endpoint authentication must follow before use."""
     token = entry.get("token")
@@ -125,6 +145,22 @@ def inspect(  # noqa: PLR0913 - separate native policy, time and historical pars
     if len(matches) != 1:
         raise LifecycleError("Connect native token identity is ambiguous")
     native = matches[0]
+    signed = _grants(payload.get(CLAIM_PREFIX + "vts"), native=False)
+    permitted = [expected]
+    if journal_role is not None:
+        if journal_role not in {"provision", "cleanup"} or sorted(expected.values()) != [
+            READ,
+            READ_WRITE,
+        ]:
+            raise LifecycleError("Connect journal role policy is invalid")
+        # The native view/edit labels are coarser than the signed bitmask.
+        # Preserve the actual signed profile; do not turn 496 into full WRITE.
+        permitted.append(
+            {
+                vault: JOURNAL_NO_DELETE if permission == READ_WRITE else permission
+                for vault, permission in expected.items()
+            }
+        )
     if (
         server.get("id") != server_id
         or server.get("state") != "ACTIVE"
@@ -133,13 +169,12 @@ def inspect(  # noqa: PLR0913 - separate native policy, time and historical pars
         or native.get("state") != "ACTIVE"
         or native.get("name") != entry.get("name")
         or not isinstance(native.get("issuer"), str)
-        or not isinstance(native.get("audience"), str)
         or native.get("issuer") != payload.get("iss")
-        or native.get("audience") != payload.get("aud")
+        or not _audience_matches(native.get("audience"), payload.get("aud"))
         or native.get("features") != ["vaultaccess"]
         or payload.get(CLAIM_PREFIX + "fts") != ["vaultaccess"]
         or _grants(native.get("vaults"), native=True) != expected
-        or _grants(payload.get(CLAIM_PREFIX + "vts"), native=False) != expected
+        or signed not in permitted
     ):
         raise LifecycleError("Connect client identity, activity or exact policy differs")
     issued, expiry = payload.get("iat"), payload.get("exp")
@@ -159,15 +194,19 @@ def inspect(  # noqa: PLR0913 - separate native policy, time and historical pars
         or (approved_expires_at is None and expires_at > issued_at + MAX_LIFETIME + SKEW)
         or (approved_expires_at is not None and expires_at != approved_expires_at)
         or abs(instant(native.get("created_at")) - issued_at) > SKEW
-        or instant(native.get("expires_at")) != expires_at
+        # Observed native expiry may be one second after the signed deadline.
+        # Only this direction is supported. Entry, approval, Access and the
+        # current-time check always use the earlier signed deadline.
+        or instant(native.get("expires_at")) - expires_at
+        not in {timedelta(0), timedelta(seconds=1)}
         or instant(entry.get("expires_at")) != expires_at
     ):
         raise LifecycleError("Connect native and signed lifetimes differ or have expired")
-    return Access(server_id, token_id, account, expires_at, dict(expected), token)
+    return Access(server_id, token_id, account, expires_at, signed, token)
 
 
 def authenticate(client: Connect, access: Access, *, forbidden: set[str]) -> dict[str, object]:
-    """Server acceptance verifies the signed token; native metadata supplies exact ACLs."""
+    """Require server acceptance of the token and exact declared vault isolation."""
     if client.credential_sha256 != hashlib.sha256(access.token.encode()).hexdigest():
         raise LifecycleError("Connect authentication client differs from the inspected token")
     if {vault["id"] for vault in client.vaults()} != set(access.grants):

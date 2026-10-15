@@ -19,9 +19,12 @@ from scripts.m3_11_unattended import connect_setup
 from scripts.m3_11_unattended import operator_assemble as assembly
 from scripts.m3_11_unattended.config import DO_READ_SCOPES, LeaseConfiguration
 from scripts.m3_11_unattended.connect_action import bootstrap
+from scripts.m3_11_unattended.connect_auth import claims
+from scripts.m3_11_unattended.connect_configuration import reader_access
 from scripts.m3_11_unattended.connect_delivery import MAX_SECRET_BYTES
 from scripts.m3_11_unattended.model import LifecycleError, digest, instant, stamp
 
+from .test_m3_11_connect_auth import token
 from .test_m3_11_connect_setup import independent_reader
 from .test_m3_11_lease_configuration import document, mapping
 
@@ -203,6 +206,45 @@ def fixture() -> tuple[dict[str, object], FakeOperator]:
             },
         }
     return manifest, FakeOperator(manifest, configured)
+
+
+@pytest.mark.parametrize("journal_permission", [496, 1008])
+def test_assembly_retains_signed_deadline_with_later_native_expiry(journal_permission: int) -> None:
+    manifest, operator = fixture()
+    signed_expiries = {}
+    for role, raw in mapping(manifest["clients"]).items():
+        client = mapping(raw)
+        ref = str(client["reference"])
+        payload = claims(operator.secrets[ref])
+        payload["aud"] = [payload["aud"]]
+        expiry = instant(client["expires_at"]) - timedelta(seconds=1)
+        payload["exp"] = int(expiry.timestamp())
+        if role != "production":
+            policies = cast(list[dict[str, object]], payload["1password.com/vts"])
+            next(row for row in policies if row["a"] != 48)["a"] = journal_permission  # noqa: PLR2004
+        operator.secrets[ref] = token({}, payload)
+        client["expires_at"] = stamp(expiry)
+        signed_expiries[role] = expiry
+    config, independent, _attestations = assembly.documents(
+        manifest, cast(connect_setup.Operator, operator)
+    )
+    controller, _github = connect_setup.assemble(config, independent, {"synthetic": SERVER_SECRET})
+    parsed = LeaseConfiguration.parse(controller)
+    for role, configured in parsed.generations[parsed.active_generation].items():
+        assert instant(configured.generation.connect_expires_at) == signed_expiries[role]
+        _, access = reader_access(configured.reader_settings)
+        assert access.grants[parsed.journal_vault] == journal_permission
+        assert access.receipt()["authenticated"] is False
+        assert access.receipt()["create_verified"] is False
+    _, independent_access = reader_access(independent)
+    assert independent_access.grants[parsed.journal_vault] == journal_permission
+    assert parsed.production is not None
+    _, production_access = reader_access(parsed.production["connect"])
+    assert production_access.expires_at == signed_expiries["production"]
+    assert all(
+        instant(mapping(raw)["expires_at"]) == signed_expiries[role]
+        for role, raw in mapping(manifest["clients"]).items()
+    )
 
 
 def inputs(tmp_path: Path, manifest: dict[str, object]) -> tuple[Path, Path]:

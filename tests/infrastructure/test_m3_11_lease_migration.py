@@ -181,6 +181,8 @@ class ImportDocker:
 
     def command(self, *arguments: str) -> bytes:
         assert arguments[0] == "ps"
+        if arguments[-1] == "{{.ID}} {{.Names}}":
+            return ("b" * 64 + " ldp-m311-controller-synthetic\n").encode()
         return ("b" * 64 + "\n").encode()
 
     def owned(self, selected: str) -> dict[str, object]:
@@ -245,15 +247,45 @@ def local_import(tmp_path: Path) -> tuple[Case, ConnectDouble, dict[str, object]
     return case, client, mapping, docker
 
 
-def test_import_recovers_only_local_returned_id_and_negative_probe_secret(tmp_path: Path) -> None:
+def recover_originals_with_existing_v1_import(
+    client: ConnectDouble,
+    mapping: dict[str, object],
+    docker: ImportDocker,
+    spool: Path,
+    *,
+    recovered: int,
+) -> str:
+    expected = digest(mapping)
+    before = client.posts
+    with pytest.raises(LifecycleError, match="no running compatible host cleanup reader"):
+        publish_import(
+            client, vault=client.vault, approved=mapping, spool=spool, docker=cast(Docker, docker)
+        )
+    assert client.posts == before + recovered  # Only legacy-safe originals were recovered.
+    assert not (spool / ("import-" + expected + ".json")).exists()
+    assert all(item["title"] != "m3-11-import-" + expected for item in client.items.values())
+    pending = {path: path.read_bytes() for path in spool.glob("original-*.json")}
+    assert len(pending) == recovered
+    # Model a historical v1 import already in Connect. New publication is forbidden,
+    # but read-only reconciliation and cleanup of existing imports remain available.
+    note(client, mapping, tag=MIGRATION_TAG, title="m3-11-import-" + expected)
+    before = client.posts
+    assert (
+        publish_import(
+            client, vault=client.vault, approved=mapping, spool=spool, docker=cast(Docker, docker)
+        )
+        == expected
+    )
+    assert client.posts == before
+    assert all(path.read_bytes() == raw for path, raw in pending.items())
+    return expected
+
+
+def test_local_original_recovery_cannot_bypass_bridge_for_new_v1_import(tmp_path: Path) -> None:
 
     case, client, mapping, docker = local_import(tmp_path)
-    expected = publish_import(
-        client,
-        vault=client.vault,
-        approved=mapping,
-        spool=tmp_path / "pending",
-        docker=cast(Docker, docker),
+    expected = recover_originals_with_existing_v1_import(
+        client, mapping, docker, tmp_path / "pending", recovered=1
     )
     journal = ConnectObligations(
         client, client.vault, spool=tmp_path / "cleanup", expected=expected
@@ -300,7 +332,7 @@ def test_import_rejects_changed_evidence_or_unfenced_issuer_before_post(
     assert client.posts == count
 
 
-def test_import_recovers_original_abort_when_intent_never_reached_connect(tmp_path: Path) -> None:
+def test_local_abort_recovery_cannot_bypass_bridge_for_new_v1_import(tmp_path: Path) -> None:
 
     case, _client, mapping, docker = local_import(tmp_path)
     intent = intents(case.journal)[0]
@@ -331,12 +363,8 @@ def test_import_recovers_original_abort_when_intent_never_reached_connect(tmp_pa
     cast(dict[str, dict[str, object]], mapping["obligations"])[intent.sha256]["provider_id"] = None
     client = ConnectDouble()
     note(client, run, tag=TAG, title=record_title(run))
-    expected = publish_import(
-        client,
-        vault=client.vault,
-        approved=mapping,
-        spool=tmp_path / "pending",
-        docker=cast(Docker, docker),
+    expected = recover_originals_with_existing_v1_import(
+        client, mapping, docker, tmp_path / "pending", recovered=2
     )
     journal = ConnectObligations(
         client, client.vault, spool=tmp_path / "cleanup", expected=expected

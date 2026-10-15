@@ -18,6 +18,7 @@ from typing import cast
 
 from scripts.m3_11_private_inputs import read_private, read_private_bytes, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
+from scripts.m3_11_unattended import legacy_bridge_contract as bridge_contract
 from scripts.m3_11_unattended.cleanup import sweep_legacy
 from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.connect_api import Connect
@@ -439,6 +440,15 @@ def publish_original(journal: ConnectObligations, record: dict[str, object]) -> 
         raise LifecycleError("original migration event lacks exact readback")
 
 
+def reader_images(mapping: dict[str, object]) -> set[str]:
+    """Use the original approved image bindings, never bridge-provided tags."""
+    issuers = cast(list[dict[str, object]], mapping["issuers"])
+    if mapping["format"] == MIGRATION_FORMAT_V2:
+        return bridge_contract.images([cast(dict[str, object], row["actor"]) for row in issuers])
+    # The opt-in bridge admits only v2 imports. V1 cannot confer bridge authority.
+    return set()
+
+
 def recheck_import(mapping: dict[str, object], docker: Docker) -> None:
     """Fresh original-file and issuer facts are required even after visible publication."""
     from scripts.m3_11_unattended.legacy_terminal import retained_bytes  # noqa: PLC0415
@@ -450,7 +460,9 @@ def recheck_import(mapping: dict[str, object], docker: Docker) -> None:
     if mapping["format"] == MIGRATION_FORMAT_V2:
         from scripts.m3_11_unattended import legacy_actors  # noqa: PLC0415
 
-        if legacy_actors.inventory(docker) != {row["container_id"] for row in issuers}:
+        if legacy_actors.inventory(docker, reader_images=reader_images(mapping)) != {
+            row["container_id"] for row in issuers
+        }:
             raise LifecycleError("legacy actor inventory differs from the reviewed import")
         for row in issuers:
             if digest(docker.info()) != row["daemon_sha256"]:
@@ -542,11 +554,14 @@ def publish_import(
         raise LifecycleError("reviewed import omits or changes an original obligation")
     validate_claims(mapping, originals)
     recheck_import(mapping, docker)
+    from scripts.m3_11_unattended.legacy_actors import require_import_readers  # noqa: PLC0415
+
     for record in imported:
         publish_original(journal, record)
     pending = spool / ("import-" + expected + ".json")
     if pending.exists():
         raise LifecycleError("legacy import POST is uncertain; reconcile its original identity")
+    require_import_readers(docker, vault=vault, expected=expected, images=reader_images(mapping))
     retain(pending, mapping)
     client.request(
         "POST",

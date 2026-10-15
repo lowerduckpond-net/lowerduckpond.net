@@ -19,11 +19,12 @@ from typing import cast
 import pytest
 
 from scripts.m3_11_private_inputs import read_private, write_private
-from scripts.m3_11_unattended import cleanup, worker
+from scripts.m3_11_unattended import cleanup, connect_auth, worker
 from scripts.m3_11_unattended import connect_action as action
 from scripts.m3_11_unattended.config import LeaseBootstrap, LeaseConfiguration
 from scripts.m3_11_unattended.connect_api import Connect
 from scripts.m3_11_unattended.connect_auth import Access
+from scripts.m3_11_unattended.connect_configuration import reader_access
 from scripts.m3_11_unattended.connect_setup import assemble
 from scripts.m3_11_unattended.docker import Docker
 from scripts.m3_11_unattended.inventory import ConnectInventory, fact, require_confirmation
@@ -40,6 +41,8 @@ from scripts.m3_11_unattended.model import (
 from scripts.m3_11_unattended.state import LeaseState, RunState
 from scripts.m3_11_unattended.watchdog import prepare_lease_cleanup
 
+from .test_m3_11_connect_auth import Endpoint
+from .test_m3_11_connect_configuration import journal_grant
 from .test_m3_11_connect_setup import CANARY, independent_reader
 from .test_m3_11_lease_configuration import document
 from .test_m3_11_lease_inventory import ConnectDouble, LeaseProviderDouble
@@ -49,7 +52,9 @@ from .test_m3_11_lease_migration import note
 class Case:
     """Real entrypoints with only the native server and provider transport doubled."""
 
-    def __init__(self, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def __init__(  # noqa: PLR0915 - one complete staged independent action fixture
+        self, root: Path, monkeypatch: pytest.MonkeyPatch, *, journal_permission: int = 1008
+    ) -> None:
         self.root = root
         raw = document()
         self.mapping: dict[str, object] = {
@@ -103,7 +108,9 @@ class Case:
                 if self.teardown_failure:
                     raise LifecycleError(CANARY)
 
-        def authenticate(_client: Connect, access: Access, *, forbidden: set[str]) -> None:
+        def authenticate(
+            _client: Connect, access: Access, *, forbidden: set[str]
+        ) -> dict[str, object]:
             assert self.server_active
             assert access.server_id == self.config.independent_server_id
             assert self.config.journal_vault in access.grants
@@ -111,6 +118,11 @@ class Case:
             self.auth_attempts += 1
             if self.auth_attempts <= self.auth_failures:
                 raise LifecycleError(CANARY)
+            return {
+                **access.receipt(),
+                "authenticated": True,
+                "forbidden_vaults_denied": len(forbidden),
+            }
 
         monkeypatch.setattr(LeaseBootstrap, "providers", providers)
         monkeypatch.setattr(LeaseBootstrap, "reader", lambda _self: self.client)
@@ -120,9 +132,9 @@ class Case:
         monkeypatch.setattr(action, "authenticate", authenticate)
         monkeypatch.setenv("GITHUB_RUN_ID", "12345")
         monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
-        _, self.bundle = assemble(
-            raw, independent_reader(self.config.independent_server_id), {"synthetic": CANARY}
-        )
+        independent = independent_reader(self.config.independent_server_id)
+        journal_grant(independent, journal_permission)
+        _, self.bundle = assemble(raw, independent, {"synthetic": CANARY})
         self.manifest = lease_manifest(
             lease_id=str(uuid.uuid7()),
             source="f" * 40,
@@ -172,13 +184,17 @@ def restore_process_umask() -> Iterator[None]:
         os.umask(previous)
 
 
+@pytest.mark.parametrize("journal_permission", [496, 1008])
 def test_real_action_confirms_once_before_original_issuer_can_create(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, journal_permission: int
 ) -> None:
-    case = Case(tmp_path, monkeypatch)
+    case = Case(tmp_path, monkeypatch, journal_permission=journal_permission)
     with pytest.raises(LifecycleError, match="confirmation"):
         case.issue()
     assert case.execute()["status"] == "ready"
+    authentication = read_private(tmp_path / "independent/authentication.json")
+    assert authentication["authenticated"] is True
+    assert authentication["create_verified"] is False  # Authentication never attests publication.
     require_confirmation(
         case.inventory, case.manifest, independent_server_id=case.config.independent_server_id
     )
@@ -189,6 +205,44 @@ def test_real_action_confirms_once_before_original_issuer_can_create(
     case.issue()
     assert sum(provider.creates for provider in case.providers["provision"].values()) == len(ROLES)
     assert CANARY not in json.dumps(case.inventory.records())
+
+
+@pytest.mark.parametrize("fault", ["rejected", "extra-vault", "missing-vault", "forbidden"])
+def test_496_independent_authentication_and_isolation_precede_all_journal_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    case = Case(tmp_path, monkeypatch, journal_permission=496)
+    config, _ = action.bootstrap(case.bundle, helper=case.config.helper_revision)
+    _, access = reader_access(
+        config.generations[config.active_generation]["cleanup"].reader_settings
+    )
+    endpoint = Endpoint(access.token)
+    endpoint.visible = set(access.grants)
+    if fault == "rejected":
+        endpoint.accepted = False
+    elif fault == "extra-vault":
+        endpoint.visible.add("x" * 26)
+    elif fault == "missing-vault":
+        endpoint.visible.remove(config.journal_vault)
+    else:
+        endpoint.denial = 200
+    monkeypatch.setattr(action, "authenticate", connect_auth.authenticate)
+    monkeypatch.setattr(action, "Connect", lambda *_args, **_kwargs: endpoint)
+    monkeypatch.setattr(action, "SYNC_SECONDS", 0)
+
+    def unavailable(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("journal or provider work reached before authenticated isolation")
+
+    monkeypatch.setattr(action, "ConnectInventory", unavailable)
+    monkeypatch.setattr(cleanup, "sweep_leases", unavailable)
+    before = case.client.posts
+    with pytest.raises(LifecycleError):
+        case.execute()
+    assert case.client.posts == before
+    assert not case.server_active
+    receipt = read_private(tmp_path / "independent/authentication.json")
+    assert receipt["authenticated"] is False and receipt["create_verified"] is False
+    assert not (tmp_path / "independent/cleanup.json").exists()
 
 
 def test_cold_independent_cleanup_deletes_but_preserves_retained_negative_probe(
@@ -210,6 +264,54 @@ def test_cold_independent_cleanup_deletes_but_preserves_retained_negative_probe(
     assert case.execute("cleanup")["status"] == "ready"
     assert any(row["slot"] == "closed" for row in case.inventory.records())
     assert CANARY not in json.dumps(result)
+
+
+def test_496_acceptance_cannot_confirm_a_lease_with_unresolved_legacy_obligations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = Case(tmp_path, monkeypatch, journal_permission=496)
+    monkeypatch.setattr(
+        cleanup,
+        "sweep_legacy",
+        lambda *_args, **_kwargs: {
+            "migration_sha256": case.config.migration_sha256,
+            "status": "unresolved",
+        },
+    )
+    before = case.client.posts
+    result = case.execute()
+    assert result["status"] == "unresolved"
+    assert not any(row["slot"] == "confirmed" for row in case.inventory.records())
+    assert case.client.posts == before
+    with pytest.raises(LifecycleError, match="confirmation"):
+        case.issue()
+    assert not any(provider.creates for provider in case.providers["provision"].values())
+
+
+def test_496_actual_confirmation_lost_reply_keeps_pending_and_never_reposts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    case = Case(tmp_path, monkeypatch, journal_permission=496)
+    before = case.client.posts
+    case.client.lose_reply = True
+    with pytest.raises(LifecycleError, match="lost response"):
+        case.execute()
+    assert case.client.posts == before + 1
+    pending = tmp_path / "independent/pending"
+    retained = {path: path.read_bytes() for path in pending.iterdir()}
+    assert len(retained) == 1
+    # Hide only the uncertain confirmation; keep the real manifest/import visible.
+    posted = case.client.items.pop(f"{case.client.posts:026d}")
+    with pytest.raises(LifecycleError, match=r"pending|unobserved"):
+        case.execute()
+    assert case.client.posts == before + 1
+    assert all(path.read_bytes() == raw for path, raw in retained.items())
+    with pytest.raises(LifecycleError, match="confirmation"):
+        case.issue()
+    case.client.items[str(posted["id"])] = posted
+    assert case.execute()["status"] == "ready"
+    assert case.client.posts == before + 1
+    assert all(path.read_bytes() == raw for path, raw in retained.items())
 
 
 @pytest.mark.parametrize(

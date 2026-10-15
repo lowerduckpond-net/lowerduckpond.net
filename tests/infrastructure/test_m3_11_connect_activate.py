@@ -323,6 +323,10 @@ def test_import_activation_and_sweeps_preserve_terminal_evidence_after_authority
         }
     for row in records:
         note(case.client, row, tag=TAG, title=record_title(row))
+    # Activation consumes an existing historical v1 import; it does not authorize
+    # first publication without a compatible host reader.
+    note(case.client, mapping, tag=MIGRATION_TAG, title="m3-11-import-" + digest(mapping))
+    before = case.client.posts
     approved = activation.publish_import(
         case.client,
         vault=case.client.vault,
@@ -330,6 +334,7 @@ def test_import_activation_and_sweeps_preserve_terminal_evidence_after_authority
         spool=tmp_path / "import",
         docker=cast(Docker, docker),
     )
+    assert case.client.posts == before  # Existing import reconciliation only reads.
     if outcome.startswith("missing-secret"):
         secret_path.unlink()
     case.config = dataclasses.replace(

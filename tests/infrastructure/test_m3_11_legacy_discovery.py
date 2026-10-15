@@ -343,6 +343,8 @@ def test_independent_cleanup_never_substitutes_new_authority_for_pre_generation(
 ) -> None:
     from scripts.m3_11_unattended.cleanup import sweep_legacy
 
+    from .test_m3_11_legacy_import_reader import attach_bridge
+
     case = DiscoveryCase(tmp_path, monkeypatch)
     if missing_proof:
         # An explicitly unresolved declaration remains unresolved without old
@@ -360,6 +362,7 @@ def test_independent_cleanup_never_substitutes_new_authority_for_pre_generation(
             "original_status"
         ] = "unresolved"
     config = case.approve_and_stage(monkeypatch)
+    attach_bridge(case, monkeypatch)
     case.imported(config)
     case.host.isolated = True
     before = len(case.services.exchanges)
@@ -370,6 +373,37 @@ def test_independent_cleanup_never_substitutes_new_authority_for_pre_generation(
     )
     assert result["status"] == ("unresolved" if missing_proof else "ready")
     assert all(row["method"] == "GET" for row in case.services.exchanges[before:])
+    if missing_proof:
+        # Import did not require a fabricated terminal fact. Only subsequent
+        # genuine recovery with the ORIGINAL authority can close this intent.
+        from scripts.m3_11_unattended.journal import ConnectObligations
+        from scripts.m3_11_unattended.lifecycle import Lifecycle
+        from scripts.m3_11_unattended.model import Credential
+
+        from .test_m3_11_unattended_lifecycle import ProviderDouble
+
+        case.host.isolated = False
+        provider = ProviderDouble()
+        provider.kind = case.manual_intent.provider
+        provider.authority_sha256 = case.manual_intent.cleanup_authority_sha256
+        journal = ConnectObligations(
+            config.generations[config.active_generation]["cleanup"].reader(),
+            config.journal_vault,
+            spool=tmp_path / "original-recovery",
+            expected=config.migration_sha256,
+        )
+        recovery = Lifecycle(journal, {provider.kind: provider})
+        credential = Credential("MANUAL-ORIGINAL-ID", "SYNTHETIC-RETIRED-MANUAL", {})
+        assert recovery.reconcile(case.manual_intent, credential).status == "verified"
+        before = len(case.services.exchanges)
+        assert recovery.reconcile(case.manual_intent, credential).status == "verified"
+        assert all(row["method"] == "GET" for row in case.services.exchanges[before:])
+        result = sweep_legacy(
+            config,
+            config.generations[config.active_generation]["cleanup"].reader(),
+            root=tmp_path / "after-original-recovery",
+        )
+        assert result["status"] == "ready"
 
 
 def test_detached_expiry_originals_use_exact_embedded_bytes_without_host_path(

@@ -197,11 +197,11 @@ class ConnectedCase(MigrationCase):
 
 
 @pytest.mark.parametrize("ordinary_success", [False, True])
-def test_connected_operator_approval_publication_import_activation_launch_and_seven_creates(  # noqa: PLR0915 - one connected producer-to-consumer scenario
+def test_connected_operator_approval_existing_import_activation_launch_and_seven_creates(  # noqa: PLR0915 - one connected producer-to-consumer scenario
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ordinary_success: bool
 ) -> None:
     case = ConnectedCase(tmp_path, monkeypatch)
-    case.approve_and_stage(monkeypatch)
+    config = case.approve_and_stage(monkeypatch)
     obligations = mapping(read_private(case.studio / "migration/legacy-import.json")["obligations"])
     assert (
         sum(mapping(row)["provider_id"] is not None for row in obligations.values())
@@ -219,6 +219,8 @@ def test_connected_operator_approval_publication_import_activation_launch_and_se
         == 1
     )
     case.publish()
+    case.seed_historical_import(config)
+    before_import = len(case.services.exchanges)
     case.deliver_cli(
         "import",
         case.studio / "staged",
@@ -230,6 +232,7 @@ def test_connected_operator_approval_publication_import_activation_launch_and_se
         str(case.studio / "migration/legacy-import.json"),
         "--apply",
     )
+    assert all(row["method"] == "GET" for row in case.services.exchanges[before_import:])
     with pytest.raises(FileNotFoundError):
         read_private(next(case.directory.glob("credential-cleanup/*.json")))
     monkeypatch.setattr(
@@ -453,25 +456,15 @@ def test_connected_operator_approval_publication_import_activation_launch_and_se
 def test_host_import_lost_response_reuses_persistent_mapping_spool(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    case = ConnectedCase(tmp_path, monkeypatch)
+    from .test_m3_11_legacy_discovery import DiscoveryCase  # noqa: PLC0415 - shared v2 fixture
+    from .test_m3_11_legacy_import_reader import attach_bridge  # noqa: PLC0415 - Docker boundary
+
+    case = DiscoveryCase(tmp_path, monkeypatch)
+    original_files = case.host.original_files()
     case.approve_and_stage(monkeypatch)
-    obligations = mapping(read_private(case.studio / "migration/legacy-import.json")["obligations"])
-    assert (
-        sum(mapping(row)["provider_id"] is not None for row in obligations.values())
-        == LEGACY_KNOWN_IDS
-    )
-    assert (
-        sum(mapping(row)["original_status"] == "not-submitted" for row in obligations.values())
-        == LEGACY_ABORTED
-    )
-    assert (
-        sum(
-            mapping(row)["original_status"] == "operator-accepted-uncertainty"
-            for row in obligations.values()
-        )
-        == 1
-    )
-    case.publish()
+    attach_bridge(case, monkeypatch)
+    write_private(case.studio / "prepared.json", case.prepared)
+    case.host.isolated = True
     arguments = [
         "delivery",
         "--operation",
@@ -494,13 +487,16 @@ def test_host_import_lost_response_reuses_persistent_mapping_spool(
     ]
     monkeypatch.setattr(sys, "argv", arguments)
     case.services.lose_post = "m3-11-import-"
+    before_post = sum(row["method"] == "POST" for row in case.services.exchanges)
     with pytest.raises(SystemExit) as refused:
         connect_delivery.main()
     assert refused.value.code == 1
     posted = sum(row["method"] == "POST" for row in case.services.exchanges)
+    assert posted == before_post + 1
     with case.host.inside():
         pending = {str(path): path.read_bytes() for path in case.host.spool.rglob("*.json")}
     assert pending
+    assert sum(Path(path).name.startswith("import-") for path in pending) == 1
     with pytest.raises(SystemExit) as refused:
         connect_delivery.main()
     assert refused.value.code == 1
@@ -510,4 +506,4 @@ def test_host_import_lost_response_reuses_persistent_mapping_spool(
     assert sum(row["method"] == "POST" for row in case.services.exchanges) == posted
     with case.host.inside():
         assert {str(path): path.read_bytes() for path in case.host.spool.rglob("*.json")} == pending
-        assert case.host.original_files() == case.baseline
+        assert case.host.original_files() == original_files

@@ -1,0 +1,108 @@
+"""Subprocess-only transport boundary for synthetic pinned-bridge entrypoint tests.
+
+Loaded as sitecustomize. Never import/patch scripts, configuration, authentication,
+dispatch, journals or checkpoints. Git and all Python startup execute normally.
+No request may escape to a real HTTP service, Docker daemon or artifact service.
+"""
+
+import base64
+import json
+import os
+import subprocess
+from pathlib import Path
+from urllib.parse import urlsplit
+
+fixture = json.loads(Path(os.environ["BRIDGE_FIXTURE"]).read_text())
+trace = Path(os.environ["BRIDGE_TRACE"])
+receipt = Path(os.environ["BRIDGE_RECEIPT"])
+original_run = subprocess.run
+resources = {}
+vault_lists = 0
+
+
+class TransportBoundary(BaseException):
+    """End the fixture after observation, never return a fake successful sweep."""
+
+
+def record(value):
+    with trace.open("a") as stream:
+        stream.write(json.dumps(value) + "\n")
+
+
+def http(value):
+    global vault_lists
+    path = urlsplit(value["url"]).path
+    record({"transport": "http", "method": value["method"], "path": path})
+    if receipt.exists() and json.loads(receipt.read_text())["status"] == "snapshot-verified":
+        record({"transport": "observation", "receipt": json.loads(receipt.read_text())})
+        raise TransportBoundary("synthetic snapshot observed; no capability assertion")
+    if value["method"] != "GET":
+        raise TransportBoundary("synthetic fixture does not accept writes")
+    assert value["token"] == fixture["token"]
+    if path == "/v1/vaults":
+        vault_lists += 1
+        if fixture["fault"] in {"forbidden", "extra-visible"} and vault_lists > 1:
+            raise TransportBoundary("authentication retry after controlled isolation failure")
+        visible = ["c" * 26, "j" * 26]
+        if fixture["fault"] == "extra-visible":
+            visible.append("x" * 26)
+        return {"status": 200, "body": [{"id": vault} for vault in visible]}
+    if path in ["/v1/vaults/" + letter * 26 for letter in ("p", "v")]:
+        return {"status": 200 if fixture["fault"] == "forbidden" else 403, "body": {}}
+    journal = "/v1/vaults/" + "j" * 26
+    if path == journal:
+        return {"status": 200, "body": {"id": "j" * 26, "items": len(fixture["items"]), "contentVersion": 1}}
+    if path == journal + "/items":
+        return {"status": 200, "body": list(fixture["items"].values())}
+    if path.startswith(journal + "/items/"):
+        item = fixture["items"].get(path.rsplit("/", 1)[1])
+        return {"status": 200 if item else 404, "body": item or {}}
+    # Provider credential reads intentionally unavailable: this is a reader
+    # startup regression, not simulated provider authority or CREATE evidence.
+    return {"status": 403, "body": {}}
+
+
+def docker(args):
+    record({"transport": "docker", "operation": args[:2]})
+    if args[:2] == ["context", "inspect"]:
+        return b"unix:///synthetic/docker.sock"
+    if args[0] in {"pull", "cp", "start"}:
+        return b""
+    if args[0] == "port":
+        return b"127.0.0.1:12345"
+    kind, operation = args[:2]
+    if operation == "create":
+        name = args[args.index("--name") + 1] if kind == "container" else args[-1]
+        key, value = args[args.index("--label") + 1].split("=", 1)
+        resources[name] = {"kind": kind, "Labels": {key: value}, "Config": {"Labels": {key: value}}, "State": {"ExitCode": 0}}
+        return name.encode()
+    if operation == "inspect":
+        return json.dumps([resources[args[-1]]]).encode()
+    if operation == "ls":
+        return "\n".join(name for name, row in resources.items() if row["kind"] == kind).encode()
+    if operation == "rm":
+        del resources[args[-1]]
+        return b""
+    raise AssertionError(args)
+
+
+def run(args, *positional, **kwargs):
+    args = list(args)
+    executable = Path(args[0]).name
+    if args[1:] == ["-m", "scripts.m3_11_unattended.connect_api", "--exchange"]:
+        output = json.dumps(http(json.loads(kwargs["input"]))).encode()
+    elif executable == "docker":
+        output = docker(args[1:])
+    elif executable == "gh":
+        assert args[1:6] == ["api", "--hostname", "github.com", "--method", "GET"]
+        path = args[6]
+        record({"transport": "artifact", "path": path})
+        output = base64.b64decode(fixture["artifact_responses"][path])
+    elif executable == "git":
+        return original_run(args, *positional, **kwargs)
+    else:
+        raise AssertionError("unexpected external process: " + executable)
+    return subprocess.CompletedProcess(args, 0, output, b"")
+
+
+subprocess.run = run

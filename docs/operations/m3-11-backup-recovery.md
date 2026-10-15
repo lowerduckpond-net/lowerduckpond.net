@@ -155,6 +155,210 @@ Expiry updates can likewise use null generation with exact original
 across hosts; they do not assert that the original workspace path exists inside
 the helper. Existing changed files or unsafe links still fail verification.
 
+### Transitional readers and genuine recovery
+
+Manual closure is **not an import prerequisite**. `legacy_terminal.validate_claims`
+explicitly permits `original_status: unresolved`; `manual_original` permits that
+state while the exact retained credential exists. It requires a terminal denial
+only when the credential is missing. `publish_import` requires complete original
+evidence and verified issuer fences, and recovers the already-existing manual
+pending marker through `local_events` / `publish_original`. It does not require
+a new terminal fact. `activate` subsequently requires `sweep_legacy` to be ready;
+admission/retirement also require their original terminal proofs. Thus recovery
+can follow import. There is no separate pre-import terminal publisher.
+
+The installed host watchdog and GitHub Connect cleaner use helper
+`0b5b198bf06443e61f01b1f7259fea827f79fc23`. Its reader rejects the migration item
+before examining legacy obligations. Merely hiding the import from its listing
+also fails: the native vault count still includes that item. The opt-in
+`legacy_import_reader.py` bridge runs with the **unchanged legacy interpreter and
+checkout**, verifies the exact legacy ledger source hash, and admits only the
+approved v2 migration digest in the approved journal vault. Physical inventory,
+native count, duplicate item IDs, item metadata and both snapshot boundaries
+include the import. Only original events enter the old logical checkpoint,
+anchor, event cache, native authorship and acknowledgement paths. Other unknown
+formats remain rejected. The import body is reread on each inventory; a persistent
+spool pins its native identity once observed. A cold GitHub spool does not prove
+continuity with an earlier spool; retain its separate reader observation artifact.
+
+Before either legacy entry point is imported, the bridge also checks the pinned
+authentication source hash and backports exactly two `inspect` predicates: a
+native audience string can match the identical signed string or its exact
+singleton list, and native expiry can equal signed expiry or be exactly one
+second later. Extra/duplicate audiences and all other offsets fail. Signed expiry
+remains the runtime deadline. The legacy 48/496 permission contract, seven-day
+lifetime limit, exact declared signed expiry, identities, vault scope and live
+isolation checks remain unchanged. The newer 31-day clients are not substitutes
+for these original legacy clients. The GitHub bootstrap must retain its original
+checkpoint encryption token and active selection. The standalone launch removes
+the bridge's adjacent-module directory from the import path so `http.py` cannot
+shadow the standard library before loading the pinned helper.
+
+Synthetic regressions execute the actual host CLI and Node action against the
+clean pinned checkout, including configuration parsing, authentication, dispatch,
+encrypted checkpoint recovery and the compatible ledger. Only external HTTP,
+Docker and artifact transports are controlled; execution ends after observing a
+real reader receipt. This proves startup compatibility, not live authentication,
+CREATE, cross-server durability or cleanup readiness.
+
+The original publication and reconciliation methods are unchanged. Pending POSTs
+keep their identities and reconcile by reads; the bridge never retries a POST.
+Reader receipts report `snapshot-verified`, **not cleanup readiness**. Require the
+normal cleanup receipt as well. Diagnostic receipt failure must not suppress
+original cleanup. This bridge is transitional: keep new lease issuance disabled
+until both replacement cleaners are ready and legacy readers are retired.
+
+The verified old cleanup-authority expiry is **October 16, 2026 at 21:38:38 UTC
+(4:38:38 p.m. CDT)**. Its 62-hour readiness reserve was exhausted on October 14
+at 07:38:38 UTC; unchanged retries and this representation backport cannot restore
+it. Preserve fallback cleanup until replacement coverage is verified. Complete
+old-authority recovery and the verified successor handoff before the actual
+expiry; an unresolved old readiness receipt is not proof of lost fallback cleanup
+or permission to retire it. Locally retained scheduled receipts establish old
+GitHub authentication and checkpoint continuity; the original host configuration
+still needs its separately bound execution observation.
+
+Preparation consists of code review, offline tests, source/inventory bindings and
+the final cutover proposal. Merging leaves the deployed readers, clients,
+credentials, journal and workflow selection unchanged. Execution still requires
+separate authorization, in this dependency order:
+
+| Step | Operator execution and evidence | Retired process / cleanup coverage |
+| --- | --- | --- |
+| 1 | Refresh read-only discovery of originals and every owned actor. Resolve omissions before fencing. | None; existing host and GitHub cleanup continue. |
+| 2 | Fence discovered issuers, including the manual diagnostic; verify restart disabled. Finalize and approve the exact migration, truthfully retaining any unresolved status. | Original issuance retires; both original cleaners and provider access remain. |
+| 3 | Deploy the reviewed bridge beside the unchanged host helper, with the existing cleanup configuration/evidence mounts and read-only bridge/helper mounts. Use `legacy_import_reader.watchdog_command(vault, migration_sha256)` exactly, restart policy `unless-stopped` with `MaximumRetryCount: 0`, and name the container `ldp-m311-import-watchdog-` plus the bridge file hash's first 12 characters. Retain a fresh bound reader receipt and a completed ordinary cleanup receipt; distinguish the known manual unresolved result from new failures. | Stop/disable restart of the unbridged watchdog only after compatible coverage is observed. GitHub cleanup remains available during this switch. |
+| 4 | Set protected-environment variable `M3_11_LEGACY_IMPORT_BRIDGE` to the closed object `{revision, journal_vault, migration_sha256}` using the reviewed full bridge revision and approved mapping. Run the existing `reconcile` workflow and retain its reader/cleanup receipts. Drain or cancel every queued/in-progress job using the old workflow/reader. | Replaces the GitHub reader only; retains its original helper pin, bootstrap secret, checkpoint token, artifact runtime and independent native identity. Host bridge continues throughout. |
+| 5 | Verify every predecessor host watchdog is stopped with restart `no`, not merely currently exited. After publishing the legacy-safe originals, the first-import publisher checks this host gate immediately before retaining/submitting the import; it requires a running exact bridge with restart `unless-stopped` and the mount bindings below, even when no predecessor watchdog remains. An empty or controller-only inventory cannot authorize import. Separately verify the GitHub selection and drained jobs; the Docker gate cannot establish those facts. Publish/reconcile the exact required import through `publish_import`. | All executable legacy readers now accept that import; no original cleanup authority is retired. An uncertain original/import POST retains pending state and gets readback only. |
+| 6 | Recover the genuine manual obligation after import with its retained original cleanup connection, original authority fingerprint and exact retained credential. Use the existing `Lifecycle.reconcile(intent, credential)` path with the complete imported journal. Retain fresh provider absence/negative-authentication evidence and any terminal record that real recovery requires. Reuse an existing sufficient terminal proof; do not request a new fact to prove CREATE. | The manual obligation closes only on real evidence. The old automatic watchdog does not discover the separate manual credential directory; it remains available for the other obligations while this explicit recovery uses the retained key. |
+| 7 | Complete separately approved provider expiry repair, original-client readiness and configuration binding. Obtain replacement host and independent cleanup receipts, then complete handoff and launch admission. | Retire each bridge/old authority only after its successor and original terminal proofs are verified; never stop both cleanup paths together. |
+
+Before execution, prepare and review the concrete Docker delivery bindings and
+GitHub run/variable change from the refreshed inventory; the bridge itself neither
+deploys nor changes those resources. After import, rollback must retain compatible
+readers. Do not delete the import or start an unbridged predecessor to roll back.
+
+The host bridge must use exactly these five mounts. Missing, extra or duplicate
+mounts, different access modes, volume subpaths and mounts that hide any required
+path are rejected. The helper revision is the full pinned
+`0b5b198bf06443e61f01b1f7259fea827f79fc23`; the bridge digest is the full SHA-256 of
+the reviewed `legacy_import_reader.py` file.
+
+| Destination | Type and source | Access |
+| --- | --- | --- |
+| `/cleanup` | Named volume `ldp-m311-cleanup-config` | Read-only |
+| `/evidence` | Named volume `ldp-m311-evidence` | Read/write |
+| `/opt/lifecycle` | Named volume `ldp-m311-helper-` plus the full pinned helper revision | Read-only |
+| `/opt/import-bridge` | Named volume `ldp-m311-import-bridge-` plus the full bridge file digest | Read-only |
+| `/var/run/docker.sock` | Bind from daemon-host `/docker-sock/docker.sock`, propagation `rprivate` | Read/write |
+
+The socket source comes from the retained Coder daemon inventory. It is not the
+import utility's container-local socket path. The bridge must have exactly this
+environment, taken from the pinned qualification Dockerfile and launcher:
+
+```text
+DOCKER_HOST=unix:///var/run/docker.sock
+MISE_DATA_DIR=/opt/mise-data
+MISE_CONFIG_DIR=/opt/mise-config
+MISE_YES=1
+MISE_TRUSTED_CONFIG_PATHS=/opt/qualification-tools:/opt/lifecycle:/work/source
+PATH=/opt/mise-data/shims:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+```
+
+Duplicate keys and additional environment overrides are rejected, including
+`DOCKER_CONTEXT`, which the pinned Docker client selects ahead of `DOCKER_HOST`.
+The contract also requires the pinned mise entrypoint, `/opt/lifecycle` working
+directory, default root user, observed `runc` runtime, host networking, writable
+root filesystem and the launcher's default security/resource settings. Additional tmpfs/volumes-from,
+DNS, security or resource overrides are rejected. Kernel path restrictions are
+limited to reviewed proc/sys masks from
+[Moby's defaults](https://github.com/moby/moby/blob/v28.5.1/oci/defaults.go);
+they cannot hide cleanup inputs or make evidence read-only. Environment/startup
+expectations come from pinned source. A read-only inspection of the original
+watchdog confirmed that its deployed environment, launch settings and kernel masks
+match this contract; the earlier retained inventory projection omitted those fields.
+
+The immutable image ID must match the single image bound to the pinned original
+controller in the approved v2 migration. The bridge cannot authorize its own image
+or use a mutable tag; missing or ambiguous original bindings fail closed. The
+v2-only reader bridge gains no image authority from a v1 import. Read-only Git
+inspection checks the helper HEAD and clean tracked/untracked source, in addition
+to the bridge, ledger and authentication file hashes.
+
+All these bindings are checked again after original publication, before accepting
+the bridge for import. A persistent watchdog can stay running while reporting
+configuration errors: structural checks do not prove configuration contents,
+socket connectivity, provider access or successful cleanup. Retain the fresh
+reader and ordinary cleanup receipts required by step 3. Keep fallback cleanup
+until replacement coverage is verified.
+
+The existing clients remain unchanged. `reader_access` accepts the exact observed
+496 profile only on the journal vault for provision and cleanup roles (including
+independent cleanup). Their own secret vault stays exactly READ/48; production
+stays READ/48 on its sole vault. Native view/edit labels, signed identity, audience,
+expiry, exact vault scope and authenticated forbidden-vault checks remain required.
+The signed mask is retained as 496 in `Access` and hashed-vault receipts, never
+reported as full WRITE/1008. The general full-WRITE validator still rejects 496.
+
+| Actor | Journal operations in the implementation | Effect of the existing profile |
+| --- | --- | --- |
+| Provision client | None. `LeaseBootstrap.providers` reads its own bootstrap vault; `Worker._inventory` selects the cleanup reader. | Keep its existing 496 journal grant without a write probe. |
+| Production client | None. Production references are read from its own vault. | Keep its sole 48 grant; no journal access is accepted. |
+| Shared cleanup client | GET inventory/items and POST Secure Notes via `publish_original`, `publish_import`, `ConnectObligations.append` and `ConnectInventory.publish`. | 496 declares read/reveal and CREATE. UPDATE/archive are present but unused; DELETE is absent and unused. |
+| Independent cleanup client | Authentication/isolation GETs first, then journal GETs; POST only for genuine recovery, lease confirmation or closure through the same lifecycle/publication code. | Same declared coverage as shared cleanup. Acceptance of 496 does not verify authentication or CREATE. |
+
+The [pinned vendor SDK bit definitions](https://github.com/1Password/onepassword-sdk-go/blob/5866f43111ffeee5952e43a13da1aafef98200c8/types.go#L1306-L1319)
+identify read/reveal as 32/16, CREATE as 128, UPDATE/archive as 64/256 and DELETE as
+512. This is the basis for declared operation coverage, not a live request result
+or a claim that 496 equals vendor full WRITE. `Connect.request` only permits GET
+and item-creation POST; provider credential deletion uses the separate provider
+authority. No journal PUT/PATCH/DELETE is required by these actors. Unknown masks,
+partial subsets, numeric strings, extra vaults and expanded own-vault access fail.
+
+Every independent execution authenticates the original token against its separate
+cache and verifies exact visibility plus forbidden-vault denials **before** opening
+the journal or reading provider secrets. Its separate `authentication.json` receipt
+starts pending and records success only after all checks pass. The protected workflow
+retains that observation; failed authentication stops subsequent work. Policy and
+authentication receipts always say `create_verified: false`. Successful publication
+is evidenced by the actual fact's exact readback and ordinary lifecycle receipts.
+
+The retained Studio result from October 14 at 11:04 UTC verified shared and
+independent cleanup authentication with exact forbidden-vault isolation (seven GETs,
+zero POSTs); the owned local cache was removed afterward. Earlier shared diagnostics
+also verified eleven secret reads. Every later independent use must authenticate
+on its separate cache (Studio's default local Docker context for an approved Studio
+execution, or the protected GitHub runner); its master credential stays off the
+controller host. No replacement client or prerequisite test write is needed. If
+real recovery produces no independent write, independent CREATE remains unverified. That limits
+publication claims, not an otherwise verified read-only cleanup receipt. The real
+lease's required independent confirmation still gates issuance; failure to publish
+that confirmation blocks issuance without fabricating a replacement fact.
+
+The dependency check is: reader bridge → import (unresolved obligations allowed) →
+original-authority recovery → activation → replacement-cleaner delivery and handoff
+→ real lease manifest/independent confirmation → issuance. Standard assembly accepts
+496 and does not require prior CREATE success, import or cleanup readiness. Import
+does not require activation; original recovery does not require replacement cleaner
+delivery. Thus those checks do not form a cycle. Do not call `connect_delivery.install`
+before its activation receipt, or require independent CREATE before the real manifest.
+Keep the existing cleaners available until successor receipts and terminal proofs
+permit their retirement. Preserve the same durable spool on uncertain writes; use
+exact readback, never a new spool or an indiscriminate rerun to bypass pending state.
+The Cloudflare finite-expiry repair remains separately pending approval; it is a
+provider activation prerequisite, not a journal CREATE test or import-closure claim.
+
+For this cutover, old-authority work and verified successor handoff must finish
+before **October 16, 2026 at 21:38:38 UTC (4:38:38 p.m. CDT)**. Review/deployment
+delays, the manual negative probe, independent authentication, or waiting for an unnecessary CREATE test can
+consume that window. Prioritize genuine original-authority recovery and retain its
+access until verified. A missed deadline cannot be repaired by relabeling the
+obligation or silently substituting replacement credentials. The closed disposable
+compatibility exercise and its unresolved concurrency finding remain closed/carried
+forward; neither is a reason to manufacture a journal fact.
+
+### Final migration approval
+
 Discovery uses GETs and read-only Docker inspection/copy; it neither fences nor
 produces an approvable import. Two collections must agree on originals, file
 hashes, actor identity, commands, mounts and declarations. Cleanup facts may append;
@@ -179,7 +383,10 @@ uv run --frozen python -m scripts.m3_11_unattended.operator_records migration-pr
   --evidence-index /private/migration-evidence.json --output /private/migration-proposal.json
 ```
 
-The earlier `lowerduckpond-m3-11-migration-declarations-v1` remains supported:
+The earlier `lowerduckpond-m3-11-migration-declarations-v1` remains supported for
+collection and reconciliation of existing imports, but lacks the approved source
+image needed to authorize a bridge for first publication. Use v2 for new imports.
+In v1,
 `retained_files` lists canonical original host paths; `obligations` maps each intent
 digest to its declared `generation_id` and `original_status`; `expiry_updates`
 contains the original approved plans/results; `issuers` gives exact `container_id`,
@@ -267,13 +474,33 @@ The vendored Connect 1.8.1 schema is an authoritative artifact; committed CLI
 and HTTP response examples remain explicitly synthetic. An operator-reported
 diagnostic on 2026-10-12 paired CLI 2.33.0 native permissions with exact signed
 grants: `48` for read-only and `1008` for journal read/write. Connect's documented
-write permission includes item deletion (`512` in the vendor SDK); the former
-synthetic value `496` omitted deletion and is rejected. The
+write permission includes item deletion (`512` in the vendor SDK); `496` omits
+deletion and is rejected by the generic full-WRITE inspection path. The role-aware
+journal profile described above accepts `496` without treating it as `1008`. The
 [contract provenance](../../tests/infrastructure/fixtures/onepassword/provenance.json)
 records vendor sources and observation limits. This numeric JWT mapping is an
 observed compatibility dependency, not a published stable vendor schema. The
 native publication adapter pins CLI 2.33.0; Connect image digests remain in
 `connect_host.py`.
+
+Read-only production discovery on 2026-10-14 observed a native audience string
+and a signed singleton audience array containing that exact string. The reader
+accepts both exact single-audience representations; additional or duplicate
+audiences remain rejected. All four native expiry timestamps were one second
+later than the JWT expiry. The reader permits only equal native expiry or this
+exact one-second offset. Operator inputs and approvals must use the earlier
+signed deadline, which remains the deadline for authentication, generation
+coverage and cleanup. No expiry grace period is added.
+
+That discovery also found genuine journal grants of `496` on three existing
+clients. The three shared clients authenticated with exact vault isolation, and
+all eleven dependent item reads passed. These GET observations do not establish
+CREATE or equivalence with `1008`. The role-aware reader contract accepts `496`
+only for the declared provision/cleanup journal scopes; generic full-WRITE
+inspection still rejects it. During that discovery, the independent client had
+matching native identity and claim shapes but was not contacted through an
+independent service. This discovery does not reopen the closed compatibility
+exercise or authorize production activation.
 
 A direct user-run cycle completed on 2026-10-12 at 21:51:37 UTC with no reported
 findings. The allowlisted report confirmed all four clients' exact `48`/`1008`
