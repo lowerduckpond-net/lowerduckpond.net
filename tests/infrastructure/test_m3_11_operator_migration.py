@@ -19,7 +19,7 @@ from scripts.m3_11_unattended import connect_activate as activation
 from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.creation_outcome import FORMAT, RETAINED_FORMAT, original_abort
 from scripts.m3_11_unattended.docker import SOCKET, Docker, controller_name, prepare, utility
-from scripts.m3_11_unattended.journal import TAG, event, record_title
+from scripts.m3_11_unattended.journal import MIGRATION_TAG, TAG, event, record_title
 from scripts.m3_11_unattended.legacy_terminal import terminal
 from scripts.m3_11_unattended.model import (
     CREATION_SETTLE,
@@ -258,6 +258,28 @@ class MigrationCase:
         self.services.stage(self.studio)
         return LeaseConfiguration.load(self.studio / "staged/controller-connect.json")
 
+    def seed_historical_import(self, config: LeaseConfiguration) -> None:
+        """Post-import fixtures start with an already-published historical v1 mapping."""
+        approved = read_private(self.studio / "migration/legacy-import.json")
+        identifier = "i" * 26
+        key = config.journal_vault, identifier
+        assert key not in self.services.items
+        self.services.items[key] = {
+            "id": identifier,
+            "version": 1,
+            "title": "m3-11-import-" + digest(approved),
+            "vault": {"id": config.journal_vault},
+            "category": "SECURE_NOTE",
+            "tags": [MIGRATION_TAG],
+            "fields": [
+                {
+                    "id": "notesPlain",
+                    "purpose": "NOTES",
+                    "value": canonical_bytes(approved).decode(),
+                }
+            ],
+        }
+
     def imported(self, config: LeaseConfiguration) -> None:
         utility(
             self.docker,
@@ -284,12 +306,15 @@ class MigrationCase:
         )
 
 
-def test_actual_collect_approve_bind_import_and_read_only_projection_preserve_originals(
+def test_actual_collect_approve_bind_existing_import_and_projection_preserve_originals(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     case = MigrationCase(tmp_path, monkeypatch)
     config = case.approve_and_stage(monkeypatch)
+    case.seed_historical_import(config)
+    before = len(case.services.exchanges)
     case.imported(config)
+    assert all(row["method"] == "GET" for row in case.services.exchanges[before:])
     count = len(case.services.exchanges)
     projected = case.project(config)
     assert projected["binding_sha256"] == digest(case.request["binding"])
@@ -327,6 +352,7 @@ def test_projection_cannot_convert_labels_or_missing_evidence_into_permission(
 ) -> None:
     case = MigrationCase(tmp_path, monkeypatch)
     config = case.approve_and_stage(monkeypatch)
+    case.seed_historical_import(config)
     case.imported(config)
     if fault == "running":
         mapping(case.container["State"])["Running"] = True
@@ -394,6 +420,7 @@ def test_visible_import_still_rechecks_original_files_and_current_fence(
 ) -> None:
     case = MigrationCase(tmp_path, monkeypatch)
     config = case.approve_and_stage(monkeypatch)
+    case.seed_historical_import(config)
     case.imported(config)
     if fault == "file":
         replace_private(
@@ -737,6 +764,7 @@ def test_auxiliary_originals_cannot_be_omitted_or_rebound_for_admission(
             case.collect()
         return
     config = case.approve_and_stage(monkeypatch)
+    case.seed_historical_import(config)
     case.imported(config)
     if fault in {"unrestored", "wrong-trigger", "missing-authority"}:
         for key, row in list(case.services.items.items()):

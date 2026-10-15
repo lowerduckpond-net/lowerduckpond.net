@@ -343,6 +343,8 @@ def test_independent_cleanup_never_substitutes_new_authority_for_pre_generation(
 ) -> None:
     from scripts.m3_11_unattended.cleanup import sweep_legacy
 
+    from .test_m3_11_legacy_import_reader import attach_bridge
+
     case = DiscoveryCase(tmp_path, monkeypatch)
     if missing_proof:
         # An explicitly unresolved declaration remains unresolved without old
@@ -360,6 +362,7 @@ def test_independent_cleanup_never_substitutes_new_authority_for_pre_generation(
             "original_status"
         ] = "unresolved"
     config = case.approve_and_stage(monkeypatch)
+    attach_bridge(case, monkeypatch)
     case.imported(config)
     case.host.isolated = True
     before = len(case.services.exchanges)

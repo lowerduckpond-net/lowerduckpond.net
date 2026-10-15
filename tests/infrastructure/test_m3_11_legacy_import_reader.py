@@ -406,6 +406,35 @@ class Host:
         return next(row for row in self.rows if row["Id"] == item_id)
 
 
+def attach_bridge(case: DiscoveryCase, monkeypatch: pytest.MonkeyPatch) -> Host:
+    """Expose an exact synthetic bridge to every Docker client in the real host utility."""
+    from scripts.m3_11_private_inputs import read_private  # noqa: PLC0415 - fixture setup
+
+    monkeypatch.setattr(bridge, "LEGACY_REVISION", case.intent.helper_revision)
+    host = Host()
+    approved = read_private(case.studio / "migration/legacy-import.json")
+    host.bridged["Config"]["Cmd"] = bridge.watchdog_command(
+        str(cast(dict[str, object], case.services.manifest["vaults"])["journal"]), digest(approved)
+    )
+    host.bridged["Config"]["Labels"][OWNER] = "true"
+    case.host.rows[host.bridged["Name"].removeprefix("/")] = host.bridged
+    hashes = {
+        bridge.PROGRAM: host.bridge_sha256,
+        "/opt/lifecycle/scripts/m3_11_unattended/connect_ledger.py": bridge.LEDGER_SHA256,
+        "/opt/lifecycle/scripts/m3_11_unattended/connect_auth.py": bridge.INSPECTOR_SHA256,
+    }
+    monkeypatch.setattr(legacy_diagnostics, "script_digest", lambda _host, _id, path: hashes[path])
+    command = case.host.command
+
+    def external(arguments: list[str], stdin: bytes | None = None) -> bytes:
+        if arguments[:2] == ["exec", host.bridged["Id"]]:
+            return host.command(*arguments)
+        return command(arguments, stdin)
+
+    case.services.docker_handler = external
+    return host
+
+
 @pytest.mark.parametrize(
     "fault",
     [
@@ -577,6 +606,8 @@ def test_import_rejects_missing_or_malformed_mount_inventory(
         "wrong-evidence",
         "missing-socket",
         "wrong-endpoint",
+        "removed-after-discovery",
+        "removed-after-original-publication",
     ],
 )
 def test_import_rechecks_reader_after_publishing_originals(  # noqa: PLR0915 - full pending continuation
@@ -584,13 +615,6 @@ def test_import_rechecks_reader_after_publishing_originals(  # noqa: PLR0915 - f
 ) -> None:
     case = DiscoveryCase(tmp_path, monkeypatch)
     monkeypatch.setattr(bridge, "LEGACY_REVISION", case.intent.helper_revision)
-    mapping = migration(
-        {
-            **migration_body(case.collect()),
-            "approved_at": stamp(datetime.now(UTC)),
-            "approval_reference": "synthetic bridge consent",
-        }
-    )
     client = ConnectDouble()
     created = case.originals[2]
     for original in case.originals:
@@ -599,8 +623,6 @@ def test_import_rechecks_reader_after_publishing_originals(  # noqa: PLR0915 - f
     docker = case.docker
     host = Host()
     host.bridged["Id"] = "c" * 64
-    expected = digest(mapping)
-    host.bridged["Config"]["Cmd"] = bridge.watchdog_command(client.vault, expected)
     original_mounts = deepcopy(host.bridged["Mounts"])
     original_environment = deepcopy(host.bridged["Config"]["Env"])
     hashes = {
@@ -627,12 +649,25 @@ def test_import_rechecks_reader_after_publishing_originals(  # noqa: PLR0915 - f
             else owned(selected)
         ),
     )
+    mapping = migration(
+        {
+            **migration_body(case.collect()),
+            "approved_at": stamp(datetime.now(UTC)),
+            "approval_reference": "synthetic bridge consent",
+        }
+    )
+    expected = digest(mapping)
+    host.bridged["Config"]["Cmd"] = bridge.watchdog_command(client.vault, expected)
+    if fault == "removed-after-discovery":
+        host.rows.clear()
     request = client.request
 
     def lose_reader(method: str, path: str, body: Row | None = None) -> Response:
         response = request(method, path, body)
         if method == "POST" and body is not None and body["tags"] == [TAG]:
-            if fault == "stopped":
+            if fault == "removed-after-original-publication":
+                host.rows.clear()
+            elif fault == "stopped":
                 host.bridged["State"]["Running"] = False
             elif fault == "restart-disabled":
                 host.bridged["HostConfig"]["RestartPolicy"]["Name"] = "no"
@@ -664,6 +699,8 @@ def test_import_rechecks_reader_after_publishing_originals(  # noqa: PLR0915 - f
     originals = {path: path.read_bytes() for path in spool.glob("original-*.json")}
     assert len(originals) == 1
 
+    # Recovery only needs the restored bridge; an absent predecessor is not authority.
+    host.rows = [host.bridged]
     host.bridged["State"]["Running"] = True
     host.bridged["HostConfig"]["RestartPolicy"]["Name"] = "unless-stopped"
     host.bridged["Mounts"] = original_mounts

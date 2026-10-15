@@ -364,7 +364,7 @@ def import_watchdog(docker: Docker, actual: dict[str, object], *, images: set[st
 
 
 def require_import_readers(docker: Docker, *, vault: str, expected: str, images: set[str]) -> None:
-    """Before introducing the import, fence every unbridged host reader.
+    """Require compatible host cleanup and fence every unbridged reader before import.
 
     GitHub jobs and its explicit bridge selection are a separate operator gate.
     This never stops a reader or treats a running bridge as a cleanup receipt.
@@ -384,7 +384,7 @@ def require_import_readers(docker: Docker, *, vault: str, expected: str, images:
         .decode()
         .splitlines()
     )
-    readers = compatible = 0
+    compatible = 0
     seen = set()
     for row in rows:
         selected, name = row.split(" ", 1)
@@ -393,7 +393,6 @@ def require_import_readers(docker: Docker, *, vault: str, expected: str, images:
         seen.add(fingerprint(selected))
         if not name.startswith(("ldp-m311-watchdog-", "ldp-m311-import-watchdog-")):
             continue  # Other actors are checked by the original issuer fence gate.
-        readers += 1
         actual = docker.owned(selected)
         state = cast(dict[str, object], actual.get("State", {}))
         host = cast(dict[str, object], actual.get("HostConfig", {}))
@@ -414,7 +413,7 @@ def require_import_readers(docker: Docker, *, vault: str, expected: str, images:
             or host.get("RestartPolicy") != {"Name": "no", "MaximumRetryCount": 0}
         ):
             raise LifecycleError("unbridged legacy reader may still execute or restart")
-    if readers and not compatible:
+    if not compatible:
         raise LifecycleError(
             "legacy import has no running compatible host cleanup reader with restart enabled"
         )

@@ -200,3 +200,21 @@ def test_image_authority_comes_from_original_controller_in_v2_import(fault: str 
         "issuers": [{"actor": actor}],
     }
     assert reader_images(mapping) == ({IMAGE} if fault is None else set())
+
+
+@pytest.mark.parametrize("inventory", ["empty", "controller-only", "bridge-only"])
+def test_compatible_bridge_is_required_even_without_predecessor(host: Host, inventory: str) -> None:
+    host.rows = {
+        "empty": [],
+        "controller-only": [{"Id": "d" * 64, "Name": "/ldp-m311-controller-synthetic"}],
+        "bridge-only": [host.bridged],
+    }[inventory]
+    if inventory == "bridge-only":
+        legacy_actors.require_import_readers(
+            cast(Docker, host), vault=VAULT, expected="a" * 64, images={IMAGE}
+        )
+    else:
+        with pytest.raises(LifecycleError, match="no running compatible host cleanup reader"):
+            legacy_actors.require_import_readers(
+                cast(Docker, host), vault=VAULT, expected="a" * 64, images={IMAGE}
+            )
