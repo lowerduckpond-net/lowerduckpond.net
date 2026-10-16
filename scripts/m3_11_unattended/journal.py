@@ -22,6 +22,7 @@ FORMAT = "lowerduckpond-m3-11-credential-journal-v1"
 TAG = "ldp-m3-11-credential-obligations-v1"
 MAX_EVENTS = 10000
 MAX_OUTPUT = 16 * 1024 * 1024
+MAX_READ_CACHE_BYTES = 64 * 1024 * 1024
 KINDS = frozenset(
     {"intent", "created", "revoke", "resolved", "cleanup", "run", "result", "heartbeat"}
 )
@@ -300,6 +301,10 @@ class LegacyRecords:
 
     def _read(self, item: dict[str, object], *, tag: str) -> dict[str, object]:
         full = self.client.item(self.vault, str(item["id"]))
+        return self._record(item, full, tag=tag)
+
+    @staticmethod
+    def _record(item: dict[str, object], full: dict[str, object], *, tag: str) -> dict[str, object]:
         if (
             full.get("category") != "SECURE_NOTE"
             or full.get("tags") != [tag]
@@ -354,8 +359,68 @@ class ConnectObligations(LegacyRecords):
         private_directory(spool)
         self.spool = spool
         self.mapping: dict[str, object] | None = None
+        # One reader/cycle only. Independent readers never inherit these bodies.
+        self._read_scope: tuple[int, str, str, str] | None = None
+        self._read_cache: dict[str, tuple[bytes, bytes]] = {}
+        self._read_cache_bytes = 0
+
+    def _items(self) -> list[dict[str, object]]:
+        scope = (id(self.client), self.client.url, self.client.credential_sha256, self.vault)
+        if self._read_scope != scope:
+            self._read_cache.clear()
+            self._read_cache_bytes = 0
+            self._read_scope = scope
+        try:
+            items = super()._items()  # Fresh authenticated inventory on every scan.
+        except Exception:
+            self._read_cache.clear()
+            self._read_cache_bytes = 0
+            raise
+        visible = {str(row["id"]): canonical_bytes(row) for row in items}
+        self._read_cache = {
+            key: value for key, value in self._read_cache.items() if visible.get(key) == value[0]
+        }
+        self._read_cache_bytes = sum(
+            len(key) + len(body) for key, body in self._read_cache.values()
+        )
+        return items
+
+    def _read(self, item: dict[str, object], *, tag: str) -> dict[str, object]:
+        key = str(item["id"])
+        listed = canonical_bytes(item)
+        cached = self._read_cache.get(key)
+        if cached is not None and cached[0] == listed:
+            # Decode and validate again; callers cannot mutate a cached object.
+            return self._record(item, json.loads(cached[1]), tag=tag)
+        if cached is not None:
+            self._read_cache_bytes -= sum(map(len, self._read_cache.pop(key)))
+        full = self.client.item(self.vault, key)
+        record = self._record(item, full, tag=tag)
+        version = item.get("version")
+        if (
+            type(version) is int
+            and version > 0
+            and type(full.get("version")) is int
+            and full["version"] == version
+        ):
+            body = canonical_bytes(full)
+            size = len(listed) + len(body)
+            if self._read_cache_bytes + size <= MAX_READ_CACHE_BYTES:
+                self._read_cache[key] = (listed, body)
+                self._read_cache_bytes += size
+        # Unversioned or racing observations retain the original full-GET path.
+        return record
 
     def records(self) -> list[dict[str, object]]:
+        try:
+            return self._records()
+        except Exception:
+            # A denied or malformed body cannot leave a partially trusted scan.
+            self._read_cache.clear()
+            self._read_cache_bytes = 0
+            raise
+
+    def _records(self) -> list[dict[str, object]]:
         items = self._items()
         imports = [row for row in items if row.get("title") == "m3-11-import-" + self.expected]
         if len(imports) != 1:

@@ -98,6 +98,8 @@ files = [
   "tests/infrastructure/test_m3_11_lease_configuration.py",
   "tests/infrastructure/test_m3_11_lease_runtime.py",
   "tests/infrastructure/test_m3_11_lease_migration.py",
+  "tests/infrastructure/test_m3_11_reader_scaling.py",
+  "tests/infrastructure/test_m3_11_reader_scaling_startup.py",
   "tests/infrastructure/test_m3_11_unattended_lifecycle.py",
   "tests/infrastructure/test_m3_11_unattended_inputs.py",
   "tests/infrastructure/test_m3_11_unattended_controller.py",
