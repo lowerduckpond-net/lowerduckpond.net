@@ -17,7 +17,7 @@ from typing import Protocol
 
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
-from scripts.m3_11_unattended.connect_api import Connect
+from scripts.m3_11_unattended.connect_api import IDENTITY, Connect, ConnectResponseError
 from scripts.m3_11_unattended.connect_auth import identity as connect_identity
 from scripts.m3_11_unattended.journal import _note_content
 from scripts.m3_11_unattended.model import (
@@ -291,8 +291,9 @@ class ConnectInventory:
         private_directory(spool)
         self.spool = spool
 
-    def _read(self, item_id: str) -> dict[str, object]:
-        item = self.client.item(self.vault, item_id)
+    def _read(self, item_id: str, *, published: bool = False) -> dict[str, object]:
+        read = self.client.published_item if published else self.client.item
+        item = read(self.vault, item_id)
         if (
             item.get("category") != "SECURE_NOTE"
             or item.get("tags") != [TAG]
@@ -315,7 +316,9 @@ class ConnectInventory:
             or not isinstance(response.body, list)
             or len(response.body) > MAX_ITEMS
         ):
-            raise LifecycleError("lease inventory listing is incomplete or unavailable")
+            raise ConnectResponseError(
+                response, "inventory-list", "lease inventory listing is incomplete or unavailable"
+            )
         records = []
         seen: set[str] = set()
         for item in response.body:
@@ -373,9 +376,15 @@ class ConnectInventory:
         if response.status not in {HTTPStatus.OK, HTTPStatus.CREATED} or not isinstance(
             response.body, dict
         ):
-            raise LifecycleError("lease inventory write was not acknowledged")
-        selected = _connect_id(response.body.get("id"))
-        if self._read(selected) != record:
+            raise ConnectResponseError(
+                response, "publication-response", "lease inventory write was not acknowledged"
+            )
+        selected = response.body.get("id")
+        if not isinstance(selected, str) or IDENTITY.fullmatch(selected) is None:
+            raise ConnectResponseError(
+                response, "publication-id", "lease inventory write returned an invalid identity"
+            )
+        if self._read(selected, published=True) != record:
             raise LifecycleError("lease inventory write readback differs")
 
 

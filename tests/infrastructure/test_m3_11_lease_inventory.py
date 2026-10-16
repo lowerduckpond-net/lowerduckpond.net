@@ -12,10 +12,12 @@ from typing import override
 
 import pytest
 
-from scripts.m3_11_private_inputs import write_private
+from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes
+from scripts.m3_11_unattended import connect_api
 from scripts.m3_11_unattended import inventory as lease_inventory
-from scripts.m3_11_unattended.connect_api import Connect, Response
+from scripts.m3_11_unattended.connect_api import Connect, ConnectResponseError, Response
+from scripts.m3_11_unattended.connect_diagnostics import failure_chain
 from scripts.m3_11_unattended.inventory import (
     ConnectInventory,
     LocalInventory,
@@ -259,6 +261,185 @@ class ConnectDouble(Connect):
     def item(self, vault: str, item: str) -> dict[str, object]:
         assert vault == self.vault
         return deepcopy(self.items[item])
+
+
+class VisibilityClock:
+    """Only elapsed time and the external HTTP responses are controlled below."""
+
+    def __init__(self) -> None:
+        self.seconds = 0.0
+
+    def monotonic(self) -> float:
+        return self.seconds
+
+    def sleep(self, seconds: float) -> None:
+        assert seconds > 0
+        self.seconds += seconds
+
+
+class PublicationConnect(ConnectDouble):
+    def __init__(self) -> None:
+        super().__init__()
+        self.read_responses: list[Response] = []
+        self.repeated_response: Response | None = None
+        self.reads: list[tuple[str, float]] = []
+        self.lose_slots: set[str] = set()
+
+    @override
+    def item(self, vault: str, item: str) -> dict[str, object]:
+        # Exercise real identity/status validation, not ConnectDouble's shortcut.
+        return Connect.item(self, vault, item)
+
+    @override
+    def request(self, method: str, path: str, body: dict[str, object] | None = None) -> Response:
+        if method == "GET" and not path.endswith("/items"):
+            self.reads.append((path, self._request_timeout))
+            if self.read_responses:
+                return self.read_responses.pop(0)
+            if self.repeated_response is not None:
+                return self.repeated_response
+            return Response(200, deepcopy(self.items[path.rsplit("/", 1)[1]]))
+        response = super().request(method, path, body)
+        if method == "POST" and body is not None:
+            slot = next(
+                (slot for slot in self.lose_slots if str(body["title"]).endswith(slot)), None
+            )
+            if slot is not None:
+                self.lose_slots.remove(slot)
+                raise LifecycleError("synthetic committed POST with lost reply")
+        return response
+
+
+@pytest.fixture
+def visibility_clock(monkeypatch: pytest.MonkeyPatch) -> VisibilityClock:
+    clock = VisibilityClock()
+    monkeypatch.setattr(connect_api, "time", clock)
+    return clock
+
+
+def test_acknowledged_post_tolerates_only_bounded_exact_item_visibility(
+    tmp_path: Path, visibility_clock: VisibilityClock
+) -> None:
+    client = PublicationConnect()
+    client.read_responses = [Response(404, None), Response(404, None)]
+    inventory = ConnectInventory(client, client.vault, spool=tmp_path / "spool")
+    selected = manifest()
+    record = fact(selected, "manifest", selected.document())
+    inventory.publish(record)
+    assert client.posts == 1
+    assert len(client.reads) == 3  # noqa: PLR2004 - two missing reads then exact visibility
+    assert len({path for path, _ in client.reads}) == 1
+    assert visibility_clock.seconds == 2  # noqa: PLR2004 - two one-second waits
+    assert [budget for _, budget in client.reads] == [30, 29, 28]
+    assert inventory.records() == [record]
+    assert client._request_timeout == connect_api.TIMEOUT_SECONDS
+    # Shared visibility cannot satisfy the distinct independent confirmation gate.
+    with pytest.raises(LifecycleError, match="confirmation is unavailable"):
+        require_confirmation(inventory, selected, independent_server_id="s" * 26)
+
+
+@pytest.mark.parametrize("budget", [30, 2.5])
+def test_visibility_exhaustion_keeps_pending_bytes_and_reconciles_without_post(
+    tmp_path: Path, visibility_clock: VisibilityClock, budget: float
+) -> None:
+    client = PublicationConnect()
+    client.repeated_response = Response(404, None)
+    inventory = ConnectInventory(client, client.vault, spool=tmp_path / "spool")
+    selected = manifest()
+    record = fact(selected, "manifest", selected.document())
+    with pytest.raises(ConnectResponseError) as captured, client.timeout_budget(budget):
+        inventory.publish(record)
+    assert visibility_clock.seconds == budget
+    assert len(client.reads) <= connect_api.VISIBILITY_READ_ATTEMPTS
+    assert [remaining for _, remaining in client.reads] == sorted(
+        [remaining for _, remaining in client.reads], reverse=True
+    )
+    assert captured.value.response == {
+        "status": 404,
+        "check": "item-status",
+        "body_type": "null",
+        "visibility_wait": {
+            "attempts": len(client.reads),
+            "timeout_ms": budget * 1000,
+            "elapsed_ms": budget * 1000,
+        },
+    }
+    pending = next(inventory.spool.iterdir())
+    before = pending.read_bytes(), pending.stat().st_mtime_ns
+    assert read_private(pending) == record
+    restarted = ConnectInventory(client, client.vault, spool=inventory.spool)
+    client.hidden = True
+    with pytest.raises(LifecycleError, match="unobserved"):
+        restarted.publish(record)
+    client.hidden, client.repeated_response = False, None
+    restarted.publish(record)
+    assert client.posts == 1
+    assert (pending.read_bytes(), pending.stat().st_mtime_ns) == before
+
+
+def test_visibility_budget_includes_http_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, visibility_clock: VisibilityClock
+) -> None:
+    client = PublicationConnect()
+    client.repeated_response = Response(404, None)
+    request = client.request
+
+    def delayed_http(method: str, path: str, body: dict[str, object] | None = None) -> Response:
+        response = request(method, path, body)
+        if method == "GET" and not path.endswith("/items"):
+            visibility_clock.seconds += min(0.25, client._request_timeout)
+        return response
+
+    monkeypatch.setattr(client, "request", delayed_http)
+    inventory = ConnectInventory(client, client.vault, spool=tmp_path / "spool")
+    selected = manifest()
+    with pytest.raises(ConnectResponseError), client.timeout_budget(2.6):
+        inventory.publish(fact(selected, "manifest", selected.document()))
+    assert visibility_clock.seconds == 2.6  # noqa: PLR2004 - one aggregate caller budget
+    assert [budget for _, budget in client.reads] == pytest.approx([2.6, 1.35, 0.1])
+    assert client.posts == 1
+
+
+@pytest.mark.parametrize(
+    "response",
+    [Response(401, None), Response(403, None), Response(200, []), Response(200, {"id": "x" * 26})],
+)
+@pytest.mark.parametrize("initial_missing", [False, True])
+def test_visibility_does_not_retry_denial_or_bad_identity(
+    tmp_path: Path, visibility_clock: VisibilityClock, response: Response, initial_missing: bool
+) -> None:
+    client = PublicationConnect()
+    client.read_responses = ([Response(404, None)] if initial_missing else []) + [response]
+    inventory = ConnectInventory(client, client.vault, spool=tmp_path / "spool")
+    selected = manifest()
+    with pytest.raises(ConnectResponseError):
+        inventory.publish(fact(selected, "manifest", selected.document()))
+    assert client.posts == 1
+    assert len(client.reads) == 1 + initial_missing
+    assert visibility_clock.seconds == initial_missing
+    assert len(list(inventory.spool.iterdir())) == 1
+
+
+def test_visible_wrong_content_is_not_treated_as_visibility_lag(
+    tmp_path: Path, visibility_clock: VisibilityClock
+) -> None:
+    client = PublicationConnect()
+    client.read_responses = [
+        Response(
+            200,
+            {
+                "id": f"{1:026d}",
+                "vault": {"id": client.vault},
+                "category": "PASSWORD",
+            },
+        )
+    ]
+    inventory = ConnectInventory(client, client.vault, spool=tmp_path / "spool")
+    selected = manifest()
+    with pytest.raises(LifecycleError, match="unavailable or changed"):
+        inventory.publish(fact(selected, "manifest", selected.document()))
+    assert client.posts == len(client.reads) == 1
+    assert visibility_clock.seconds == 0
 
 
 def confirmation(selected: LeaseManifest) -> dict[str, object]:
@@ -619,6 +800,101 @@ def test_death_after_durable_claim_never_adopts_the_interrupted_issuer(tmp_path:
         case.issue()
     assert sum(provider.creates for provider in case.providers.values()) == 0
     assert "issuer-stopped" not in case.lifecycle.records()
+
+
+def test_preparation_failure_and_lost_stop_publication_reconcile_without_reissuing(
+    tmp_path: Path, visibility_clock: VisibilityClock
+) -> None:
+    case = LeaseCase(tmp_path)
+    client = PublicationConnect()
+    inventory = ConnectInventory(client, client.vault, spool=tmp_path / "spool")
+    case.lifecycle.inventory = inventory
+    client.repeated_response = Response(404, None)
+    with pytest.raises(ConnectResponseError):
+        case.lifecycle.prepare(writer_sha256="a" * 64)
+    client.repeated_response = None
+    client.lose_slots = {"issuer-stopped"}
+    with pytest.raises(LifecycleError, match="evidence remains unpublished") as captured:
+        case.lifecycle.abandon_prepared()
+    assert failure_chain(captured.value)["related_failures"]
+    stopped = case.state.directory / "issuer-stopped.json"
+    before = stopped.read_bytes(), stopped.stat().st_mtime_ns
+    pending = {path: path.read_bytes() for path in inventory.spool.iterdir()}
+    posts = client.posts
+    case.lifecycle.clock = lambda: NOW + timedelta(seconds=30)
+    case.lifecycle.abandon_prepared()
+    assert (stopped.read_bytes(), stopped.stat().st_mtime_ns) == before
+    assert {path: path.read_bytes() for path in inventory.spool.iterdir()} == pending
+    assert client.posts == posts
+    assert case.lifecycle.records()["issuer-stopped"]["payload"] == read_private(stopped)
+    assert sum(provider.creates for provider in case.providers.values()) == 0
+    assert not list(case.state.directory.glob("submitting-*.json"))
+    with pytest.raises(LifecycleError, match="original active invocation"):
+        case.state.submitting(case.manifest.intents[0], writer_sha256="a" * 64)
+    with pytest.raises(LifecycleError, match="replayed"):
+        case.lifecycle.prepare(writer_sha256="a" * 64)
+    case.lifecycle.request_close("finish")
+    assert all(row.status == "verified" for row in case.lifecycle.reconcile(case.cleanup_providers))
+
+
+def test_original_stop_proof_survives_secret_cleanup_and_rejects_another_writer(
+    tmp_path: Path,
+) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    case.issue()
+    stopped = case.state.directory / "issuer-stopped.json"
+    before = stopped.read_bytes(), stopped.stat().st_mtime_ns
+    case.lifecycle.request_close("finish")
+    assert all(row.status == "verified" for row in case.lifecycle.reconcile(case.cleanup_providers))
+    # Model later private-secret disposal after verified cleanup. Its original
+    # historical retention proof must not be rebuilt from the current files.
+    for path in case.state.directory.glob("credential-*.json"):
+        path.unlink()
+    assert not list(case.state.directory.glob("credential-*.json"))
+    proof = case.state.finish_issuer(
+        writer_sha256="a" * 64, stopped_at=stamp(NOW + timedelta(days=1))
+    )
+    assert proof["retained_roles"] == sorted(ROLES)
+    assert (stopped.read_bytes(), stopped.stat().st_mtime_ns) == before
+    with pytest.raises(LifecycleError, match="original invocation"):
+        case.state.finish_issuer(writer_sha256="b" * 64, stopped_at=stamp(NOW))
+    with pytest.raises(LifecycleError, match="original active invocation"):
+        case.state.submitting(case.manifest.intents[0], writer_sha256="a" * 64)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("writer_sha256", "b" * 64),
+        ("retained_roles", ["archive"]),
+        ("retained_roles", ["unknown"]),
+        ("retained_roles", ["archive", "archive"]),
+        ("stopped_at", "2099-01-01T00:00:00Z"),
+    ],
+)
+def test_stop_proof_reconciliation_rejects_changed_proof(
+    tmp_path: Path, field: str, value: object
+) -> None:
+    case = LeaseCase(tmp_path)
+    case.state.claim_issuer(writer_sha256="a" * 64)
+    proof = case.state.finish_issuer(writer_sha256="a" * 64, stopped_at=stamp(NOW))
+    proof[field] = value
+    path = case.state.directory / "issuer-stopped.json"
+    path.write_bytes(canonical_bytes(proof))
+    with pytest.raises(LifecycleError, match="stop proof differs"):
+        case.state.finish_issuer(writer_sha256="a" * 64, stopped_at=stamp(NOW))
+
+
+def test_stop_proof_cannot_be_reconciled_under_a_changed_manifest_binding(tmp_path: Path) -> None:
+    case = LeaseCase(tmp_path)
+    case.state.claim_issuer(writer_sha256="a" * 64)
+    case.state.finish_issuer(writer_sha256="a" * 64, stopped_at=stamp(NOW))
+    path = case.state.directory / "issuer.json"
+    original = read_private(path)
+    path.write_bytes(canonical_bytes({**original, "manifest_sha256": "b" * 64}))
+    with pytest.raises(LifecycleError, match="differs from the original invocation"):
+        case.state.finish_issuer(writer_sha256="a" * 64, stopped_at=stamp(NOW))
 
 
 def test_lost_creation_response_retains_uncertainty_and_stops_the_remaining_roles(

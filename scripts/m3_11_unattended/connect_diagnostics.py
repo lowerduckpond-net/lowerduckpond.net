@@ -10,7 +10,12 @@ from pathlib import Path
 
 from scripts.m3_11_private_inputs import write_private
 from scripts.m3_11_qualification_evidence import fields
-from scripts.m3_11_unattended.connect_api import ConnectExchangeError, exchange_diagnostic
+from scripts.m3_11_unattended.connect_api import (
+    ConnectExchangeError,
+    ConnectResponseError,
+    exchange_diagnostic,
+    response_diagnostic,
+)
 from scripts.m3_11_unattended.model import LifecycleError
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -51,6 +56,7 @@ SOURCES = (
             "state",
             "production",
             "inputs",
+            "inventory",
         )
     ),
 )
@@ -74,9 +80,15 @@ def failure(error: Exception) -> dict[str, object]:
         and -128 <= error.returncode <= 255  # noqa: PLR2004 - bounded process status
     ):
         value["exit_status"] = error.returncode
-    if isinstance(error, ConnectExchangeError):
+    if (
+        isinstance(error, (ConnectExchangeError, ConnectResponseError))
+        and error.exchange is not None
+    ):
         with suppress(RuntimeError, ValueError, TypeError, KeyError):
             value["exchange"] = exchange_diagnostic(error.exchange)
+    if isinstance(error, ConnectResponseError):
+        with suppress(RuntimeError, ValueError, TypeError, KeyError):
+            value["response"] = response_diagnostic(error.response)
     try:
         paths = {str((ROOT / name).resolve()): name for name in SOURCES}
         frame = error.__traceback__
@@ -167,6 +179,8 @@ def verified_failure(  # noqa: PLR0912 - closed optional diagnostic fields
         detail_fields.add("exchange")
     if isinstance(value["failure"], dict) and "exit_status" in value["failure"]:
         detail_fields.add("exit_status")
+    if isinstance(value["failure"], dict) and "response" in value["failure"]:
+        detail_fields.add("response")
     detail = fields(value["failure"], detail_fields)
     if "exit_status" in detail and (
         detail["category"] != "subprocess"
@@ -176,6 +190,13 @@ def verified_failure(  # noqa: PLR0912 - closed optional diagnostic fields
         raise LifecycleError("failure diagnostic process status is invalid")
     if "exchange" in detail:
         exchange_diagnostic(detail["exchange"])
+    if "response" in detail:
+        response = response_diagnostic(detail["response"])
+        if (
+            "exchange" in detail
+            and exchange_diagnostic(detail["exchange"])["status"] != response["status"]
+        ):
+            raise LifecycleError("response and exchange diagnostic statuses differ")
     if not isinstance(detail["category"], str) or detail["category"] not in {
         "lifecycle",
         "input",

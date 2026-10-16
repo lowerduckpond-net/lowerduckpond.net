@@ -354,9 +354,36 @@ class LeaseState:
         return value
 
     def finish_issuer(self, *, writer_sha256: str, stopped_at: str) -> dict[str, object]:
+        manifest = self.manifest()
+        if read_private(self.directory / "issuer.json") != {
+            "writer_sha256": fingerprint(writer_sha256),
+            "manifest_sha256": manifest.sha256,
+        }:
+            raise LifecycleError("lease issuance writer differs from the original invocation")
+        observed = instant(stopped_at)
+        path = self.directory / "issuer-stopped.json"
+        if path.exists() or path.is_symlink():
+            # Publication can fail after the durable stop. Reconcile that exact
+            # original proof, even after cleanup has removed retained secrets.
+            proof = fields(read_private(path), {"writer_sha256", "stopped_at", "retained_roles"})
+            roles = proof["retained_roles"]
+            if (
+                proof["writer_sha256"] != writer_sha256
+                or not instant(manifest.created_at) <= instant(proof["stopped_at"]) <= observed
+                or not isinstance(roles, list)
+                or any(not isinstance(role, str) for role in roles)
+                or roles != sorted(set(roles))
+                or not set(roles) <= {intent.role for intent in manifest.intents}
+                or any(
+                    self.created(intent) is None
+                    for intent in manifest.intents
+                    if intent.role in roles
+                )
+            ):
+                raise LifecycleError("original lease issuer stop proof differs")
+            return proof
         self.require_writer(writer_sha256)
-        instant(stopped_at)
-        proof: dict[str, object] = {
+        proof = {
             "writer_sha256": writer_sha256,
             "stopped_at": stopped_at,
             "retained_roles": sorted(

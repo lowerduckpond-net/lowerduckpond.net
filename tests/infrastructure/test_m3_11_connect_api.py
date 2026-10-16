@@ -8,12 +8,14 @@ import time
 import traceback
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import override
 
 import pytest
 
 from scripts.m3_11_unattended import connect_api
 from scripts.m3_11_unattended.connect_api import Connect
+from scripts.m3_11_unattended.connect_diagnostics import retain_failure, verified_failure
 from scripts.m3_11_unattended.model import LifecycleError
 
 CANARY = "connect-api-private-canary"
@@ -237,6 +239,87 @@ def test_remaining_read_budget_terminates_live_exchange_and_restores_defaults(
     assert client._request_timeout == connect_api.TIMEOUT_SECONDS
     independent = Connect(server.url, CANARY, local_cleanup=True)
     assert independent._request_timeout == connect_api.TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize(
+    "status,body,check,body_type",
+    [
+        (401, {"secret": CANARY}, "item-status", "null"),
+        (403, {"secret": CANARY}, "item-status", "null"),
+        (404, {"secret": CANARY}, "item-status", "null"),
+        (200, [CANARY], "item-body", "array"),
+        (200, {"id": CANARY}, "item-id", "object"),
+        (200, {"id": ITEM, "vault": {"id": CANARY}}, "item-vault", "object"),
+    ],
+)
+def test_response_checks_survive_private_failure_retention_and_export(  # noqa: PLR0913, PLR0917 - response matrix
+    server: Server, tmp_path: Path, status: int, body: object, check: str, body_type: str
+) -> None:
+    server.status, server.body = status, json.dumps(body).encode()
+    client = Connect(server.url, CANARY, local_cleanup=True)
+    path = tmp_path / "failure.json"
+    with pytest.raises(connect_api.ConnectResponseError) as captured:
+        client.item(VAULT, ITEM)
+    retain_failure(path, binding={}, stage="provisioning", error=captured.value)
+    retained = json.loads(path.read_bytes())
+    exported = verified_failure(retained, binding={}, stages=frozenset({"provisioning"}))
+    detail = exported["failure"]
+    assert isinstance(detail, dict)
+    assert detail["response"] == {
+        "status": status,
+        "check": check,
+        "body_type": body_type,
+    }
+    assert detail["exchange"]["status"] == status
+    assert CANARY not in path.read_text() + str(captured.value) + repr(captured.value)
+    assert len(server.received) == 1
+    # Preserve the first failure, including its response details, on later errors.
+    before = path.read_bytes()
+    retain_failure(path, binding={}, stage="cleanup", error=ValueError(CANARY))
+    assert path.read_bytes() == before
+    # The export schema rejects injected content and contradictory status claims.
+    retained["failure"]["response"]["body"] = CANARY
+    with pytest.raises(ValueError, match="fields are incomplete or unknown"):
+        verified_failure(retained, binding={}, stages=frozenset({"provisioning"}))
+    del retained["failure"]["response"]["body"]
+    retained["failure"]["response"]["status"] = 503
+    with pytest.raises(LifecycleError, match="statuses differ"):
+        verified_failure(retained, binding={}, stages=frozenset({"provisioning"}))
+
+
+def test_visibility_wait_respects_outer_wall_clock_budget(server: Server, tmp_path: Path) -> None:
+    server.status = 404
+    client = Connect(server.url, CANARY, local_cleanup=True)
+    started = time.monotonic()
+    with pytest.raises(connect_api.ConnectResponseError) as captured, client.timeout_budget(0.6):
+        client.published_item(VAULT, ITEM)
+    assert time.monotonic() - started < 2  # noqa: PLR2004 - generous wall-clock scheduling allowance
+    assert len(server.received) == 1
+    assert server.received[0][0] == "GET"
+    assert client._request_timeout == connect_api.TIMEOUT_SECONDS
+    path = tmp_path / "failure.json"
+    retain_failure(path, binding={}, stage="provisioning", error=captured.value)
+    retained = json.loads(path.read_bytes())
+    verified_failure(retained, binding={}, stages=frozenset({"provisioning"}))
+    wait = retained["failure"]["response"]["visibility_wait"]
+    assert wait["attempts"] == len(server.received)
+    assert wait["timeout_ms"] == 600  # noqa: PLR2004 - exact shorter caller budget
+    assert wait["elapsed_ms"] >= wait["timeout_ms"]
+    assert CANARY not in path.read_text()
+    wait["body"] = CANARY
+    with pytest.raises(ValueError, match="fields are incomplete or unknown"):
+        verified_failure(retained, binding={}, stages=frozenset({"provisioning"}))
+
+
+@pytest.mark.parametrize("status", [429, 500])
+def test_visibility_wait_does_not_retry_other_http_failures(server: Server, status: int) -> None:
+    server.status, server.body = status, CANARY.encode()
+    client = Connect(server.url, CANARY, local_cleanup=True)
+    with pytest.raises(connect_api.ConnectExchangeError) as captured:
+        client.published_item(VAULT, ITEM)
+    assert captured.value.exchange["status"] == status
+    assert len(server.received) == 1
+    assert CANARY not in str(captured.value)
 
 
 def test_nested_read_budgets_cannot_extend_outer_deadline_and_restore_on_failure(
