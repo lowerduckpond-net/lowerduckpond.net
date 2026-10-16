@@ -191,6 +191,8 @@ def verified_failure(  # noqa: PLR0912 - closed optional diagnostic fields
     if "exchange" in detail:
         exchange_diagnostic(detail["exchange"])
     if "response" in detail:
+        if detail["category"] != "lifecycle":
+            raise LifecycleError("response diagnostic requires a lifecycle failure")
         response = response_diagnostic(detail["response"])
         if (
             "exchange" in detail

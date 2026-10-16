@@ -17,7 +17,7 @@ from typing import Protocol
 
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
-from scripts.m3_11_unattended.connect_api import IDENTITY, Connect, ConnectResponseError
+from scripts.m3_11_unattended.connect_api import Connect, ConnectResponseError
 from scripts.m3_11_unattended.connect_auth import identity as connect_identity
 from scripts.m3_11_unattended.journal import _note_content
 from scripts.m3_11_unattended.model import (
@@ -379,11 +379,12 @@ class ConnectInventory:
             raise ConnectResponseError(
                 response, "publication-response", "lease inventory write was not acknowledged"
             )
-        selected = response.body.get("id")
-        if not isinstance(selected, str) or IDENTITY.fullmatch(selected) is None:
+        try:
+            selected = _connect_id(response.body.get("id"))
+        except LifecycleError:
             raise ConnectResponseError(
                 response, "publication-id", "lease inventory write returned an invalid identity"
-            )
+            ) from None
         if self._read(selected, published=True) != record:
             raise LifecycleError("lease inventory write readback differs")
 

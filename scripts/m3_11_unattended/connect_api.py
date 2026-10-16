@@ -31,10 +31,47 @@ TIMEOUT_SECONDS = 30
 DNS_READ_ATTEMPTS = 3
 VISIBILITY_SECONDS = 30
 VISIBILITY_INTERVAL_SECONDS = 1
+VISIBILITY_MIN_READ_SECONDS = 1
 VISIBILITY_READ_ATTEMPTS = 31
 MIN_HTTP_STATUS = 100
 MAX_HTTP_STATUS = 599
 IDENTITY = re.compile(r"[a-z0-9]{26}")
+BODY_TYPES = {
+    dict: "object",
+    list: "array",
+    str: "string",
+    int: "number",
+    float: "number",
+    bool: "boolean",
+    type(None): "null",
+}
+
+
+@dataclass
+class _VisibilityBudget:
+    deadline: float | None = None
+
+
+_visibility_budget: ContextVar[_VisibilityBudget | None] = ContextVar(
+    "visibility_budget", default=None
+)
+
+
+@contextmanager
+def publication_readback_budget() -> Iterator[None]:
+    """Share one allowance for extra visibility polling across a cleanup pass.
+
+    Nested cleanup operations cannot renew it. Exhaustion still permits each
+    publication's initial read and ordinary provider cleanup, with their normal
+    transport bounds; only additional 404 polling is suppressed.
+    """
+    # Start at the first publication readback, not before an unrelated lengthy
+    # legacy inventory/provider sweep. Nested scopes share that same deadline.
+    token = _visibility_budget.set(_visibility_budget.get() or _VisibilityBudget())
+    try:
+        yield
+    finally:
+        _visibility_budget.reset(token)
 
 
 def exchange_diagnostic(raw: object) -> dict[str, object]:
@@ -164,16 +201,7 @@ def response_diagnostic(raw: object) -> dict[str, object]:
             "publication-response",
             "publication-id",
         }
-        or value["body_type"]
-        not in {
-            "object",
-            "array",
-            "string",
-            "number",
-            "boolean",
-            "null",
-            "unsupported",
-        }
+        or value["body_type"] not in {*BODY_TYPES.values(), "unsupported"}
     ):
         raise LifecycleError("Connect response diagnostic is invalid")
     if "visibility_wait" in value:
@@ -198,17 +226,11 @@ class ConnectResponseError(LifecycleError):
     def __init__(self, response: Response, check: str, message: str) -> None:
         self.response = response_diagnostic(
             {
-                "status": response.status,
+                "status": int(response.status)
+                if isinstance(response.status, HTTPStatus)
+                else response.status,
                 "check": check,
-                "body_type": {
-                    dict: "object",
-                    list: "array",
-                    str: "string",
-                    int: "number",
-                    float: "number",
-                    bool: "boolean",
-                    type(None): "null",
-                }.get(type(response.body), "unsupported"),
+                "body_type": BODY_TYPES.get(type(response.body), "unsupported"),
             }
         )
         self.exchange = (
@@ -384,40 +406,60 @@ class Connect:
         started = time.monotonic()
         timeout = min(VISIBILITY_SECONDS, self._request_timeout)
         deadline = started + timeout
+        shared = _visibility_budget.get()
+        if shared is not None:
+            if shared.deadline is None:
+                shared.deadline = started + VISIBILITY_SECONDS
+            deadline = min(deadline, shared.deadline)
         last_error: ConnectResponseError | None = None
         attempts = 0
-        for attempt in range(VISIBILITY_READ_ATTEMPTS):
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+
+        def annotate(error: ConnectResponseError) -> ConnectResponseError:
+            error.response = response_diagnostic(
+                {
+                    **error.response,
+                    "visibility_wait": {
+                        "attempts": attempts,
+                        "timeout_ms": max(1, round(timeout * 1000)),
+                        "elapsed_ms": max(0, round((time.monotonic() - started) * 1000)),
+                    },
+                }
+            )
+            return error
+
+        while attempts < VISIBILITY_READ_ATTEMPTS:
+            # The shared allowance governs extra polls, never whether cleanup
+            # can perform a publication's first read or revoke a child.
+            remaining = timeout if attempts == 0 else deadline - time.monotonic()
+            if attempts and remaining < VISIBILITY_MIN_READ_SECONDS:
                 break
             attempts += 1
             try:
                 with self.timeout_budget(min(TIMEOUT_SECONDS, remaining)):
                     return self.item(vault, item)
-            except ConnectResponseError as error:
+            except (ConnectResponseError, ConnectExchangeError) as error:
                 if (
-                    error.response["status"] != HTTPStatus.NOT_FOUND
+                    not isinstance(error, ConnectResponseError)
+                    or error.response["status"] != HTTPStatus.NOT_FOUND
                     or error.response["check"] != "item-status"
                 ):
+                    if last_error is not None:
+                        # Keep the terminal failure primary and the observed
+                        # 404 as its closed, exportable cause. Never invent a
+                        # response for an exchange that did not receive one.
+                        raise error from annotate(last_error)
                     raise
                 last_error = error
             remaining = deadline - time.monotonic()
-            if remaining <= 0 or attempt + 1 == VISIBILITY_READ_ATTEMPTS:
+            if (
+                remaining < VISIBILITY_INTERVAL_SECONDS + VISIBILITY_MIN_READ_SECONDS
+                or attempts == VISIBILITY_READ_ATTEMPTS
+            ):
                 break
-            time.sleep(min(VISIBILITY_INTERVAL_SECONDS, remaining))
+            time.sleep(VISIBILITY_INTERVAL_SECONDS)
         if last_error is None:
             raise LifecycleError("Connect publication visibility budget expired before readback")
-        last_error.response = response_diagnostic(
-            {
-                **last_error.response,
-                "visibility_wait": {
-                    "attempts": attempts,
-                    "timeout_ms": max(1, round(timeout * 1000)),
-                    "elapsed_ms": max(0, round((time.monotonic() - started) * 1000)),
-                },
-            }
-        )
-        raise last_error
+        raise annotate(last_error)
 
     def read(self, reference: str) -> str:
         match = re.fullmatch(

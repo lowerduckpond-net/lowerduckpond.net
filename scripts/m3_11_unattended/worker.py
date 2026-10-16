@@ -20,6 +20,7 @@ from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
 from scripts.m3_11_unattended import cleanup, inputs, production
 from scripts.m3_11_unattended.config import LeaseConfiguration
+from scripts.m3_11_unattended.connect_api import publication_readback_budget
 from scripts.m3_11_unattended.connect_diagnostics import retain_failure
 from scripts.m3_11_unattended.creation_outcome import (
     restore_aborted,
@@ -630,6 +631,7 @@ class Worker:
             else (128 - child.returncode if child.returncode < 0 else child.returncode)
         )
 
+    @publication_readback_budget()
     def revoke(self) -> bool:
         """Publish before the local provider lock; failed publication cannot skip deletion."""
         if self.lifecycle is None:

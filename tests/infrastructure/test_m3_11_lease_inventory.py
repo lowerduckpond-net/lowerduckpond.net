@@ -349,7 +349,7 @@ def test_visibility_exhaustion_keeps_pending_bytes_and_reconciles_without_post(
     record = fact(selected, "manifest", selected.document())
     with pytest.raises(ConnectResponseError) as captured, client.timeout_budget(budget):
         inventory.publish(record)
-    assert visibility_clock.seconds == budget
+    assert visibility_clock.seconds < budget
     assert len(client.reads) <= connect_api.VISIBILITY_READ_ATTEMPTS
     assert [remaining for _, remaining in client.reads] == sorted(
         [remaining for _, remaining in client.reads], reverse=True
@@ -361,7 +361,7 @@ def test_visibility_exhaustion_keeps_pending_bytes_and_reconciles_without_post(
         "visibility_wait": {
             "attempts": len(client.reads),
             "timeout_ms": budget * 1000,
-            "elapsed_ms": budget * 1000,
+            "elapsed_ms": visibility_clock.seconds * 1000,
         },
     }
     pending = next(inventory.spool.iterdir())
@@ -395,8 +395,8 @@ def test_visibility_budget_includes_http_time(
     selected = manifest()
     with pytest.raises(ConnectResponseError), client.timeout_budget(2.6):
         inventory.publish(fact(selected, "manifest", selected.document()))
-    assert visibility_clock.seconds == 2.6  # noqa: PLR2004 - one aggregate caller budget
-    assert [budget for _, budget in client.reads] == pytest.approx([2.6, 1.35, 0.1])
+    assert visibility_clock.seconds == 1.5  # noqa: PLR2004 - no tiny final exchange
+    assert [budget for _, budget in client.reads] == pytest.approx([2.6, 1.35])
     assert client.posts == 1
 
 
@@ -1180,3 +1180,181 @@ def test_lost_response_obligation_does_not_transfer_to_empty_replacement(tmp_pat
     with pytest.raises(LifecycleError, match="unknown credential"):
         case.lifecycle.handover(replacement, case.cleanup_providers, case.cleanup_providers)
     assert not any(slot.startswith("handover:") for slot in case.lifecycle.records())
+
+
+@pytest.mark.parametrize("omit_all", [False, True])
+def test_omitted_retained_roles_cannot_be_republished_or_waive_negative_authentication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, omit_all: bool
+) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    publish = case.inventory.publish
+
+    def fail_stop(record: dict[str, object]) -> None:
+        if record["slot"] == "issuer-stopped":
+            raise LifecycleError("synthetic stop publication unavailable")
+        publish(record)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(case.inventory, "publish", fail_stop)
+        with pytest.raises(LifecycleError, match="evidence remains unpublished"):
+            case.issue()
+    assert "issuer-stopped" not in case.lifecycle.records()
+    path = case.state.directory / "issuer-stopped.json"
+    original = read_private(path)
+    modified = {**original, "retained_roles": [] if omit_all else sorted(ROLES - {"archive"})}
+    path.write_bytes(canonical_bytes(modified))
+    (case.state.directory / "credential-archive.json").unlink()
+    with pytest.raises(LifecycleError, match="stop proof differs"):
+        case.state.finish_issuer(writer_sha256="a" * 64, stopped_at=stamp(NOW))
+    case.lifecycle.request_close("cancel")
+    results = case.lifecycle.reconcile(case.cleanup_providers)
+    assert all(row.status == "unresolved" for row in results)
+    assert not any(provider.items for provider in case.cleanup_providers.values())
+    assert "issuer-stopped" not in case.lifecycle.records()
+    assert read_private(path) == modified  # Evidence is not silently repaired.
+
+
+@pytest.mark.parametrize("before_stop", [False, True])
+def test_original_stop_proof_is_reusable_across_wall_clock_rollback(
+    tmp_path: Path, before_stop: bool
+) -> None:
+    case = LeaseCase(tmp_path)
+    case.state.claim_issuer(writer_sha256="a" * 64)
+    stopped_at = stamp(NOW - timedelta(minutes=1) if before_stop else NOW)
+    original = case.state.finish_issuer(writer_sha256="a" * 64, stopped_at=stopped_at)
+    before = {path: path.read_bytes() for path in case.state.directory.glob("issuer*.json")}
+    assert (
+        case.state.finish_issuer(
+            writer_sha256="a" * 64, stopped_at=stamp(NOW - timedelta(minutes=2))
+        )
+        == original
+    )
+    assert {path: path.read_bytes() for path in before} == before
+    with pytest.raises(LifecycleError, match="original active invocation"):
+        case.state.submitting(case.manifest.intents[0], writer_sha256="a" * 64)
+
+
+def test_interrupted_stop_binding_fences_create_and_finishes_only_original_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts.m3_11_unattended import state as state_module  # noqa: PLC0415
+
+    case = LeaseCase(tmp_path)
+    case.state.claim_issuer(writer_sha256="a" * 64)
+    write = write_private
+
+    def interrupt(path: Path, value: dict[str, object]) -> None:
+        if path.name == "issuer-stopped.json":
+            raise OSError("synthetic interruption after binding")
+        write(path, value)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(state_module, "write_private", interrupt)
+        with pytest.raises(OSError, match="after binding"):
+            case.state.finish_issuer(writer_sha256="a" * 64, stopped_at=stamp(NOW))
+    bound = read_private(case.state.directory / "issuer-stop-binding.json")
+    assert not (case.state.directory / "issuer-stopped.json").exists()
+    with pytest.raises(LifecycleError, match="original active invocation"):
+        case.state.submitting(case.manifest.intents[0], writer_sha256="a" * 64)
+    with pytest.raises(LifecycleError, match="original invocation"):
+        case.state.finish_issuer(writer_sha256="b" * 64, stopped_at=stamp(NOW))
+    assert (
+        case.state.finish_issuer(writer_sha256="a" * 64, stopped_at=stamp(NOW + timedelta(days=1)))
+        == bound["proof"]
+    )
+
+
+@pytest.mark.parametrize("journal_visible", [False, True])
+def test_legacy_stop_proof_needs_exact_published_evidence_and_keeps_cleanup_available(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, journal_visible: bool
+) -> None:
+    case = LeaseCase(tmp_path)
+    case.confirm()
+    case.issue()
+    case.lifecycle.request_close("cancel")
+    (case.state.directory / "issuer-stop-binding.json").unlink()
+    if not journal_visible:
+        records = case.inventory.records
+        monkeypatch.setattr(
+            case.inventory,
+            "records",
+            lambda: [row for row in records() if row["slot"] != "issuer-stopped"],
+        )
+    results = case.lifecycle.reconcile(case.cleanup_providers)
+    assert all(row.status == ("verified" if journal_visible else "unresolved") for row in results)
+    assert not any(provider.items for provider in case.cleanup_providers.values())
+    assert not (case.state.directory / "issuer-stop-binding.json").exists()
+    if journal_visible:
+        for path in case.state.directory.glob("credential-*.json"):
+            path.unlink()
+        assert case.lifecycle.reconcile(case.cleanup_providers) == results
+
+
+def test_cleanup_visibility_polls_share_a_budget_without_suppressing_revocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, visibility_clock: VisibilityClock
+) -> None:
+    case = LeaseCase(tmp_path)
+    case.lifecycle.prepare(writer_sha256="a" * 64)
+    # A previously retained exact child remains eligible for deletion even if
+    # later publication evidence is unavailable. No CREATE occurs in this test.
+    intent = case.manifest.intents[0]
+    selected = "synthetic-existing-child"
+    case.providers[intent.provider].items[selected] = {
+        "id": selected,
+        "name": intent.name,
+        "created_at": intent.requested_at,
+        "scope": intent.scope,
+        "status": "active",
+        "expires_at": None,
+    }
+    case.state.remember(intent, selected, "synthetic-retained-secret")
+    client = PublicationConnect()
+    client.hidden, client.repeated_response = True, Response(404, None)
+    case.lifecycle.inventory = ConnectInventory(client, client.vault, spool=tmp_path / "spool")
+    deletion_times = []
+    provider = case.cleanup_providers[intent.provider]
+    delete = provider.delete
+
+    def observed_delete(identifier: str) -> None:
+        deletion_times.append(visibility_clock.seconds)
+        delete(identifier)
+
+    monkeypatch.setattr(provider, "delete", observed_delete)
+    with connect_api.publication_readback_budget():
+        with pytest.raises(LifecycleError, match="evidence remains unpublished"):
+            case.lifecycle.abandon_prepared()
+        with pytest.raises(ConnectResponseError):
+            case.lifecycle.request_close("cancel")
+        results = case.lifecycle.reconcile(case.cleanup_providers)
+    assert client.posts >= len(ROLES) + 2
+    assert deletion_times and max(deletion_times) <= connect_api.VISIBILITY_SECONDS
+    assert visibility_clock.seconds <= connect_api.VISIBILITY_SECONDS
+    assert all(row.status == "unresolved" for row in results)
+    assert not provider.items
+    # A later independent invocation receives a new allowance, not a permanent
+    # disabled-polling state. The earlier pending bytes are never replayed.
+    with connect_api.publication_readback_budget():
+        before = visibility_clock.seconds
+        with pytest.raises(ConnectResponseError):
+            client.published_item(client.vault, "z" * 26)
+        assert visibility_clock.seconds > before
+
+
+def test_shared_visibility_budget_starts_at_first_read_and_nested_scopes_cannot_renew(
+    visibility_clock: VisibilityClock,
+) -> None:
+    first, second = PublicationConnect(), PublicationConnect()
+    first.repeated_response = second.repeated_response = Response(404, None)
+    with connect_api.publication_readback_budget():
+        visibility_clock.seconds += 300  # Existing inventory work has no publication yet.
+        with pytest.raises(ConnectResponseError):
+            first.published_item(first.vault, "a" * 26)
+        assert visibility_clock.seconds == 329  # noqa: PLR2004 - lazy 30-second allowance
+        with connect_api.publication_readback_budget(), pytest.raises(ConnectResponseError):
+            second.published_item(second.vault, "b" * 26)
+        assert visibility_clock.seconds == 329  # noqa: PLR2004 - nested scope cannot extend it
+        assert len(second.reads) == 1  # Its initial read remains available.
+    with connect_api.publication_readback_budget(), pytest.raises(ConnectResponseError):
+        second.published_item(second.vault, "c" * 26)
+    assert visibility_clock.seconds == 358  # noqa: PLR2004 - next pass gets a fresh allowance
