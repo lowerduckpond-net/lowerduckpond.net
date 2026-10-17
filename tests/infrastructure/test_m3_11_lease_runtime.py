@@ -7,7 +7,9 @@ import shutil
 import uuid
 from contextlib import ExitStack
 from copy import deepcopy
+from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast, override
 
 import pytest
@@ -17,7 +19,7 @@ from scripts import qualification_allocation, qualification_restore
 from scripts.m3_11_debug_files import MARKER
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_unattended.docker import SOCKET, Docker
-from scripts.m3_11_unattended.model import LifecycleError, digest
+from scripts.m3_11_unattended.model import LifecycleError, digest, instant
 from scripts.m3_11_unattended.state import LeaseState, RunState, replace_private
 from scripts.m3_11_unattended.watchdog import quiesce_runtime, require_released_consumers
 from scripts.qualification_context import ARCHIVE_ENV, HOST_ENV, RUN_ENV
@@ -219,10 +221,16 @@ def test_reuse_freshly_checks_released_containers_without_mutating_them(
     assert (directory / "journey-result.json").exists()
 
 
+@pytest.mark.parametrize("seconds_before_expiry", [1, 0, -1])
 def test_diagnostic_holds_exclusive_use_and_cannot_rejoin_after_release(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, seconds_before_expiry: int
 ) -> None:
     directory, state, docker = runtime(tmp_path, monkeypatch)
+    selected = state.manifest()
+    now = selected.policy.deadline(instant(selected.created_at)) - timedelta(
+        seconds=seconds_before_expiry
+    )
+    monkeypatch.setattr(debug_fixture, "datetime", SimpleNamespace(now=lambda _zone: now))
     request = read_private(directory / "request.json")
     request["format"] = "lowerduckpond-m3-11-unattended-request-v2"
     replace_private(directory / "request.json", request)
@@ -233,6 +241,13 @@ def test_diagnostic_holds_exclusive_use_and_cannot_rejoin_after_release(
     )
     with ExitStack() as session:
         monkeypatch.setattr(debug_fixture, "_LEASE_SESSION", session)
+        if seconds_before_expiry <= 0:
+            with pytest.raises(ValueError, match="exclusive lease use"):
+                debug_fixture.lease_use(workspace)
+            assert not list(state.directory.glob("diagnostic-*.json"))
+            with state.use_lock():
+                pass  # Rejected diagnostics must not retain the exclusive lock.
+            return
         debug_fixture.lease_use(workspace)
         with pytest.raises(LifecycleError, match="already owned"), state.use_lock():
             pytest.fail("diagnostic allowed simultaneous reuse")

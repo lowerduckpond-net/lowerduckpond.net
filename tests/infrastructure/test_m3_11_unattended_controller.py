@@ -41,6 +41,10 @@ def configuration() -> LeaseConfiguration:
 def subject(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[worker.Worker, LeaseCase]:
     root = tmp_path / "evidence"
     case = LeaseCase(tmp_path / "case")
+    # The worker and lifecycle must observe the same synthetic lease timeline.
+    monkeypatch.setattr(
+        worker, "datetime", SimpleNamespace(now=lambda _zone: case.lifecycle.clock())
+    )
     directory = root / "runs" / case.manifest.lease_id
     directory.mkdir(mode=0o700, parents=True)
     (root / "runs").chmod(0o700)
@@ -408,7 +412,7 @@ def test_close_publication_precedes_busy_cleanup_lock(
 
 
 @pytest.mark.parametrize("restarted", [False, True])
-@pytest.mark.parametrize("cleanup_reason", ["cancel", "expiry"])
+@pytest.mark.parametrize("cleanup_reason", ["cancel", "expiry-boundary", "expiry"])
 def test_released_creator_cannot_revoke_successor_but_global_cleanup_still_applies(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -467,7 +471,7 @@ def test_released_creator_cannot_revoke_successor_but_global_cleanup_still_appli
     else:
         expired = case.manifest.policy.deadline(
             datetime.fromisoformat(case.manifest.created_at)
-        ) + timedelta(seconds=1)
+        ) + timedelta(seconds=0 if cleanup_reason == "expiry-boundary" else 1)
         monkeypatch.setattr(worker, "datetime", SimpleNamespace(now=lambda _zone: expired))
     assert selected.revoke()
     assert all(not provider.items for provider in case.providers.values())
