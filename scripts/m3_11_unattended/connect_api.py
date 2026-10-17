@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.client import HTTPException
 from pathlib import Path
+from typing import cast
 from urllib.parse import urlsplit
 
 from scripts.m3_11_qualification_evidence import fields
@@ -28,9 +29,49 @@ from scripts.m3_11_unattended.model import LifecycleError
 MAX_BYTES = 16 * 1024 * 1024
 TIMEOUT_SECONDS = 30
 DNS_READ_ATTEMPTS = 3
+VISIBILITY_SECONDS = 30
+VISIBILITY_INTERVAL_SECONDS = 1
+VISIBILITY_MIN_READ_SECONDS = 1
+VISIBILITY_READ_ATTEMPTS = 31
 MIN_HTTP_STATUS = 100
 MAX_HTTP_STATUS = 599
 IDENTITY = re.compile(r"[a-z0-9]{26}")
+BODY_TYPES = {
+    dict: "object",
+    list: "array",
+    str: "string",
+    int: "number",
+    float: "number",
+    bool: "boolean",
+    type(None): "null",
+}
+
+
+@dataclass
+class _VisibilityBudget:
+    deadline: float | None = None
+
+
+_visibility_budget: ContextVar[_VisibilityBudget | None] = ContextVar(
+    "visibility_budget", default=None
+)
+
+
+@contextmanager
+def publication_readback_budget() -> Iterator[None]:
+    """Share one allowance for extra visibility polling across a cleanup pass.
+
+    Nested cleanup operations cannot renew it. Exhaustion still permits each
+    publication's initial read and ordinary provider cleanup, with their normal
+    transport bounds; only additional 404 polling is suppressed.
+    """
+    # Start at the first publication readback, not before an unrelated lengthy
+    # legacy inventory/provider sweep. Nested scopes share that same deadline.
+    token = _visibility_budget.set(_visibility_budget.get() or _VisibilityBudget())
+    try:
+        yield
+    finally:
+        _visibility_budget.reset(token)
 
 
 def exchange_diagnostic(raw: object) -> dict[str, object]:
@@ -137,6 +178,65 @@ class Response:
     status: int
     body: object
     exchange: dict[str, object] | None = field(default=None, compare=False, repr=False)
+
+
+def response_diagnostic(raw: object) -> dict[str, object]:
+    """Describe a failed response check without retaining credential-bearing content."""
+    names = {"status", "check", "body_type"}
+    if isinstance(raw, dict) and "visibility_wait" in raw:
+        names.add("visibility_wait")
+    value = fields(raw, names)
+    if (
+        type(value["status"]) is not int
+        or not MIN_HTTP_STATUS <= value["status"] <= MAX_HTTP_STATUS
+        or value["check"]
+        not in {
+            "item-status",
+            "item-body",
+            "item-id",
+            "item-vault",
+            "vault-list",
+            "vault-duplicates",
+            "inventory-list",
+            "publication-response",
+            "publication-id",
+        }
+        or value["body_type"] not in {*BODY_TYPES.values(), "unsupported"}
+    ):
+        raise LifecycleError("Connect response diagnostic is invalid")
+    if "visibility_wait" in value:
+        wait = fields(value["visibility_wait"], {"attempts", "timeout_ms", "elapsed_ms"})
+        if (
+            value["status"] != HTTPStatus.NOT_FOUND
+            or value["check"] != "item-status"
+            or type(wait["attempts"]) is not int
+            or not 1 <= wait["attempts"] <= VISIBILITY_READ_ATTEMPTS
+            or type(wait["timeout_ms"]) is not int
+            or not 1 <= wait["timeout_ms"] <= VISIBILITY_SECONDS * 1000
+            or type(wait["elapsed_ms"]) is not int
+            or not 0 <= wait["elapsed_ms"] <= 2**53 - 1
+        ):
+            raise LifecycleError("Connect visibility wait diagnostic is invalid")
+    return value
+
+
+class ConnectResponseError(LifecycleError):
+    """An HTTP response failed validation; retain only its status and closed check name."""
+
+    def __init__(self, response: Response, check: str, message: str) -> None:
+        self.response = response_diagnostic(
+            {
+                "status": int(response.status)
+                if isinstance(response.status, HTTPStatus)
+                else response.status,
+                "check": check,
+                "body_type": BODY_TYPES.get(type(response.body), "unsupported"),
+            }
+        )
+        self.exchange = (
+            exchange_diagnostic(response.exchange) if response.exchange is not None else None
+        )
+        super().__init__(message)
 
 
 class Connect:
@@ -273,24 +373,93 @@ class Connect:
                 for vault in value
             )
         ):
-            raise LifecycleError("Connect vault visibility could not be verified")
+            raise ConnectResponseError(
+                response, "vault-list", "Connect vault visibility could not be verified"
+            )
         if len({vault["id"] for vault in value}) != len(value):
-            raise LifecycleError("Connect vault visibility is ambiguous")
+            raise ConnectResponseError(
+                response, "vault-duplicates", "Connect vault visibility is ambiguous"
+            )
         return value
 
     def item(self, vault: str, item: str) -> dict[str, object]:
         path = f"/v1/vaults/{self._identity(vault)}/items/{self._identity(item)}"
         response = self.request("GET", path)
         value = response.body
-        if (
-            response.status != HTTPStatus.OK
-            or not isinstance(value, dict)
-            or value.get("id") != item
-            or not isinstance(value.get("vault"), dict)
-            or value["vault"].get("id") != vault
-        ):
-            raise LifecycleError("Connect item identity could not be verified")
-        return value
+        check = None
+        if response.status != HTTPStatus.OK:
+            check = "item-status"
+        elif not isinstance(value, dict):
+            check = "item-body"
+        elif value.get("id") != item:
+            check = "item-id"
+        elif not isinstance(value.get("vault"), dict) or value["vault"].get("id") != vault:
+            check = "item-vault"
+        if check is not None:
+            raise ConnectResponseError(
+                response, check, "Connect item identity could not be verified"
+            )
+        return cast(dict[str, object], value)
+
+    def published_item(self, vault: str, item: str) -> dict[str, object]:
+        """Allow bounded 404 visibility lag for an acknowledged POST's exact item only."""
+        started = time.monotonic()
+        timeout = min(VISIBILITY_SECONDS, self._request_timeout)
+        deadline = started + timeout
+        shared = _visibility_budget.get()
+        if shared is not None:
+            if shared.deadline is None:
+                shared.deadline = started + VISIBILITY_SECONDS
+            deadline = min(deadline, shared.deadline)
+        last_error: ConnectResponseError | None = None
+        attempts = 0
+
+        def annotate(error: ConnectResponseError) -> ConnectResponseError:
+            error.response = response_diagnostic(
+                {
+                    **error.response,
+                    "visibility_wait": {
+                        "attempts": attempts,
+                        "timeout_ms": max(1, round(timeout * 1000)),
+                        "elapsed_ms": max(0, round((time.monotonic() - started) * 1000)),
+                    },
+                }
+            )
+            return error
+
+        while attempts < VISIBILITY_READ_ATTEMPTS:
+            # The shared allowance governs extra polls, never whether cleanup
+            # can perform a publication's first read or revoke a child.
+            remaining = timeout if attempts == 0 else deadline - time.monotonic()
+            if attempts and remaining < VISIBILITY_MIN_READ_SECONDS:
+                break
+            attempts += 1
+            try:
+                with self.timeout_budget(min(TIMEOUT_SECONDS, remaining)):
+                    return self.item(vault, item)
+            except (ConnectResponseError, ConnectExchangeError) as error:
+                if (
+                    not isinstance(error, ConnectResponseError)
+                    or error.response["status"] != HTTPStatus.NOT_FOUND
+                    or error.response["check"] != "item-status"
+                ):
+                    if last_error is not None:
+                        # Keep the terminal failure primary and the observed
+                        # 404 as its closed, exportable cause. Never invent a
+                        # response for an exchange that did not receive one.
+                        raise error from annotate(last_error)
+                    raise
+                last_error = error
+            remaining = deadline - time.monotonic()
+            if (
+                remaining < VISIBILITY_INTERVAL_SECONDS + VISIBILITY_MIN_READ_SECONDS
+                or attempts == VISIBILITY_READ_ATTEMPTS
+            ):
+                break
+            time.sleep(VISIBILITY_INTERVAL_SECONDS)
+        if last_error is None:
+            raise LifecycleError("Connect publication visibility budget expired before readback")
+        raise annotate(last_error)
 
     def read(self, reference: str) -> str:
         match = re.fullmatch(

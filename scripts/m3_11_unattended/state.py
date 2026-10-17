@@ -291,14 +291,19 @@ class LeaseState:
         except FileExistsError:
             raise LifecycleError("an existing lease issuer cannot be replayed or adopted") from None
 
-    def require_writer(self, writer_sha256: str) -> None:
+    def _require_writer_binding(self, writer_sha256: str, manifest: LeaseManifest) -> None:
         expected = {
             "writer_sha256": fingerprint(writer_sha256),
-            "manifest_sha256": self.manifest().sha256,
+            "manifest_sha256": manifest.sha256,
         }
-        if (
-            read_private(self.directory / "issuer.json") != expected
-            or (self.directory / "issuer-stopped.json").exists()
+        if read_private(self.directory / "issuer.json") != expected:
+            raise LifecycleError("lease issuance writer differs from the original invocation")
+
+    def require_writer(self, writer_sha256: str) -> None:
+        self._require_writer_binding(writer_sha256, self.manifest())
+        if any(
+            (self.directory / name).exists() or (self.directory / name).is_symlink()
+            for name in ("issuer-stopped.json", "issuer-stop-binding.json")
         ):
             raise LifecycleError("lease issuance writer is not the original active invocation")
 
@@ -353,18 +358,75 @@ class LeaseState:
             raise LifecycleError("retained credential ID differs from its intent")
         return value
 
+    def _stop_proof(
+        self, raw: object, manifest: LeaseManifest, writer_sha256: str
+    ) -> dict[str, object]:
+        proof = fields(raw, {"writer_sha256", "stopped_at", "retained_roles"})
+        instant(proof["stopped_at"])
+        roles = proof["retained_roles"]
+        if (
+            proof["writer_sha256"] != writer_sha256
+            or not isinstance(roles, list)
+            or any(not isinstance(role, str) for role in roles)
+            or roles != sorted(set(roles))
+            or not set(roles) <= {intent.role for intent in manifest.intents}
+            or any(
+                self.created(intent) is None for intent in manifest.intents if intent.role in roles
+            )
+        ):
+            raise LifecycleError("original lease issuer stop proof differs")
+        return proof
+
+    def issuer_stop(self, *, published: object = None) -> dict[str, object] | None:
+        """Validate the complete original proof, including after secret disposal.
+
+        Older state has no separate local binding. It is usable only when its
+        exact original fact is also observed in the validated journal; missing
+        external evidence never authorizes a smaller retained-role set.
+        """
+        path = self.directory / "issuer-stopped.json"
+        if not path.exists() and not path.is_symlink():
+            return None
+        manifest = self.manifest()
+        writer = fingerprint(read_private(self.directory / "issuer.json")["writer_sha256"])
+        self._require_writer_binding(writer, manifest)
+        proof = self._stop_proof(read_private(path), manifest, writer)
+        binding = self.directory / "issuer-stop-binding.json"
+        if binding.exists() or binding.is_symlink():
+            if read_private(binding) != {"manifest_sha256": manifest.sha256, "proof": proof}:
+                raise LifecycleError("original lease issuer stop proof differs from its binding")
+        elif published != proof:
+            raise LifecycleError("original lease issuer stop proof lacks its original binding")
+        return proof
+
     def finish_issuer(self, *, writer_sha256: str, stopped_at: str) -> dict[str, object]:
-        self.require_writer(writer_sha256)
+        manifest = self.manifest()
+        self._require_writer_binding(writer_sha256, manifest)
         instant(stopped_at)
-        proof: dict[str, object] = {
-            "writer_sha256": writer_sha256,
-            "stopped_at": stopped_at,
-            "retained_roles": sorted(
-                intent.role
-                for intent in self.manifest().intents
-                if self.credential(intent) is not None
-            ),
-        }
+        proof = self.issuer_stop()
+        if proof is not None:
+            return proof
+        binding = self.directory / "issuer-stop-binding.json"
+        if binding.exists() or binding.is_symlink():
+            original = fields(read_private(binding), {"manifest_sha256", "proof"})
+            if original["manifest_sha256"] != manifest.sha256:
+                raise LifecycleError("original lease issuer stop proof differs from its manifest")
+            proof = self._stop_proof(original["proof"], manifest, writer_sha256)
+        else:
+            proof = {
+                "writer_sha256": writer_sha256,
+                "stopped_at": stopped_at,
+                "retained_roles": sorted(
+                    intent.role
+                    for intent in manifest.intents
+                    if self.credential(intent) is not None
+                ),
+            }
+            # Bind before exposing the proof to publication. The binding also
+            # fences issuance if interrupted between these two durable writes.
+            self.retain(
+                "issuer-stop-binding.json", {"manifest_sha256": manifest.sha256, "proof": proof}
+            )
         self.retain("issuer-stopped.json", proof)
         return proof
 

@@ -590,3 +590,43 @@ def test_actual_journey_spawn_boundary_controls_retention_and_drains_before_clea
         selected._terminal()
     assert all(not provider.items for provider in case.providers.values())
     assert selected.state.status()["credential_cleanup"] == "verified"
+
+
+def test_worker_cleanup_shares_visibility_allowance_and_deletes_before_it_can_renew(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts.m3_11_unattended import connect_api  # noqa: PLC0415
+    from scripts.m3_11_unattended.connect_api import Response  # noqa: PLC0415
+
+    from .test_m3_11_lease_inventory import (  # noqa: PLC0415
+        PublicationConnect,
+        VisibilityClock,
+    )
+
+    selected, case = subject(tmp_path, monkeypatch)
+    selected.state.begin(selected.binding)
+    selected.state.finish_journey("failed", 1)
+    case.confirm()
+    case.issue()
+    client = PublicationConnect()
+    inventory = ConnectInventory(client, client.vault, spool=tmp_path / "pending")
+    for record in sorted(case.inventory.records(), key=lambda row: row["slot"] != "manifest"):
+        inventory.publish(record)
+    monkeypatch.setattr(case, "inventory", inventory)
+    case.lifecycle.inventory = inventory
+    clock = VisibilityClock()
+    monkeypatch.setattr(connect_api, "time", clock)
+    client.hidden, client.repeated_response = True, Response(404, None)
+    assert not selected.revoke()
+    assert 0 < clock.seconds <= connect_api.VISIBILITY_SECONDS
+    assert all(not provider.items for provider in case.providers.values())
+    assert sum(len(provider.deletes) for provider in case.cleanup_providers.values()) == len(ROLES)
+    assert selected.state.status()["credential_cleanup"] == "unresolved"
+    assert len(list(case.state.directory.glob("credential-*.json"))) == len(ROLES)
+    pending = {path: path.read_bytes() for path in inventory.spool.iterdir()}
+    client.hidden, client.repeated_response = False, None
+    assert selected.revoke()
+    # Denial and closure facts may now be posted. Every earlier uncertain fact
+    # reconciles without another POST for its original title.
+    assert len({item["title"] for item in client.items.values()}) == client.posts
+    assert all(path.read_bytes() == data for path, data in pending.items())

@@ -19,7 +19,7 @@ from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended import audit_policy_recovery, historical_absence
 from scripts.m3_11_unattended.cloudflare import Cloudflare
 from scripts.m3_11_unattended.config import LeaseConfiguration, UnavailableProvider
-from scripts.m3_11_unattended.connect_api import Connect
+from scripts.m3_11_unattended.connect_api import Connect, publication_readback_budget
 from scripts.m3_11_unattended.inventory import ConnectInventory, Inventory, fact
 from scripts.m3_11_unattended.journal import ConnectObligations, event
 from scripts.m3_11_unattended.legacy_terminal import restored as legacy_restored
@@ -452,6 +452,7 @@ def sweep_legacy(  # noqa: PLR0912, PLR0915 - retain independent legacy obligati
     }
 
 
+@publication_readback_budget()
 def sweep_leases(  # noqa: PLR0912, PLR0913, PLR0915 - independent cleanup and confirmation gates
     config: LeaseConfiguration,
     inventory: Inventory,
@@ -643,17 +644,20 @@ def main() -> int:
                 config.journal_vault,
                 spool=root / "inventory-pending" / args.actor,
             )
-            # Publication and writer recovery precede the provider-cleanup lock.
-            try:
-                published = prepare_lease_cleanup(args.runs, docker, inventory)
-            except RuntimeError, OSError, ValueError, KeyError, TypeError:
-                published = False
-            with cleanup_lock(args.runs, blocking=False):
-                receipt = sweep_leases(config, inventory, root=root / "leases", actor=args.actor)
-                if not published:
-                    receipt["status"] = "unresolved"
-                else:
-                    finish_leases(args.runs, receipt)
+            with publication_readback_budget():
+                # Publication and writer recovery precede the provider-cleanup lock.
+                try:
+                    published = prepare_lease_cleanup(args.runs, docker, inventory)
+                except RuntimeError, OSError, ValueError, KeyError, TypeError:
+                    published = False
+                with cleanup_lock(args.runs, blocking=False):
+                    receipt = sweep_leases(
+                        config, inventory, root=root / "leases", actor=args.actor
+                    )
+                    if not published:
+                        receipt["status"] = "unresolved"
+                    else:
+                        finish_leases(args.runs, receipt)
             print(json.dumps(receipt, sort_keys=True), flush=True)
             status = 0 if receipt["status"] == "ready" else 1
         except CleanupLockBusyError:

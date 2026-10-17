@@ -9,6 +9,7 @@ from typing import cast
 
 from scripts import qualification_deadline
 from scripts.m3_11_private_inputs import read_private, write_private
+from scripts.m3_11_unattended.connect_api import publication_readback_budget
 from scripts.m3_11_unattended.creation_outcome import AbortRecoveryError
 from scripts.m3_11_unattended.docker import Docker, controller_name
 from scripts.m3_11_unattended.inventory import Inventory, fact
@@ -404,6 +405,7 @@ def quiesce_allocated(  # noqa: PLR0912, PLR0915 - original receipts, complete i
     }
 
 
+@publication_readback_budget()
 def prepare_lease_cleanup(root: Path, docker: Docker, inventory: Inventory) -> bool:  # noqa: PLR0912, PLR0915 - publication and issuer fencing precede cleanup
     """Publish cancellation before any cleanup lock; fence only the exact issuer.
 
@@ -524,6 +526,7 @@ def finish_leases(root: Path, receipt: dict[str, object]) -> None:
             RunState(directory).update("finished", cleanup="verified")
 
 
+@publication_readback_budget()
 def cancel_lease(directory: Path, config_path: Path) -> dict[str, object]:
     from scripts.m3_11_unattended import cleanup  # noqa: PLC0415
     from scripts.m3_11_unattended.config import LeaseConfiguration  # noqa: PLC0415

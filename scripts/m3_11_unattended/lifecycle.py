@@ -20,6 +20,7 @@ from typing import Protocol, cast
 from scripts import qualification_deadline
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended import historical_absence
+from scripts.m3_11_unattended.connect_api import publication_readback_budget
 from scripts.m3_11_unattended.creation_outcome import is_abort, select_abort, valid_resolution
 from scripts.m3_11_unattended.inventory import Inventory, fact, require_confirmation
 from scripts.m3_11_unattended.journal import CreationJournal, Journal, event
@@ -1075,6 +1076,7 @@ class LeaseLifecycle:
             )
         )
 
+    @publication_readback_budget()
     def _end_issuance(self, writer_sha256: str, submitted: set[str]) -> None:
         errors: list[Exception] = []
         for intent in self.manifest.intents:
@@ -1105,7 +1107,7 @@ class LeaseLifecycle:
         if errors:
             raise LifecycleError("lease issuance evidence remains unpublished") from errors[0]
 
-    def issue(
+    def issue(  # noqa: PLR0912 - issuance guards and unconditional bounded stop evidence
         self,
         *,
         writer_sha256: str,
@@ -1133,6 +1135,7 @@ class LeaseLifecycle:
         self._issue_entered = True
         submitted: set[str] = set()
         credentials: dict[str, Credential] = {}
+        completed = False
         try:
             for intent in self.manifest.intents:
                 self._before_create(check_cancelled)
@@ -1164,12 +1167,15 @@ class LeaseLifecycle:
                 {entry.secret for entry in credentials.values()}
             ) != len(credentials):
                 raise LifecycleError("issued lease credentials are not separate identities")
+            completed = True
             return credentials
-        except BaseException:
-            self.request_close("provisioning-failed")
-            raise
         finally:
-            self._end_issuance(writer_sha256, submitted)
+            with publication_readback_budget():
+                try:
+                    if not completed:
+                        self.request_close("provisioning-failed")
+                finally:
+                    self._end_issuance(writer_sha256, submitted)
 
     def _local_facts(self) -> list[dict[str, object]]:
         from scripts.m3_11_private_inputs import read_private  # noqa: PLC0415 - private recovery
@@ -1182,9 +1188,6 @@ class LeaseLifecycle:
             path = self.state.directory / ("not-submitted-" + intent.role + ".json")
             if path.exists():
                 records.append(read_private(path))
-        path = self.state.directory / "issuer-stopped.json"
-        if path.exists():
-            records.append(fact(self.manifest, "issuer-stopped", read_private(path)))
         return records
 
     def cleanup_generation(
@@ -1299,6 +1302,7 @@ class LeaseLifecycle:
             )
             self.inventory.publish(record)
 
+    @publication_readback_budget()
     def reconcile(
         self,
         cleanup_providers: Mapping[ProviderKind, Provider],
@@ -1316,6 +1320,17 @@ class LeaseLifecycle:
         except LifecycleError, OSError, ValueError:
             observed, durable = {}, False
         local = self._local_facts()
+        try:
+            stopped = self.state.issuer_stop(
+                published=observed.get("issuer-stopped", {}).get("payload")
+            )
+            if stopped is not None:
+                local.append(fact(self.manifest, "issuer-stopped", stopped))
+        except LifecycleError, OSError, ValueError, KeyError:
+            # Invalid local retention evidence cannot certify closure or be
+            # republished. Exact child ownership still permits revocation.
+            observed.pop("issuer-stopped", None)
+            durable = False
         for record in local:
             slot = str(record["slot"])
             if slot in observed and observed[slot] != record:
