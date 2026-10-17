@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -22,6 +23,7 @@ from scripts import m3_11_qualification_evidence as evidence
 from scripts.check_m3_7_production_edge import (
     ZONE_ID_PATTERN,
     CloudflareClient,
+    CloudflareReadError,
     _require_zone_identity,
 )
 from scripts.check_m3_10_provider import check_caddy_token, required
@@ -191,9 +193,19 @@ class DnsWitness:
         ):
             raise ValueError("public DNS original context or private names changed")
         started = _now()
-        inventories = {
-            domain: self._records(zone_id, name) for domain, zone_id, name in self.coordinates
-        }
+        sample_started = time.monotonic()
+        try:
+            inventories = {
+                domain: self._records(zone_id, name) for domain, zone_id, name in self.coordinates
+            }
+        except CloudflareReadError as error:
+            # Fixed phase/sequence only; the original names and partial inventory
+            # remain private. No complete observation or retry authority exists.
+            error.add_note(
+                f"Public DNS witness phase={kind} sequence={self.sequence} "
+                f"elapsed_seconds={time.monotonic() - sample_started:.6f}"
+            )
+            raise
         zones = {
             domain: {"zone_id": zone_id, "name": name, "records": inventories[domain]}
             for domain, zone_id, name in self.coordinates

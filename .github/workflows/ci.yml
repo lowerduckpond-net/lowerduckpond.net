@@ -63,7 +63,8 @@ jobs:
   python:
     name: Python
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Keep >=1.5x the slowest recent completed job, including setup (662s).
+    timeout-minutes: 20
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -331,8 +332,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: >-
       ${{ contains(fromJSON('["combined-reconstruction","production-rollout","failed-retirement"]'), matrix.case) && 90 ||
-          matrix.case == 'audit-protection' && 75 ||
-          contains(fromJSON('["core","archive-cycles","backup-mutation-overlap","restore-reconstruction","restore-tls-bootstrap","restore-negative"]'), matrix.case) && 60 ||
+          contains(fromJSON('["audit-protection","restore-reconstruction"]'), matrix.case) && 75 ||
+          contains(fromJSON('["core","archive-cycles","backup-mutation-overlap","backup-coherence","restore-tls-bootstrap","restore-negative"]'), matrix.case) && 60 ||
           45 }}
     strategy:
       fail-fast: false
