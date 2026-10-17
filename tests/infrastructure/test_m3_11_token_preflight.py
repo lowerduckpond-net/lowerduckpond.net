@@ -12,7 +12,11 @@ from scripts import check_m3_10_provider as provider
 from scripts import m3_11_token_preflight as preflight
 from scripts import qualification_deadline as deadline
 from scripts.check_m3_7_production_edge import ProductionEdgePreflightError
-from scripts.qualification_budget import MINIMUM_TOKEN_REMAINING, TOKEN_CLEANUP_MARGIN
+from scripts.qualification_budget import (
+    ATTEMPT_SECONDS,
+    MINIMUM_TOKEN_REMAINING,
+    TOKEN_CLEANUP_MARGIN,
+)
 
 from .test_m3_10_runtime_token import _ACCOUNT, _SECRETS, TokenFixture
 
@@ -65,8 +69,8 @@ def install(monkeypatch: pytest.MonkeyPatch, fixture: Tokens) -> None:
         timedelta(seconds=-1),
         timedelta(),
         timedelta(hours=3),
-        timedelta(hours=12, seconds=-1),
-        timedelta(hours=12),
+        timedelta(hours=13, seconds=-1),
+        timedelta(hours=13),
         timedelta(days=5),
     ],
 )
@@ -75,12 +79,12 @@ def test_start_checks_remaining_time_accepting_rolled_original_dates(
 ) -> None:
     fixture = Tokens(role, remaining)
     install(monkeypatch, fixture)
-    if remaining >= timedelta(hours=12):
+    if remaining >= timedelta(hours=13):
         preflight.check(ENVIRONMENT, now=NOW)
         assert ("audit", f"/accounts/{_ACCOUNT}/tokens/verify") in fixture.calls
         assert ("pages", "/user/tokens/verify") in fixture.calls
     else:
-        message = "expire within" if remaining <= timedelta() else "at least 12 hours remaining"
+        message = "expire within" if remaining <= timedelta() else "at least 13 hours remaining"
         with pytest.raises(ProductionEdgePreflightError, match=message) as caught:
             preflight.check(ENVIRONMENT, now=NOW)
         assert ("token-audit" if role == "audit" else "Page Rules") in str(caught.value)
@@ -101,20 +105,21 @@ def test_start_keeps_existing_maximum_remaining_validity(
 def test_in_run_policy_checks_do_not_restart_the_full_run_lifetime_requirement(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fixture = Tokens("audit", timedelta(hours=12))
-    fixture.page_expiry = NOW + timedelta(hours=12)
+    fixture = Tokens("audit", timedelta(hours=13))
+    fixture.page_expiry = NOW + timedelta(hours=13)
     install(monkeypatch, fixture)
     preflight.check(ENVIRONMENT, now=NOW)
     later = NOW + timedelta(hours=11)
     provider.page_rules_client(ENVIRONMENT, now=later)
     provider.check_caddy_token(ENVIRONMENT, account_id=_ACCOUNT, now=later)
-    with pytest.raises(ProductionEdgePreflightError, match="at least 12 hours remaining"):
+    with pytest.raises(ProductionEdgePreflightError, match="at least 13 hours remaining"):
         preflight.check(ENVIRONMENT, now=later)
 
 
 def test_token_reserve_covers_the_actual_supervisor_ceiling_and_cleanup_margin() -> None:
-    required = timedelta(seconds=deadline.LIVE_SECONDS) + TOKEN_CLEANUP_MARGIN
+    required = timedelta(seconds=ATTEMPT_SECONDS) + TOKEN_CLEANUP_MARGIN
     assert required == MINIMUM_TOKEN_REMAINING
+    assert ATTEMPT_SECONDS > deadline.LIVE_SECONDS
     assert timedelta(hours=2) == TOKEN_CLEANUP_MARGIN
     shutdown_and_reporting = deadline.REPORT_SECONDS + 4 * deadline.GRACE_SECONDS
     assert TOKEN_CLEANUP_MARGIN.total_seconds() > shutdown_and_reporting
@@ -131,7 +136,7 @@ def test_token_command_reports_safe_actionable_outcome(
     monkeypatch.setattr(sys, "argv", ["token-preflight"])
     assert preflight.main() == (1 if short else 0)
     output = capsys.readouterr()
-    assert "12 hours remaining" in (output.err if short else output.out)
+    assert "13 hours remaining" in (output.err if short else output.out)
     assert all(value not in output.out + output.err for value in _SECRETS.values())
 
 

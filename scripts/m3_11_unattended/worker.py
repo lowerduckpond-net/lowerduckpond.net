@@ -14,7 +14,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from scripts import qualification_allocation, qualification_deadline
+from scripts import qualification_allocation, qualification_budget, qualification_deadline
 from scripts.m3_10_qualification_report import verify_report
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
@@ -45,6 +45,7 @@ from scripts.m3_11_unattended.lifecycle import (
 from scripts.m3_11_unattended.model import (
     Credential,
     Intent,
+    LeaseManifest,
     LifecycleError,
     digest,
     identity,
@@ -56,6 +57,7 @@ from scripts.m3_11_unattended.state import (
     LeaseState,
     RunState,
     cleanup_lock,
+    journey_result,
     private_directory,
 )
 from scripts.production_qualification_inputs import current_candidate, fingerprint, revision
@@ -203,7 +205,7 @@ class Worker:
         self.revision = revision(self.binding["source_revision"])
         self.directory = directory
         self.pending = qualification_deadline.Interruption()
-        self.ends_at = time.monotonic() + qualification_deadline.LIVE_SECONDS
+        self.ends_at = time.monotonic() + qualification_budget.ATTEMPT_SECONDS
         if config.mode != "controller":
             raise LifecycleError("cleanup-only configuration cannot launch qualification")
         self.lease_id = identity(self.request["lease_id"])
@@ -240,7 +242,7 @@ class Worker:
         if self.state.cancelled or self.state.stopped or self.pending.signum is not None:
             raise LifecycleError("qualification was cancelled")
         if time.monotonic() >= self.ends_at:
-            raise LifecycleError("qualification exceeded its original 600-minute ceiling")
+            raise LifecycleError("qualification exceeded its original attempt ceiling")
 
     def remember(self, intent: Intent, credential: Credential) -> None:
         write_private(
@@ -711,30 +713,69 @@ class Worker:
             self._cleanup_progress("finished", "unresolved")
             return False
 
-    def _terminal(self) -> None:
-        retain = False
-        try:
-            if self.lifecycle is not None and (self.directory / "journey-result.json").exists():
-                result = read_private(self.directory / "journey-result.json")
-                retain = (
-                    self.request["mode"] == "qualification"
-                    and self.lifecycle.manifest.policy.retain_after_failure
-                    and not self.state.cancelled
-                    and self.attempt_started
-                    and (self.directory / "attempt-started.json").exists()
-                    and (not self.pending.signum or (self.directory / "stop-attempt.json").exists())
-                    and result["outcome"] in {"failed", "interrupted"}
-                    and (self.directory / "runtime-inputs.json").exists()
-                    and not any(slot.startswith("close-") for slot in self.lifecycle.records())
+    def _retention_allowed(self, manifest: LeaseManifest) -> bool:
+        """Local proof survives restart; it never establishes remote readiness."""
+        return (
+            self.request["mode"] == "qualification"
+            and manifest.policy.retain_after_failure
+            and not self.state.cancelled
+            and datetime.now(UTC) < manifest.policy.deadline(instant(manifest.created_at))
+            and (self.directory / "journey-result.json").exists()
+            and journey_result(self.directory)["outcome"] in {"failed", "interrupted"}
+            and read_private(self.directory / "attempt.json")["binding"] == self.binding
+            and (self.directory / "attempt-started.json").exists()
+            and read_private(self.directory / "attempt-started.json")
+            == {"binding_sha256": digest(self.binding), "manifest_sha256": manifest.sha256}
+            and (
+                # Preserve the uninterrupted execution's retention behavior;
+                # restart must instead prove original host command drainage.
+                (self.attempt_started and (self.directory / "runtime-inputs.json").exists())
+                or (
+                    (self.directory / "host-drained.json").exists()
+                    and read_private(self.directory / "host-drained.json")
+                    == {"binding_sha256": digest(self.binding), "drained": True}
                 )
-            if retain:
-                # Retention is not release: the durable runtime-use owner stays
-                # held until exact host/guest quiescence is verified separately.
-                (self.directory / "runtime-inputs.json").unlink(missing_ok=True)
-                self._cleanup_progress("finished", "pending")
-            else:
+            )
+            and (not self.pending.signum or (self.directory / "stop-attempt.json").exists())
+            and self.lease_state.issuer_stop() is not None
+            and not any(self.lease_state.directory.glob("close-*.json"))
+        )
+
+    def _terminal(self) -> None:
+        try:
+            if not (self.lease_state.directory / "manifest.json").exists():
                 self.revoke()
-        except (RuntimeError, OSError, ValueError) as error:
+                return
+            manifest = self.lease_state.manifest()
+            if not self._retention_allowed(manifest):
+                self.revoke()
+                return
+            try:
+                # Reconstruct without issuing credentials or replaying work.
+                if self.lifecycle is None:
+                    self.lifecycle = LeaseLifecycle(
+                        manifest, self._inventory(), self.lease_state, providers={}
+                    )
+                closing = any(slot.startswith("close-") for slot in self.lifecycle.records())
+            except (RuntimeError, OSError, ValueError, KeyError, TypeError) as error:
+                # Reader uncertainty is not a new close request. Preserve the
+                # original evidence/ownership and let both cleanup paths observe
+                # existing close facts. This also applies to later retry cycles.
+                self._failure(error, cleanup_failed=True)
+                self._cleanup_progress("finished", "unresolved")
+                if not self._retention_allowed(manifest):
+                    self.revoke()
+                return
+            # Recheck cancellation/expiry after the potentially slow remote read.
+            if closing or not self._retention_allowed(manifest):
+                self.revoke()
+                return
+            # Retention is not release: exact guest quiescence is separate.
+            (self.directory / "runtime-inputs.json").unlink(missing_ok=True)
+            # A retention decision cannot repair a previous cleanup error.
+            if self.state.status()["credential_cleanup"] != "unresolved":
+                self._cleanup_progress("finished", "pending")
+        except (RuntimeError, OSError, ValueError, KeyError, TypeError) as error:
             self._failure(error, cleanup_failed=True)
             self.revoke()
 
@@ -873,13 +914,10 @@ def main() -> int:
             # failures to an hourly cadence without consuming the shared quota.
             time.sleep(retry_seconds)
             if worker.state.status()["credential_cleanup"] != "verified":
-                if worker.lifecycle is not None and not worker.state.cancelled:
-                    manifest = worker.lifecycle.manifest
-                    if datetime.now(UTC) < manifest.policy.deadline(
-                        instant(manifest.created_at)
-                    ) and not any(slot.startswith("close-") for slot in worker.lifecycle.records()):
-                        continue
-                verified = worker.revoke()
+                # Use the same durable retention/uncertainty decision after
+                # restart and on every later cleanup retry.
+                worker._terminal()
+                verified = worker.state.status()["credential_cleanup"] == "verified"
                 retry_seconds = (
                     cleanup.REMOTE_SECONDS
                     if verified

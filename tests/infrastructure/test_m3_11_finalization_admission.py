@@ -11,7 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from scripts import qualification_deadline
+from scripts import qualification_budget
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_unattended import cleanup, watchdog, worker
 from scripts.m3_11_unattended.config import LeaseConfiguration
@@ -26,8 +26,9 @@ from .test_m3_11_unattended_controller import subject
 
 
 @pytest.mark.parametrize("terminal_first", [False, True])
+@pytest.mark.parametrize("expired", [False, True])
 def test_timeout_during_drain_preserves_approved_retention(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal_first: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, terminal_first: bool, expired: bool
 ) -> None:
     case = Case(tmp_path, monkeypatch)
     case.execute()
@@ -44,9 +45,10 @@ def test_timeout_during_drain_preserves_approved_retention(
         {"binding_sha256": digest(binding), "manifest_sha256": case.manifest.sha256},
     )
     started = read_private(directory / "attempt.json")
-    started["started_at"] = stamp(
-        datetime.now(UTC) - timedelta(seconds=qualification_deadline.LIVE_SECONDS + 1)
-    )
+    elapsed = (
+        qualification_budget.ATTEMPT_SECONDS if expired else qualification_budget.LIVE_SECONDS
+    ) + 1
+    started["started_at"] = stamp(datetime.now(UTC) - timedelta(seconds=elapsed))
     replace_private(directory / "attempt.json", started)
     docker = Mock()
     docker.owned.return_value = {"State": {"Running": True}}
@@ -54,7 +56,9 @@ def test_timeout_during_drain_preserves_approved_retention(
         state.finish_journey("failed", 124)
     watchdog.due_processes(directory.parent, cast(Docker, docker))
     assert not state.cancelled
-    assert state.stopped is not terminal_first
+    assert state.stopped is (expired and not terminal_first)
+    if not expired or terminal_first:
+        docker.command.assert_not_called()
     assert watchdog.prepare_lease_cleanup(directory.parent, cast(Docker, docker), case.inventory)
     assert not any(case.state.directory.glob("close-*.json"))
     if not terminal_first:
