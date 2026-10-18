@@ -90,6 +90,9 @@ python_version = "3.14"
 strict = true
 warn_unreachable = true
 files = [
+  "scripts/cloudflare_read_transport.py",
+  "tests/infrastructure/cloudflare_transport_support.py",
+  "tests/infrastructure/test_cloudflare_read_transport.py",
   "scripts/qualification_pebble.py",
   "tests/infrastructure/test_pebble_download.py",
   "scripts/m3_11_unattended",

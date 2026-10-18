@@ -16,6 +16,22 @@ CANARY = "private-provider-response-canary"
 FAILURE_STATUS = 7
 
 
+@pytest.mark.parametrize("filename", ["qualification_timing.py", "qualification_failure.py"])
+def test_direct_entrypoint_can_load_shared_groups_outside_checkout(
+    tmp_path: Path, filename: str
+) -> None:
+    result = subprocess.run(  # noqa: S603 - fixed local diagnostic entrypoints, help only
+        [sys.executable, "-I", "-B", str(ROOT / "scripts" / filename), "--help"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout
+
+
 @pytest.fixture
 def run_directory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     directory = tmp_path / "run"

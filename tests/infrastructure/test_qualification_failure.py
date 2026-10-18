@@ -16,6 +16,7 @@ from lowerduckpond_static_host_agent import archive_configuration
 from scripts import qualification_failure as failure
 from scripts import qualification_probe as probe
 from scripts import qualification_restore as restore
+from scripts import qualification_task_timing as tasks
 from scripts import qualification_timing as timing
 from scripts.m3_10_qualification_report import verify_report
 
@@ -187,6 +188,14 @@ def test_ansible_failure_records_source_and_classification_without_module_output
     )
     report = json.loads(failure.collect(directory, 2).read_text())
     assert report["ansible_failure"] == {
+        "scope": "first-recorded-task-failure",
+        "terminal_cause": "unestablished",
+        "context": {
+            "group": "unknown",
+            "phase": "unknown",
+            "process": "unknown",
+            "start_ns": "unknown",
+        },
         "outcome": "failed",
         "action": "ansible.builtin.apt",
         "source": {"path": "config/ansible/playbooks/site.yml", "line": 17},
@@ -208,6 +217,14 @@ def test_ansible_failure_rejects_unowned_source_and_dynamic_action(
         outcome="failed",
     )
     assert failure.ansible_failure(directory) == {
+        "scope": "first-recorded-task-failure",
+        "terminal_cause": "unestablished",
+        "context": {
+            "group": "unknown",
+            "phase": "unknown",
+            "process": "unknown",
+            "start_ns": "unknown",
+        },
         "outcome": "failed",
         "action": "unknown",
         "source": {"path": "unknown", "line": "unknown"},
@@ -226,6 +243,60 @@ def test_capacity_preflight_failure_has_a_fixed_ansible_category(directory: Path
         outcome="failed",
     )
     assert failure.ansible_failure(directory)["category"] == "capacity-prerequisite"
+
+
+def test_nested_ansible_failure_keeps_its_own_context_when_later_test_fails(
+    directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(failure, "bounded_command", lambda *args, **kwargs: None)
+    monkeypatch.setenv(timing.CONTEXT_ENV, "core")
+    source = failure.ROOT / "config/ansible/roles/static_host_agent/tasks/main.yml"
+    with timing.measure("group"):
+        task = tasks.start_task("converge", "ansible.builtin.assert", f"{source}:139")
+        assert task is not None
+        failure.record_ansible_failure(
+            "ansible.builtin.assert",
+            f"{source}:139",
+            {"msg": CANARY},
+            outcome="failed",
+            task=task,
+        )
+        tasks.finish_task(task, "failed")
+    original = (directory / "failure-ansible.json").read_bytes()
+    # The fixture's test marker is synthetic; replace it to model the later
+    # terminal test, without modifying the original Ansible record.
+    (directory / "failure-test.json").unlink()
+    monkeypatch.setenv(timing.CONTEXT_ENV, "combined-reconstruction")
+    failure.record_test_failure("test-error", file="public_ca_recovery.py", line=258)
+    report = json.loads(failure.collect(directory, FAILURE_STATUS).read_text())
+    assert report["group"] == "combined-reconstruction"
+    recorded = report["ansible_failure"]
+    assert recorded["context"] == {
+        key: task[key] for key in ("group", "phase", "process", "start_ns")
+    }
+    assert recorded["scope"] == "first-recorded-task-failure"
+    assert recorded["terminal_cause"] == "unestablished"
+    assert (directory / "failure-ansible.json").read_bytes() == original
+    events = [
+        json.loads(line) for line in (directory / "timing-events.jsonl").read_text().splitlines()
+    ]
+    assert events[-1]["group"] == "core" and events[-1]["outcome"] == "completed"
+    assert CANARY not in json.dumps(report)
+
+
+@pytest.mark.parametrize("invalid", [True, -1, 2**63, CANARY])
+def test_ansible_context_rejects_payloads_and_out_of_range_coordinates(
+    directory: Path, invalid: object
+) -> None:
+    failure.record_ansible_failure(
+        "ansible.builtin.assert",
+        "unknown",
+        {"msg": CANARY},
+        outcome="failed",
+        task={"group": CANARY, "phase": CANARY, "process": invalid, "start_ns": invalid},
+    )
+    assert set(failure.ansible_failure(directory)["context"].values()) == {"unknown"}  # type: ignore[attr-defined]
+    assert CANARY not in (directory / "failure-ansible.json").read_text()
 
 
 @pytest.mark.parametrize(

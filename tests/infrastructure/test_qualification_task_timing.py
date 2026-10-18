@@ -11,8 +11,10 @@ from typing import Any, cast
 import pytest
 from molecule_plugins import docker
 
+from scripts import qualification_failure as failure
 from scripts import qualification_task_timing as tasks
 from scripts import qualification_timing as timing
+from scripts.qualification_groups import GROUPS as INSTALLED_GROUPS
 
 CANARY = "private-task-name-argument-host-path-result"
 FAILURE_STATUS = 7
@@ -45,8 +47,38 @@ def test_overlapping_playbooks_preserve_completed_and_unfinished_tasks(directory
     assert CANARY not in json.dumps(report)
 
 
-def test_external_molecule_build_has_stable_source_without_absolute_paths(directory: Path) -> None:
+@pytest.mark.parametrize("group", INSTALLED_GROUPS)
+def test_installed_groups_survive_task_failure_and_timing_reports(
+    directory: Path, monkeypatch: pytest.MonkeyPatch, group: str
+) -> None:
+    monkeypatch.setenv(timing.CONTEXT_ENV, group)
+    with timing.measure("ansible-reapply"):
+        task = tasks.start_task("converge", "ansible.builtin.assert", f"{SOURCE}:1")
+        assert task is not None
+        failure.record_ansible_failure(
+            "ansible.builtin.assert",
+            f"{SOURCE}:1",
+            {"msg": CANARY},
+            outcome="failed",
+            task=task,
+        )
+        tasks.finish_task(task, "failed")
+    assert summary(directory)["longest_completed"][0]["group"] == group
+    context = cast(dict[str, object], failure.ansible_failure(directory)["context"])
+    assert context["group"] == group
+    assert timing._events(directory / "timing-events.jsonl")[0]["group"] == group
+    assert CANARY not in (directory / "failure-ansible.json").read_text()
+
+
+@pytest.mark.parametrize("alias", [False, True])
+def test_external_molecule_build_has_stable_source_without_absolute_paths(
+    directory: Path, monkeypatch: pytest.MonkeyPatch, alias: bool
+) -> None:
     source = Path(docker.__file__).parent / "playbooks/create.yml"
+    if alias:
+        link = directory / "plugin"
+        link.symlink_to(Path(docker.__file__).parent, target_is_directory=True)
+        monkeypatch.setattr(docker, "__file__", str(link / "__init__.py"))
     task = tasks.start_task("create", "community.docker.docker_image", f"{source}:104")
     assert task is not None
     assert task["source"] == "molecule-plugins/docker/create.yml"
@@ -208,3 +240,37 @@ def test_real_ansible_sigkill_keeps_inflight_no_log_task(directory: Path) -> Non
     assert report["ansible_tasks"]["completed_count"] == 0
     assert CANARY not in json.dumps(report)
     assert not (directory / "case.json").exists()
+
+
+@pytest.mark.parametrize("group", ["core", "backup-coherence"])
+def test_real_ansible_callback_binds_failure_to_its_task_context(
+    directory: Path, group: str
+) -> None:
+    playbook = directory / "negative.yml"
+    playbook.write_text(
+        "- hosts: localhost\n  gather_facts: false\n  tasks:\n"
+        "    - ansible.builtin.assert:\n        that: false\n      no_log: true\n"
+    )
+    result = subprocess.run(  # noqa: S603 - local assert-only fixture; no provider or host changes
+        [
+            str(timing.ROOT / ".venv/bin/ansible-playbook"),
+            "-i",
+            "localhost,",
+            "-c",
+            "local",
+            str(playbook),
+        ],
+        env={**timing.child_environment(directory), timing.CONTEXT_ENV: group},
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode != 0
+    failure = json.loads((directory / "failure-ansible.json").read_text())
+    journal = [json.loads(line) for line in (directory / tasks.JOURNAL).read_text().splitlines()]
+    failed = next(row for row in journal if row["outcome"] == "failed")
+    assert failure["context"] == {
+        key: failed[key] for key in ("process", "group", "phase", "start_ns")
+    }
+    assert failure["context"]["group"] == group
+    assert failure["no_log"] is True

@@ -20,9 +20,13 @@ from pathlib import Path
 from typing import TypedDict, cast
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from scripts.qualification_groups import GROUPS as INSTALLED_GROUPS  # noqa: E402
+
 EVENT_ENV = "LDP_QUALIFICATION_TIMING_EVENTS"
 CONTEXT_ENV = "LDP_QUALIFICATION_TIMING_GROUP"
-GROUPS = frozenset(
+# Installed selections share their authoritative names; retain full-journey labels too.
+GROUPS = frozenset(INSTALLED_GROUPS) | frozenset(
     {
         "failed-retirement",
         "unclassified",

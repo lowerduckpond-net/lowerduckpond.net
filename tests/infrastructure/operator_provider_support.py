@@ -18,6 +18,7 @@ from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 from scripts.m3_11_unattended import spaces
 from scripts.m3_11_unattended.model import Targets, stamp
 
+from .cloudflare_transport_support import mock_urlopen
 from .operator_flow_support import Services
 from .test_m3_11_lease_configuration import mapping
 
@@ -162,7 +163,7 @@ class Cloud:
             assert result["status"] == 200  # noqa: PLR2004 - concrete synthetic contract cardinality or protocol value
             return Response(json.dumps(result["body"]).encode())
 
-        monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+        mock_urlopen(monkeypatch, urlopen)
 
     def s3(self, *, access_key_id: str, **_kwargs: object) -> object:
         def listing(**_parameters: object) -> dict[str, object]:

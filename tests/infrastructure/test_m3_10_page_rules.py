@@ -13,6 +13,7 @@ from scripts import check_m3_10_provider as provider
 from scripts.check_m3_7_production_edge import CloudflareClient, ProductionEdgePreflightError
 from scripts.m3_10_page_rules import PageRulesClient
 
+from .cloudflare_transport_support import mock_urlopen
 from .test_m3_7_production_gate import _certificate_fixture, _CloudflareResponse
 from .test_m3_10_production_gate import Edge
 
@@ -56,7 +57,7 @@ def test_cfut_token_is_sent_intact_only_to_user_verification_and_page_rules(
             {"success": True, "result": raw.get(request.full_url[len(root) :])}
         )
 
-    monkeypatch.setattr(urllib.request, "urlopen", respond)
+    mock_urlopen(monkeypatch, respond)
     pages = PageRulesClient(CloudflareClient(canary), zone_ids=_ZONES, now=_NOW)
     for zone in sorted(_ZONES):
         assert pages.get(f"/zones/{zone}/pagerules") == []

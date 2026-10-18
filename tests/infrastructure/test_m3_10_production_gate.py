@@ -27,6 +27,7 @@ from scripts.check_m3_10_provider import (
 )
 from scripts.m3_10_page_rules import PageRulesClient
 
+from .cloudflare_transport_support import mock_urlopen
 from .test_m3_7_production_gate import _certificate_fixture, _CloudflareResponse
 
 ROOT = Path(__file__).parents[2]
@@ -313,7 +314,7 @@ def test_edge_inventory_uses_the_single_page_api_and_refuses_denial(
         return _CloudflareResponse({"success": True, "result": []}, status=200 if allowed else 403)
 
     monkeypatch.setattr(edge, "get", get)
-    monkeypatch.setattr(urllib.request, "urlopen", response)
+    mock_urlopen(monkeypatch, response)
     with nullcontext() if allowed else pytest.raises(ProductionEdgePreflightError):
         edge_gate(edge)
     assert requested == ["https://api.cloudflare.com/client/v4/zones/" + "a" * 32 + endpoint]

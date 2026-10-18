@@ -480,7 +480,14 @@ def test_generated_verifier_preserves_phase_for_failure_before_pytest(
     assert not (tmp_path / "failure-test.json").exists()
     report = json.loads(failure.collect(tmp_path, result.returncode).read_text())
     assert report["phase"] == "verify"
+    tasks = [
+        json.loads(line) for line in (tmp_path / "timing-tasks.jsonl").read_text().splitlines()
+    ]
+    failed = next(task for task in tasks if task["outcome"] == "failed")
     assert report["ansible_failure"] == {
+        "scope": "first-recorded-task-failure",
+        "terminal_cause": "unestablished",
+        "context": {key: failed[key] for key in ("process", "group", "phase", "start_ns")},
         "outcome": "failed",
         "action": "ansible.builtin.assert",
         "source": {

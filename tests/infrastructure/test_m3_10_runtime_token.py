@@ -14,6 +14,7 @@ import pytest
 from scripts import check_m3_10_provider as provider
 from scripts.check_m3_7_production_edge import CloudflareClient, ProductionEdgePreflightError
 
+from .cloudflare_transport_support import mock_urlopen
 from .test_m3_7_production_gate import _CloudflareResponse
 
 _ACCOUNT = "a" * 32
@@ -275,7 +276,7 @@ def test_cfat_runtime_and_auditor_use_account_endpoints_with_intact_bearer_token
         query = dict(urllib.parse.parse_qsl(target.query))
         return _CloudflareResponse({"success": True, "result": fixture.response(role, path, query)})
 
-    monkeypatch.setattr(urllib.request, "urlopen", respond)
+    mock_urlopen(monkeypatch, respond)
     provider.check_caddy_token(
         {
             "CLOUDFLARE_API_TOKEN": _SECRETS["edge"],

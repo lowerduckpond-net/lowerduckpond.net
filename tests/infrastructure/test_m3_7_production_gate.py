@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -11,6 +10,8 @@ import pytest
 
 from scripts import check_m3_7_production_edge
 from scripts.check_m3_7_production_edge import ProductionEdgePreflightError
+
+from .cloudflare_transport_support import mock_urlopen
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
 PREFLIGHT = (REPOSITORY_ROOT / "scripts/preflight-m3-7-production").resolve()
@@ -231,7 +232,7 @@ def test_cloudflare_collection_follows_and_validates_every_page(
         requested_urls.append(request.full_url)  # type: ignore[attr-defined]
         return _CloudflareResponse(next(payloads))
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    mock_urlopen(monkeypatch, fake_urlopen)
 
     client = check_m3_7_production_edge.CloudflareClient("x" * 20)
     collection = client.get_collection("/zones/zone/rulesets")
@@ -254,7 +255,7 @@ def test_cloudflare_collection_accepts_proven_empty_inventory(
         assert timeout == check_m3_7_production_edge.API_TIMEOUT_SECONDS
         return _CloudflareResponse(payload)
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    mock_urlopen(monkeypatch, fake_urlopen)
 
     client = check_m3_7_production_edge.CloudflareClient("x" * 20)
 
@@ -270,7 +271,7 @@ def test_aop_setting_alone_accepts_cloudflare_live_202(
         assert timeout == check_m3_7_production_edge.API_TIMEOUT_SECONDS
         return _CloudflareResponse(payload, status=202)
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    mock_urlopen(monkeypatch, fake_urlopen)
 
     client = check_m3_7_production_edge.CloudflareClient("x" * 20)
     zone_id = "1" * 32
@@ -304,7 +305,7 @@ def test_cloudflare_cursor_collection_follows_every_cursor(
         requested_urls.append(request.full_url)  # type: ignore[attr-defined]
         return _CloudflareResponse(next(payloads))
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    mock_urlopen(monkeypatch, fake_urlopen)
 
     client = check_m3_7_production_edge.CloudflareClient("x" * 20)
     collection = client.get_cursor_collection("/zones/zone/rulesets")
@@ -335,7 +336,7 @@ def test_cloudflare_cursor_collection_accepts_optional_terminal_metadata(
         assert timeout == check_m3_7_production_edge.API_TIMEOUT_SECONDS
         return _CloudflareResponse(payload)
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    mock_urlopen(monkeypatch, fake_urlopen)
 
     client = check_m3_7_production_edge.CloudflareClient("x" * 20)
 
@@ -361,7 +362,7 @@ def test_cloudflare_cursor_collection_rejects_malformed_present_metadata(
         assert timeout == check_m3_7_production_edge.API_TIMEOUT_SECONDS
         return _CloudflareResponse(payload)
 
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    mock_urlopen(monkeypatch, fake_urlopen)
 
     client = check_m3_7_production_edge.CloudflareClient("x" * 20)
 
