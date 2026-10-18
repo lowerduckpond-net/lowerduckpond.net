@@ -104,7 +104,7 @@ def _known_source(path: Path) -> str:
     from molecule_plugins import docker  # noqa: PLC0415
 
     for name in ("create", "destroy"):
-        if path == Path(docker.__file__).parent / "playbooks" / f"{name}.yml":
+        if path == (Path(docker.__file__).parent / "playbooks" / f"{name}.yml").resolve():
             return f"molecule-plugins/docker/{name}.yml"
     return "unknown"
 

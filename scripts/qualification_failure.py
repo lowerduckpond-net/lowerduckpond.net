@@ -17,6 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts.qualification_context import host_name  # noqa: E402
+from scripts.qualification_groups import GROUPS as INSTALLED_GROUPS  # noqa: E402
 from scripts.qualification_probe import (  # noqa: E402 - standalone entry point import root
     DIGEST,
     OPERATIONS,
@@ -56,7 +57,7 @@ PHASES = frozenset(
         "other-playbook",
     }
 )
-GROUPS = frozenset(
+GROUPS = frozenset(INSTALLED_GROUPS) | frozenset(
     {
         "failed-retirement",
         "unclassified",
