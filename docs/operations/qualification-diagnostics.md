@@ -188,6 +188,13 @@ or qualification into a pass.
 
 The report separates:
 
+- The first recorded Ansible task failure, with its own allowlisted group,
+  playbook phase, process ID and monotonic task start when captured. These
+  coordinates join the task timing journal and enclosing group spans. A nested
+  refusal can be an expected part of a test that later passes; its source line
+  alone never establishes that fact or the cause of a later terminal failure.
+  Historical records without these coordinates remain unknown. The original
+  first-failure record is preserved.
 - The failed phase, verification group, fixed failure category, allowlisted
   test filename/line, original exit
   status, source revision, backend, and observed selected artifact digest.
@@ -315,6 +322,35 @@ and the existing independent operator storage proof; both are mandatory. The
 runtime-key inventory above does not replace that independent proof, which the
 report marks `not-collected`. Follow the M3.10 runbook for those checks. The
 passing-report validator rejects this diagnostic format and partial runs.
+
+### Cloudflare read connection diagnostics
+
+A failed read retains bounded exception types, numeric error codes, HTTP status
+when available, response byte count and monotonic elapsed time. Each observed
+HTTPS connection also records whether its immediate target was the origin or a
+configured proxy, and whether it failed during resolution/connection, proxy
+tunneling, or after TCP/tunnel establishment. The latter stages include socket
+setup and TLS; they do not identify the failing network hop by themselves.
+No address, hostname, URL, exception message, header or body is exported.
+
+When every resolved address fails, the standard library normally discards all
+but the final error. The request-local adapter captures bounded group members
+before re-raising that same final error through the existing urllib error path.
+It preserves address order, proxy selection, TLS verification and socket cleanup.
+A successful connection can still have earlier failed candidates which the
+standard library discards; its candidate-failure count remains unknown, not zero.
+Diagnostic truncation is explicit, and records from separate requests do not mix.
+
+These observations add no GET retries, extra connections or probes. The socket
+timeout remains a per-blocking-operation limit, not a whole-request deadline:
+DNS resolution, address iteration, TLS, redirects, body reads and pagination can
+consume additional wall time. The request-local opener also constructs a default
+TLS context and loads trust for each GET; request elapsed time includes this
+setup, while connection elapsed time begins afterward. Changed-path timing
+reviews must include that overhead without treating synthetic tests as live
+completion samples. Recovery deadlines, poisoned-witness behavior and
+the requirement for a fresh complete DNS-absence proof remain unchanged. Neither
+this diagnostic improvement nor a later successful request repairs a failed run.
 
 ## Reading the timing report
 

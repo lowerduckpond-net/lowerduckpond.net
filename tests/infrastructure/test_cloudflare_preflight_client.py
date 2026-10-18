@@ -29,6 +29,7 @@ from scripts.check_m3_7_production_edge import (
 )
 from scripts.m3_10_page_rules import PageRulesClient
 
+from .cloudflare_transport_support import mock_urlopen
 from .test_m3_7_production_gate import _CloudflareResponse
 
 _TOKEN = "cfat_workstation_test_canary_0000000000000000"  # noqa: S105 - synthetic canary
@@ -51,7 +52,7 @@ def test_transport_chain_and_monotonic_elapsed_survive_without_retry_or_secret_t
     ticks = iter([100.0, 137.5])
     monkeypatch.setattr(time, "monotonic", lambda: next(ticks))
     opener = Mock(side_effect=urllib.error.URLError(reason))
-    monkeypatch.setattr(urllib.request, "urlopen", opener)
+    mock_urlopen(monkeypatch, opener)
     with pytest.raises(CloudflareReadError) as raised:
         CloudflareClient(_TOKEN).get(f"/zones/{_ZONE}/dns_records", query={"name": _TOKEN})
     value = raised.value.diagnostic
@@ -81,7 +82,7 @@ def test_http_failure_keeps_status_but_never_retries_or_exports_headers(
             "https://example.invalid/" + _TOKEN, status, _TOKEN, headers, body
         )
     )
-    monkeypatch.setattr(urllib.request, "urlopen", opener)
+    mock_urlopen(monkeypatch, opener)
     with pytest.raises(CloudflareReadError) as raised:
         CloudflareClient(_TOKEN).get(f"/zones/{_ZONE}/dns_records")
     assert raised.value.diagnostic["http_status"] == status
@@ -99,7 +100,7 @@ def test_body_failure_retains_received_status_without_leaking_partial_content(
         response, "read", Mock(side_effect=http.client.IncompleteRead(_TOKEN.encode()))
     )
     opener = Mock(return_value=response)
-    monkeypatch.setattr(urllib.request, "urlopen", opener)
+    mock_urlopen(monkeypatch, opener)
     with pytest.raises(CloudflareReadError) as raised:
         CloudflareClient(_TOKEN).get(f"/zones/{_ZONE}/dns_records")
     value = raised.value.diagnostic
@@ -200,7 +201,7 @@ def test_cloudflare_failures_identify_the_endpoint_without_disclosing_secrets(
             status=202 if failure == "status" else 200,
         )
 
-    monkeypatch.setattr(urllib.request, "urlopen", respond)
+    mock_urlopen(monkeypatch, respond)
     client = CloudflareClient(_TOKEN)
     with pytest.raises(ProductionEdgePreflightError) as raised:
         client.get(path, query={"secret-canary": _TOKEN})
@@ -248,7 +249,7 @@ def test_edge_uses_account_verification_before_reading_legacy_page_rules(
         assert path == f"/zones/{_ZONE}/workers/routes"
         raise urllib.error.HTTPError(request.full_url, 403, "denied", Message(), None)
 
-    monkeypatch.setattr(urllib.request, "urlopen", respond)
+    mock_urlopen(monkeypatch, respond)
     with pytest.raises(
         ProductionEdgePreflightError,
         match="HTTP 403" if verified else "OpenTofu edge token did not verify as active",

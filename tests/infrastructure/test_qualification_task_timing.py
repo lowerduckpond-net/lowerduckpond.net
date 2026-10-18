@@ -208,3 +208,34 @@ def test_real_ansible_sigkill_keeps_inflight_no_log_task(directory: Path) -> Non
     assert report["ansible_tasks"]["completed_count"] == 0
     assert CANARY not in json.dumps(report)
     assert not (directory / "case.json").exists()
+
+
+def test_real_ansible_callback_binds_failure_to_its_task_context(directory: Path) -> None:
+    playbook = directory / "negative.yml"
+    playbook.write_text(
+        "- hosts: localhost\n  gather_facts: false\n  tasks:\n"
+        "    - ansible.builtin.assert:\n        that: false\n      no_log: true\n"
+    )
+    result = subprocess.run(  # noqa: S603 - local assert-only fixture; no provider or host changes
+        [
+            str(timing.ROOT / ".venv/bin/ansible-playbook"),
+            "-i",
+            "localhost,",
+            "-c",
+            "local",
+            str(playbook),
+        ],
+        env={**timing.child_environment(directory), timing.CONTEXT_ENV: "core"},
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode != 0
+    failure = json.loads((directory / "failure-ansible.json").read_text())
+    journal = [json.loads(line) for line in (directory / tasks.JOURNAL).read_text().splitlines()]
+    failed = next(row for row in journal if row["outcome"] == "failed")
+    assert failure["context"] == {
+        key: failed[key] for key in ("process", "group", "phase", "start_ns")
+    }
+    assert failure["context"]["group"] == "core"
+    assert failure["no_log"] is True

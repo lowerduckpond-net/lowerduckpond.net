@@ -26,6 +26,7 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.cloudflare_read_diagnostics import ReadDiagnostic
+from scripts.cloudflare_read_transport import open_request
 
 API_ROOT: Final = "https://api.cloudflare.com/client/v4"
 API_TIMEOUT_SECONDS: Final = 15
@@ -160,8 +161,10 @@ class CloudflareClient:
         )
         observation = ReadDiagnostic(API_TIMEOUT_SECONDS)
         try:
-            with urllib.request.urlopen(  # noqa: S310 -- request is bound to API_ROOT.
-                request, timeout=API_TIMEOUT_SECONDS
+            with open_request(
+                request,
+                timeout=API_TIMEOUT_SECONDS,
+                diagnostic=observation,
             ) as response:
                 observation.status(response.status)
                 observation.stage = "response-status"

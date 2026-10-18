@@ -322,7 +322,23 @@ def _ansible_category(action: str, result: dict[str, object], outcome: str) -> s
     return "module-exception" if "exception" in result else "module-failed"
 
 
-def record_ansible_failure(action: object, source: object, result: object, *, outcome: str) -> None:
+def _ansible_context(value: object) -> dict[str, object]:
+    context = value if isinstance(value, dict) else {}
+    return {
+        "group": label(context.get("group"), GROUPS),
+        "phase": label(context.get("phase"), PHASES),
+        **{
+            key: number
+            if type(number := context.get(key)) is int and 0 < number < 2**63
+            else UNKNOWN
+            for key in ("process", "start_ns")
+        },
+    }
+
+
+def record_ansible_failure(
+    action: object, source: object, result: object, *, outcome: str, task: object = None
+) -> None:
     """Record fixed classifications and source coordinates, never module output."""
     directory = _directory()
     if directory is None or (directory / "failure-ansible.json").exists():
@@ -354,6 +370,7 @@ def record_ansible_failure(action: object, source: object, result: object, *, ou
                     rc if type(rc) is int and -MAX_EXIT_STATUS <= rc <= MAX_EXIT_STATUS else UNKNOWN
                 ),
                 "no_log": values.get("_ansible_no_log") is True,
+                "context": _ansible_context(task),
             },
             first=True,
         )
@@ -635,6 +652,12 @@ def ansible_failure(directory: Path) -> dict[str, object]:
     path = source.get("path")
     status = ansible.get("return_code")
     return {
+        # A nested rejection can belong to a test which subsequently passes.
+        # Preserve the first record and its timing join; never classify expected
+        # failures from file/line alone or claim it caused the terminal exit.
+        "scope": "first-recorded-task-failure",
+        "terminal_cause": "unestablished",
+        "context": _ansible_context(ansible.get("context")),
         "outcome": label(ansible.get("outcome"), ANSIBLE_OUTCOMES),
         "action": (
             action
@@ -804,7 +827,8 @@ def collect(  # noqa: PLR0912, PLR0915 - validate and assemble one bounded diagn
         source = ansible["source"]
         assert isinstance(source, dict)  # noqa: S101 - constructed above
         print(
-            f"  Recorded Ansible failure (may be expected): {ansible['category']} "
+            "  First recorded Ansible failure (terminal cause unestablished): "
+            f"{ansible['category']} "
             f"in {ansible['action']} "
             f"at {source['path']}:{source['line']}."
         )

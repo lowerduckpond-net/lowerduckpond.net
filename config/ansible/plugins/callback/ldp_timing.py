@@ -107,6 +107,7 @@ class CallbackModule(CallbackBase):  # type: ignore[misc]
                 result._task.get_path(),
                 result._result,
                 outcome="failed",
+                task=self._task_timing,
             )
 
     def v2_runner_on_skipped(self, result: object) -> None:
@@ -120,6 +121,7 @@ class CallbackModule(CallbackBase):  # type: ignore[misc]
             result._task.get_path(),
             result._result,
             outcome="unreachable",
+            task=self._task_timing,
         )
 
     def v2_playbook_on_stats(self, stats: AggregateStats) -> None:
