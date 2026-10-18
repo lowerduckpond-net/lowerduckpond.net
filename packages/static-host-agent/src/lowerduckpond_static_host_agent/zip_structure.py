@@ -27,6 +27,7 @@ from lowerduckpond_static_host_agent.capacity import (
     measure_filesystem_capacity_descriptor,
 )
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
+from lowerduckpond_static_host_agent.parser_budget import bounded_parser_work
 from lowerduckpond_static_host_agent.release_tree import RELEASE_TREE_FORMAT
 
 MEBIBYTE: Final = 1024 * 1024
@@ -233,6 +234,7 @@ class _DescriptorSource:
 DEFAULT_ZIP_LIMITS: Final = ZipLimits()
 
 
+@bounded_parser_work
 def inspect_deployment_zip(
     path: Path,
     *,
@@ -284,6 +286,7 @@ def inspect_deployment_zip(
             os.close(descriptor)
 
 
+@bounded_parser_work
 def deployment_zip_release_tree_digest(
     path: Path,
     *,
@@ -342,6 +345,7 @@ def deployment_zip_release_tree_digest(
             os.close(descriptor)
 
 
+@bounded_parser_work
 def extract_deployment_zip(  # noqa: PLR0913,PLR0915 - explicit extraction trust workflow
     path: Path,
     *,

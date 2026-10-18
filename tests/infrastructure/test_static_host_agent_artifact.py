@@ -8,6 +8,7 @@ import os
 import runpy
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -17,6 +18,12 @@ from pathlib import Path
 
 import pytest
 from lowerduckpond_static_host_agent import ARCHIVE_SANDBOX_STATIC_PROPERTIES
+from lowerduckpond_static_host_agent.archive_transport import (
+    MAX_ARCHIVE_REQUEST_BYTES,
+    ArchiveChannel,
+)
+from lowerduckpond_static_host_agent.job_runtime import _RESULT_TOTAL_SECONDS
+from lowerduckpond_static_operator.client import _RESULT_WAIT_SECONDS
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
 BUILDER = (REPOSITORY_ROOT / "scripts/build-static-host-agent").resolve()
@@ -37,6 +44,41 @@ WORKER_UNIT_TEMPLATE = (
 )
 SELECTION_LOCK_NAME = "selection.lock"
 ARTIFACT_STAGING_TIMEOUT_SECONDS = 60
+
+
+def test_installed_helper_and_worker_budgets_fit_their_enclosing_protocols() -> None:
+    def seconds(template: Path, key: str) -> int:
+        value = next(
+            line.removeprefix(key + "=")
+            for line in template.read_text().splitlines()
+            if line.startswith(key + "=")
+        )
+        return int(value.removesuffix("min")) * 60 if value.endswith("min") else int(value[:-1])
+
+    worker = sum(
+        seconds(WORKER_UNIT_TEMPLATE, key)
+        for key in ("TimeoutStartSec", "RuntimeMaxSec", "TimeoutStopSec")
+    )
+    assert worker + 45 <= _RESULT_TOTAL_SECONDS
+    assert _RESULT_WAIT_SECONDS >= _RESULT_TOTAL_SECONDS + 60
+    sender, receiver = socket.socketpair()
+    with (
+        sender,
+        ArchiveChannel(
+            receiver,
+            expected_peer_uid=os.geteuid(),
+            maximum_receive_bytes=MAX_ARCHIVE_REQUEST_BYTES,
+        ),
+    ):
+        timeout = receiver.gettimeout()
+        assert timeout is not None
+        for name in ("construction", "cleanup", "export"):
+            template = WORKER_UNIT_TEMPLATE.parent / f"lowerduckpond-archive-{name}@.service.j2"
+            helper = sum(
+                seconds(template, key)
+                for key in ("TimeoutStartSec", "RuntimeMaxSec", "TimeoutStopSec")
+            )
+            assert timeout >= helper + 15
 
 
 def run(*arguments: str | os.PathLike[str]) -> subprocess.CompletedProcess[str]:
@@ -472,6 +514,10 @@ def test_dark_worker_unit_consumes_the_reviewed_sandbox_contract() -> None:
     # needs AF_UNIX sockets, pipe2, and resource-limit operations, while the
     # private network namespace and cgroup/rlimit ceilings remain fixed. The
     # archive helper itself retains the reviewed no-new-privileges policy.
+    # The installed executor enforces cumulative local parser work separately.
+    # Only the trusted coordinator can spend longer waiting for provider proofs.
+    expected["RuntimeMaxSec=5min"] -= 1
+    expected["RuntimeMaxSec=20min"] += 1
     expected["NoNewPrivileges=true"] -= 1
     expected["NoNewPrivileges=false"] += 1
     expected["CapabilityBoundingSet="] -= 1

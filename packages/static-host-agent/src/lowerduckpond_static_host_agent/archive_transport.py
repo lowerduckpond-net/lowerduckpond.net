@@ -23,7 +23,9 @@ from lowerduckpond_static_contracts import (
 
 MAX_ARCHIVE_REQUEST_BYTES: Final = 16 * 1024
 MAX_ARCHIVE_RESPONSE_BYTES: Final = 1024 * 1024
-_MAXIMUM_TIMEOUT: Final = 300.0
+# Socket activation may still be pending after connect: startup90 + runtime300
+# + stop15 + response15. Helper runtime and provider operation limits are unchanged.
+_MAXIMUM_TIMEOUT: Final = 420.0
 _MAGIC: Final = b"LDPARC1\0"
 _HEADER: Final = struct.Struct("!8sIB")
 _PEER_CREDENTIALS: Final = struct.Struct("=3i")

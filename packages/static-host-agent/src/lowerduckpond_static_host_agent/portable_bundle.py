@@ -36,6 +36,7 @@ from lowerduckpond_static_host_agent.capacity import (
     measure_filesystem_capacity_descriptor,
 )
 from lowerduckpond_static_host_agent.locks import LockManager, LockMode, LockName
+from lowerduckpond_static_host_agent.parser_budget import bounded_parser_work
 from lowerduckpond_static_host_agent.release_tree import (
     DEFAULT_RELEASE_TREE_LIMITS,
     RELEASE_TREE_FORMAT,
@@ -193,6 +194,7 @@ class _DigestWriter(Protocol):
     def update(self, value: bytes, /) -> None: ...
 
 
+@bounded_parser_work
 def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust workflow
     release_root: Path,
     manifest: dict[str, object],
@@ -385,6 +387,7 @@ def build_portable_bundle(  # noqa: PLR0912,PLR0913,PLR0915 - explicit trust wor
                 os.close(descriptor)
 
 
+@bounded_parser_work
 def inspect_portable_bundle(
     path: Path,
     *,
@@ -422,6 +425,7 @@ def inspect_portable_bundle(
             os.close(descriptor)
 
 
+@bounded_parser_work
 def inspect_portable_bundle_descriptor(
     descriptor: int,
     *,
@@ -457,6 +461,7 @@ def inspect_portable_bundle_descriptor(
             os.close(owned_descriptor)
 
 
+@bounded_parser_work
 def import_portable_bundle(  # noqa: PLR0913,PLR0915 - explicit import trust workflow
     path: Path,
     *,

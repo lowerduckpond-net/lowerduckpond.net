@@ -41,7 +41,8 @@ _CHUNK_BYTES: Final = 64 * 1024
 _ERROR_BYTES: Final = 4096
 _TRANSFER_TOTAL_SECONDS: Final = 20.0 * 60.0
 _TRANSFER_IDLE_SECONDS: Final = 30.0
-_RESULT_WAIT_SECONDS: Final = 5.0 * 60.0 + 30.0
+# Server completion 1560 + intake/handoff/header margin 60; transfer bounds stay separate.
+_RESULT_WAIT_SECONDS: Final = 27.0 * 60.0
 _RENAME_NOREPLACE: Final = 1
 
 

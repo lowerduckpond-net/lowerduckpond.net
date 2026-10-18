@@ -29,6 +29,21 @@ _PRIVATE_MODE = 0o600
 _TEST_TIMEOUT_CEILING_SECONDS = 5
 
 
+def test_silent_result_budget_encloses_server_work_without_relaxing_transfer_idle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = 0.0
+    monkeypatch.setattr("lowerduckpond_static_operator.client.time.monotonic", lambda: now)
+    channel = object.__new__(client_module._ProcessChannel)
+    channel.begin_result_wait()
+    now = 1560 + 30  # server budget plus response setup still fits
+    assert channel.deadline.timeout() > 0
+    channel.begin_response_transfer()
+    now += 31
+    with pytest.raises(OperatorClientError, match="timed out"):
+        channel.deadline.timeout()
+
+
 def _fixture(name: str) -> dict[str, object]:
     value = json.loads((_FIXTURE_ROOT / name).read_text(encoding="utf-8"))
     assert type(value) is dict

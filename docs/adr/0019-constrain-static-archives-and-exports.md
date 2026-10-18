@@ -154,6 +154,21 @@ ratio, count, and per-file checks remain the primary policy; process limits are
 a host-availability backstop for parser bugs and adversarial valid Deflate
 streams.
 
+The installed trusted worker also coordinates serial provider proof after local
+parsing. Its outer runtime limit is 20 minutes. Before opening the repository,
+the fixed executor entry point establishes one cumulative **300-second local
+archive-work budget**. All deployment ZIP and portable-bundle inspection,
+derivation, extraction and construction entry points charge that budget. A
+kernel real-time timer with the default terminating signal action enforces it;
+nested calls cannot renew it, sequential calls share the remainder, and timer,
+thread or process ownership conflicts fail closed. Provider waiting outside
+these calls consumes the outer worker clock. The memory, CPU, task, expansion
+and content limits above remain unchanged. The inert standalone sandbox policy
+still specifies five minutes; it is not the installed parser enforcement.
+Helper services retain their own five-minute runtime limits. See the
+[execution budget audit](../operations/archive-execution-budgets.md) for clock
+boundaries, evidence limits and required validation.
+
 All export and archive bundle construction first takes one exclusive root-owned
 host export lock before snapshot admission. An ordinary export then acquires the
 shared tenant-state lock used by backup. While holding it, resolve the canonical

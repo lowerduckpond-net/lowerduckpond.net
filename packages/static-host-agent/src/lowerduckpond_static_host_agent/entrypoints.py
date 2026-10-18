@@ -129,6 +129,7 @@ from lowerduckpond_static_host_agent.operator_adapter import (
     OperatorAdapterError,
 )
 from lowerduckpond_static_host_agent.operator_stream import DeadlineReader, StreamError
+from lowerduckpond_static_host_agent.parser_budget import ParserBudgetError, parser_work_budget
 from lowerduckpond_static_host_agent.release_store import (
     DeploymentReleaseStore,
     ReleaseStoreError,
@@ -329,6 +330,7 @@ def executor_main(arguments: list[str] | None = None) -> int:
         require_restore_admission()
         job_id = validate_uuid7(values[0])
         with (
+            parser_work_budget(),
             StateRepository(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as repository,
             ArtifactIntake(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as intake,
             _open_deployment_release_store() as release_store,
@@ -434,6 +436,8 @@ def executor_main(arguments: list[str] | None = None) -> int:
                     repository,
                 ),
             ).execute(job_id, blocking=True)
+    except ParserBudgetError:
+        return _fail("authorized_job_parser_budget_unavailable", 1)
     except _SAFE_ERRORS:
         return _fail("authorized_job_failed", 1)
     except (OSError, ValueError) as error:
