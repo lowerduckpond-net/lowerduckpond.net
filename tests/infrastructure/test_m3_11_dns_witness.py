@@ -18,7 +18,7 @@ from lowerduckpond_static_host_agent import durable
 from scripts import m3_11_debug_files as debug_files
 from scripts import m3_11_dns_witness as dns
 from scripts import m3_11_qualification_evidence as evidence
-from scripts.check_m3_7_production_edge import CloudflareClient
+from scripts.check_m3_7_production_edge import CloudflareClient, CloudflareReadError
 from scripts.m3_11_backup_fixture import Target
 from scripts.m3_11_live_storage import LiveStorage
 from scripts.m3_11_private_inputs import PRIVATE_FILE_MODE, read_private, write_private
@@ -312,6 +312,26 @@ def test_malformed_quoted_activity_is_retained_but_cannot_be_counted_or_retried(
         witness.sample()
     run.client.get_collection.assert_not_called()
     assert path.read_bytes() == before
+
+
+def test_failed_cleanup_read_retains_phase_and_poisoning_after_partial_zone_read(run: Run) -> None:
+    witness = run.begin()
+    original = (run.directory / "public-dns/0000.json").read_bytes()
+    error = CloudflareReadError("Cloudflare GET /zones/{zone_id}/dns_records: failed", {})
+    run.client.get_collection.reset_mock()
+    run.client.get_collection.side_effect = [[], error]
+    with pytest.raises(CloudflareReadError) as raised:
+        witness.require_absent("cleanup")
+    assert raised.value is error
+    assert any("phase=cleanup sequence=1 elapsed_seconds=" in note for note in error.__notes__)
+    assert run.client.get_collection.call_count == len(dns.ZONES)
+    assert not (run.directory / "public-dns/0001.json").exists()
+    assert (run.directory / "public-dns/0000.json").read_bytes() == original
+    run.client.get_collection.reset_mock()
+    run.client.get_collection.side_effect = None
+    with pytest.raises(ValueError, match="previously failed"):
+        witness.require_absent("cleanup")
+    run.client.get_collection.assert_not_called()
 
 
 @pytest.mark.parametrize("kind", ["TXT", "CNAME", "A"])

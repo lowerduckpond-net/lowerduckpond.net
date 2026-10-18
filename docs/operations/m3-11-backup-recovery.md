@@ -11,9 +11,10 @@ unstarted and production publication stays disabled.
 The dedicated Coder/Docker host is a trusted credential-processing host. Docker
 access and sibling containers are not a security boundary. The controller runs
 the existing complete M3.11 runner, production/storage checks, Molecule phases,
-combined recovery and report packager. Preparation consumes the original
-600-minute ceiling; the runner still requires at least 12 hours of credential
-validity at startup. Restart reconciles the original attempt and cannot replay
+combined recovery and report packager. Preparation and the nested 600-minute
+wrapper share a 660-minute outer attempt ceiling. Admission requires at least
+13 hours of credential validity, including the unchanged two-hour cleanup reserve.
+See the [clock audit](../records/2026-10-17-m3-11-dns-investigation.md). Restart reconciles the original attempt and cannot replay
 issuance or turn a diagnostic continuation into a passing qualification.
 
 The [credential lifecycle plan](../plans/m3-11-credential-lifecycle-simplification.md)
@@ -1581,8 +1582,8 @@ published SSH ports. A forwarded Unix socket from a different container host is
 not that supported controller topology.
 
 At the start of each fresh M3.11 attempt, the wrapper checks that the temporary
-Account API Tokens Read and Page Rules tokens each have at least **12 hours
-remaining from now**: the shared 600-minute run ceiling plus a two-hour cleanup
+Account API Tokens Read and Page Rules tokens each have at least **13 hours
+remaining from now**: the 660-minute outer attempt ceiling plus a two-hour cleanup
 and reporting margin. It does this after dependency sync and before building
 the storage fixture, allocating hosts, or writing qualification data to providers.
 A short-lived token is named in the error with an instruction to roll it.
@@ -1599,7 +1600,7 @@ uv run --frozen python -m scripts.m3_11_token_preflight
 The qualification command always repeats this read-only check at startup, so an
 earlier preflight cannot authorize starting with less time remaining. Later
 provider checks still require active, unexpired tokens and the exact runtime
-policy, without restarting the 12-hour minimum. The reserve cannot prevent
+policy, without restarting the 13-hour minimum. The reserve cannot prevent
 external revocation. Caddy's runtime token remains non-expiring.
 
 ```bash

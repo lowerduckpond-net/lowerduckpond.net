@@ -18,10 +18,10 @@ from typing import cast
 import pytest
 
 from scripts.m3_11_private_inputs import read_private, write_private
-from scripts.m3_11_unattended import approval, evidence, production, worker
+from scripts.m3_11_unattended import approval, evidence, production, watchdog, worker
 from scripts.m3_11_unattended.config import LeaseBootstrap, LeaseConfiguration
-from scripts.m3_11_unattended.docker import OWNER, SOCKET, controller_name
-from scripts.m3_11_unattended.inventory import ConnectInventory
+from scripts.m3_11_unattended.docker import OWNER, SOCKET, Docker, controller_name
+from scripts.m3_11_unattended.inventory import ConnectInventory, fact
 from scripts.m3_11_unattended.lifecycle import LeaseLifecycle, Provider
 from scripts.m3_11_unattended.model import ROLES, LifecycleError, ProviderKind, digest, stamp
 from scripts.m3_11_unattended.state import RunState, cleanup_lock, replace_private
@@ -519,6 +519,10 @@ def test_only_started_failed_attempt_may_retain_and_explicit_cancel_revokes(
         },
     )
     selected.attempt_started = True
+    write_private(
+        selected.directory / "host-drained.json",
+        {"binding_sha256": digest(selected.binding), "drained": True},
+    )
     selected._terminal()
     assert sum(len(provider.items) for provider in case.providers.values()) == len(ROLES)
     assert selected.state.status()["credential_cleanup"] == "pending"
@@ -526,6 +530,174 @@ def test_only_started_failed_attempt_may_retain_and_explicit_cancel_revokes(
     selected._terminal()
     assert all(not provider.items for provider in case.providers.values())
     assert selected.state.status()["qualification"] == "failed"
+
+
+def retained_subject(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[worker.Worker, LeaseCase]:
+    selected, case = subject(tmp_path, monkeypatch)
+    selected.state.begin(selected.binding)
+    case.confirm()
+    case.issue()
+    with case.state.use_lock():
+        case.state.acquire_use(
+            attempt_id=selected.run_id, binding_sha256=digest(selected.binding), kind="attempt"
+        )
+    selected.state.finish_journey("failed", 2)
+    selected.attempt_started = True
+    write_private(selected.directory / "runtime-inputs.json", {"private": CANARY})
+    write_private(
+        selected.directory / "attempt-started.json",
+        {"binding_sha256": digest(selected.binding), "manifest_sha256": case.manifest.sha256},
+    )
+    write_private(
+        selected.directory / "host-drained.json",
+        {"binding_sha256": digest(selected.binding), "drained": True},
+    )
+    selected._terminal()
+    assert selected.state.status()["credential_cleanup"] == "pending"
+    assert not (selected.directory / "runtime-inputs.json").exists()
+    return selected, case
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "cancel",
+        "expiry",
+        "local-close",
+        "remote-close",
+        "missing-start",
+        "wrong-start-binding",
+        "wrong-start-manifest",
+        "missing-drain",
+        "wrong-drain",
+        "not-drained",
+        "rehearsal",
+        "unresolved",
+    ],
+)
+def test_new_worker_after_retention_preserves_children_with_busy_cleanup_lock(  # noqa: PLR0915 - actual retention, restart and cleanup boundaries
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str | None
+) -> None:
+    selected, case = retained_subject(tmp_path, monkeypatch)
+    original = (selected.directory / "journey-result.json").read_bytes()
+    owned = (case.state.directory / ("use-" + selected.run_id + ".json")).read_bytes()
+    if fault == "cancel":
+        selected.state.cancel()
+    elif fault == "expiry":
+        expired = case.manifest.policy.deadline(datetime.fromisoformat(case.manifest.created_at))
+        monkeypatch.setattr(worker, "datetime", SimpleNamespace(now=lambda _zone: expired))
+    elif fault in {"local-close", "remote-close"}:
+        close = fact(case.manifest, "close-cancel", {})
+        if fault == "local-close":
+            case.state.retain("close-cancel.json", close)
+        else:
+            case.inventory.publish(close)
+    elif fault in {"missing-start", "missing-drain"}:
+        (
+            selected.directory
+            / ("attempt-started.json" if fault == "missing-start" else "host-drained.json")
+        ).unlink()
+    elif fault in {"wrong-start-binding", "wrong-start-manifest", "wrong-drain", "not-drained"}:
+        path = selected.directory / (
+            "attempt-started.json" if fault.startswith("wrong-start") else "host-drained.json"
+        )
+        proof = read_private(path)
+        key = (
+            "manifest_sha256"
+            if fault == "wrong-start-manifest"
+            else "drained"
+            if fault == "not-drained"
+            else "binding_sha256"
+        )
+        proof[key] = False if key == "drained" else "0" * 64
+        replace_private(path, proof)
+    elif fault == "rehearsal":
+        request = read_private(selected.directory / "request.json")
+        request["mode"] = "rehearsal"
+        replace_private(selected.directory / "request.json", request)
+    elif fault == "unresolved":
+        selected.state.update("finished", cleanup="unresolved")
+    records = case.inventory.records()
+
+    restarted = worker.Worker(selected.directory, selected.config, selected.source)
+    monkeypatch.setattr(restarted, "_inventory", lambda: cast(ConnectInventory, case.inventory))
+    monkeypatch.setattr(restarted, "_verify_source", lambda: None)
+    monkeypatch.setattr(restarted, "_provision", lambda: pytest.fail("restart issued credentials"))
+    monkeypatch.setattr(restarted, "_journey", lambda _env: pytest.fail("restart replayed journey"))
+    with cleanup_lock(selected.directory.parent):
+        assert restarted.run() == 1
+    assert restarted.state.status()["credential_cleanup"] == (
+        "pending" if fault is None else "unresolved"
+    )
+    assert sum(len(provider.items) for provider in case.providers.values()) == len(ROLES)
+    assert all(not provider.deletes for provider in case.cleanup_providers.values())
+    assert (selected.directory / "journey-result.json").read_bytes() == original
+    assert (case.state.directory / ("use-" + selected.run_id + ".json")).read_bytes() == owned
+    if fault in {None, "unresolved"}:
+        assert case.inventory.records() == records
+        assert not list(case.state.directory.glob("close-*.json"))
+        monkeypatch.setattr(
+            watchdog, "datetime", SimpleNamespace(now=lambda _zone: case.lifecycle.clock())
+        )
+        assert watchdog.prepare_lease_cleanup(
+            selected.directory.parent,
+            cast(Docker, SimpleNamespace(owned=lambda _name: {"State": {"Running": False}})),
+            case.inventory,
+        )
+        assert not selected.state.cancelled
+        assert case.inventory.records() == records
+    else:
+        assert list(case.state.directory.glob("close-*.json"))
+        assert restarted.revoke()
+        assert all(not provider.items for provider in case.providers.values())
+
+
+@pytest.mark.parametrize("fault", ["inventory-factory", "inventory-read"])
+@pytest.mark.parametrize("cleanup_reason", ["cancel", "expiry"])
+def test_restart_inventory_uncertainty_cannot_create_a_close_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str, cleanup_reason: str
+) -> None:
+    selected, case = retained_subject(tmp_path, monkeypatch)
+    original = (selected.directory / "journey-result.json").read_bytes()
+    records = case.inventory.records()
+    restarted = worker.Worker(selected.directory, selected.config, selected.source)
+    monkeypatch.setattr(restarted, "_inventory", lambda: cast(ConnectInventory, case.inventory))
+    monkeypatch.setattr(restarted, "_verify_source", lambda: None)
+
+    def unavailable() -> object:
+        raise LifecycleError("synthetic inventory unavailable")
+
+    with monkeypatch.context() as outage:
+        if fault == "inventory-factory":
+            outage.setattr(restarted, "_inventory", unavailable)
+        else:
+            outage.setattr(case.inventory, "records", unavailable)
+        with cleanup_lock(selected.directory.parent):
+            assert restarted.run() == 1
+            # Periodic reconciliation must use the same safe decision even if
+            # the inventory factory failed and lifecycle is still None.
+            restarted._terminal()
+        assert restarted.state.status()["credential_cleanup"] == "unresolved"
+        assert (selected.directory / "cleanup-failure.json").exists()
+        assert not list(case.state.directory.glob("close-*.json"))
+        assert all(not provider.deletes for provider in case.cleanup_providers.values())
+    assert case.inventory.records() == records
+    assert sum(len(provider.items) for provider in case.providers.values()) == len(ROLES)
+    restarted._terminal()
+    assert restarted.state.status()["credential_cleanup"] == "unresolved"
+    if cleanup_reason == "cancel":
+        restarted.state.cancel()
+    else:
+        expired = case.manifest.policy.deadline(datetime.fromisoformat(case.manifest.created_at))
+        monkeypatch.setattr(worker, "datetime", SimpleNamespace(now=lambda _zone: expired))
+    restarted._terminal()
+    assert restarted.state.status()["credential_cleanup"] == "verified"
+    assert all(not provider.items for provider in case.providers.values())
+    assert sum(provider.creates for provider in case.providers.values()) == len(ROLES)
+    assert (selected.directory / "journey-result.json").read_bytes() == original
 
 
 @pytest.mark.parametrize(

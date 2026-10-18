@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
-from scripts import qualification_deadline
+from scripts import qualification_budget, qualification_deadline
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_unattended.connect_api import publication_readback_budget
 from scripts.m3_11_unattended.creation_outcome import AbortRecoveryError
@@ -51,9 +51,9 @@ def due_processes(root: Path, docker: Docker) -> list[Path]:
             # A failed daemon read is uncertainty, never proof of process death.
             alive = True
         elapsed = datetime.now(UTC) - instant(attempt["started_at"])
-        expired = elapsed > timedelta(seconds=qualification_deadline.LIVE_SECONDS)
+        expired = elapsed > timedelta(seconds=qualification_budget.ATTEMPT_SECONDS)
         reporting_expired = elapsed > timedelta(
-            seconds=qualification_deadline.LIVE_SECONDS
+            seconds=qualification_budget.ATTEMPT_SECONDS
             + qualification_deadline.REPORT_SECONDS
             + 4 * qualification_deadline.GRACE_SECONDS
         )

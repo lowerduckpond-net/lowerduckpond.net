@@ -1242,3 +1242,20 @@ state that blocker and the actual deployed predecessor; do not call merged code
 deployed or declare M3.11 complete. Record-only descendants retain the original
 qualification identity under ADR 0029 and must not force another deployment.
 M3.12 remains unstarted throughout.
+
+### October 17 restart-retention and enclosing-budget correction
+
+The [DNS failure investigation and timing audit](../records/2026-10-17-m3-11-dns-investigation.md)
+records the latest failed attempt and a separately verified restart-retention
+defect. Restart now reconstructs retention from original durable attempt, spawn,
+drain and lease evidence; it cannot revive an already-closing lease.
+
+The nested live wrapper remains 600 minutes. The detached worker and watchdog
+now use a 660-minute outer attempt ceiling, including provisioning, independent
+confirmation and production checks. The provisional combined 420.8-minute window
+requires at least 631.2 minutes under the 1.5× policy. Startup admission therefore
+requires 13 hours remaining, preserving the two-hour cleanup reserve. This
+supersedes the earlier 12-hour admission minimum for new attempts. The operational
+report/drain allowance is 668 minutes; credential expiry and cleanup-authority
+reserve are unchanged. Deployment, credential issuance and another attempt still
+require exact live authorization; these code budgets do not grant it.

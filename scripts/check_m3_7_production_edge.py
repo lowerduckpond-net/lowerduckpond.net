@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import ipaddress
 import json
 import os
@@ -19,6 +20,12 @@ from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from pathlib import Path
 from typing import Final
+
+if __package__ in {None, ""}:
+    # Preserve the original direct-script preflight entry point.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts.cloudflare_read_diagnostics import ReadDiagnostic
 
 API_ROOT: Final = "https://api.cloudflare.com/client/v4"
 API_TIMEOUT_SECONDS: Final = 15
@@ -114,6 +121,14 @@ class ProductionEdgePreflightError(RuntimeError):
     """Raised when a production-edge starting condition cannot be proved."""
 
 
+class CloudflareReadError(ProductionEdgePreflightError):
+    """A failed single GET with safe diagnostic facts and no original payload."""
+
+    def __init__(self, message: str, diagnostic: dict[str, object]) -> None:
+        self.diagnostic = diagnostic
+        super().__init__(message + "; read_diagnostic=" + json.dumps(diagnostic, sort_keys=True))
+
+
 class CloudflareClient:
     """Bounded, read-only Cloudflare API client."""
 
@@ -143,33 +158,52 @@ class CloudflareClient:
                 "User-Agent": "lowerduckpond-m3-production-preflight/1",
             },
         )
+        observation = ReadDiagnostic(API_TIMEOUT_SECONDS)
         try:
             with urllib.request.urlopen(  # noqa: S310 -- request is bound to API_ROOT.
                 request, timeout=API_TIMEOUT_SECONDS
             ) as response:
+                observation.status(response.status)
+                observation.stage = "response-status"
                 if response.status not in accepted_statuses:
-                    raise ProductionEdgePreflightError(
-                        f"{context}: unexpected HTTP status {response.status}"
+                    raise CloudflareReadError(
+                        f"{context}: unexpected HTTP status {observation.http_status}",
+                        observation.document(),
                     )
+                observation.stage = "response-body"
                 raw = response.read(MAXIMUM_API_RESPONSE_BYTES + 1)
+                observation.response_bytes = len(raw)
         except urllib.error.HTTPError as error:
-            status = error.code
+            observation.status(error.code)
+            observation.stage = "response-status"
             error.close()
-            raise ProductionEdgePreflightError(f"{context}: HTTP {status}") from None
-        except OSError, TimeoutError, urllib.error.URLError:
-            raise ProductionEdgePreflightError(
-                f"{context}: network or TLS request failed"
+            raise CloudflareReadError(
+                f"{context}: HTTP {observation.http_status}", observation.document(error)
+            ) from None
+        except (OSError, urllib.error.URLError, http.client.HTTPException) as error:
+            raise CloudflareReadError(
+                f"{context}: network or TLS request failed", observation.document(error)
             ) from None
         if len(raw) > MAXIMUM_API_RESPONSE_BYTES:
-            raise ProductionEdgePreflightError(f"{context}: response exceeded its bound")
+            raise CloudflareReadError(
+                f"{context}: response exceeded its bound", observation.document()
+            )
+        observation.stage = "response-json"
         try:
             value = json.loads(raw)
-        except UnicodeError, json.JSONDecodeError:
-            raise ProductionEdgePreflightError(f"{context}: response is invalid") from None
+        except (UnicodeError, json.JSONDecodeError) as error:
+            raise CloudflareReadError(
+                f"{context}: response is invalid", observation.document(error)
+            ) from None
+        observation.stage = "response-envelope"
         if not isinstance(value, dict) or value.get("success") is not True:
-            raise ProductionEdgePreflightError(f"{context}: rejected read-only preflight request")
+            raise CloudflareReadError(
+                f"{context}: rejected read-only preflight request", observation.document()
+            )
         if "result" not in value:
-            raise ProductionEdgePreflightError(f"{context}: response omitted its result")
+            raise CloudflareReadError(
+                f"{context}: response omitted its result", observation.document()
+            )
         return value
 
     def get(self, path: str, *, query: Mapping[str, str] | None = None) -> object:
