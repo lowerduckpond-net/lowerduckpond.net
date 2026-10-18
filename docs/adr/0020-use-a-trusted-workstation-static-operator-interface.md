@@ -95,8 +95,12 @@ the SSH response or queue handoff is lost. Root reconciliation may requeue a
 committed pending job by its stored ID; it never reconstructs authority from an
 intake artifact or provisioner request.
 
-After the client closes request input, its transport permits the server's
-bounded five-minute silent execution window plus handoff allowance. Once the
+After the client closes request input, its transport permits a bounded
+27-minute silent result window. The server allows 26 minutes for worker startup,
+execution, shutdown and final validation; the worker has a provisional 20-minute
+coordination limit while cumulative local archive parsing remains limited to
+five minutes. These clocks and their observed basis are recorded in the
+[archive execution budget audit](../operations/archive-execution-budgets.md). Once the
 first authenticated response header arrives, ordinary 30-second idle and
 20-minute total transfer bounds resume for the result and any export bytes.
 SSH keepalives are not treated as application progress.

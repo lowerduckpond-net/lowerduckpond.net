@@ -1193,3 +1193,64 @@ def test_response_writer_stops_at_fixed_export_expiry() -> None:
     finally:
         os.close(read_fd)
         os.close(write_fd)
+
+
+@pytest.mark.parametrize("cause", ["timeout", "os", "exit"])
+def test_handoff_retains_bounded_diagnosis_without_replay_or_private_output(
+    monkeypatch: pytest.MonkeyPatch, cause: str
+) -> None:
+    clock = _ManualClock()
+    calls: list[object] = []
+    canary = "private-command-output-and-url-canary"
+    underlying: Exception | None = None
+    if cause == "timeout":
+        underlying = subprocess.TimeoutExpired(canary, 17, output=canary, stderr=canary)
+    elif cause == "os":
+        underlying = OSError(101, canary, canary)
+
+    def run(arguments: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(arguments)
+        assert kwargs["stdout"] == kwargs["stderr"] == subprocess.DEVNULL
+        clock.value += 17
+        if underlying is not None:
+            raise underlying
+        return subprocess.CompletedProcess(arguments, 23, stdout=canary, stderr=canary)
+
+    monkeypatch.setattr("lowerduckpond_static_host_agent.job_runtime.subprocess.run", run)
+    handoff = SystemdJobHandoff(clock=clock)
+    with pytest.raises(RuntimeBoundaryError) as caught:
+        handoff.await_completion("0198d17f-6f4a-7000-8000-000000000002", timeout_seconds=17)
+    message = str(caught.value)
+    assert canary not in message
+    assert "phase=completion-wait" in message
+    assert "attempt=1 elapsed_seconds=17.000 budget_seconds=17.000" in message
+    assert {
+        "timeout": "reason=subprocess-timeout",
+        "os": "reason=os-error",
+        "exit": "reason=systemctl-exit",
+    }[cause] in message
+    assert caught.value.__cause__ is underlying
+    assert len(calls) == 1
+
+
+def test_completion_window_covers_start_runtime_stop_and_final_validation(tmp_path: Path) -> None:
+    root = _state_root(tmp_path)
+    clock = _ManualClock()
+    elapsed = 300 + 1200 + 15 + 10
+    with (
+        StateRepository(root, expected_owner=os.geteuid()) as repository,
+        ArtifactIntake(root, expected_owner=os.geteuid()) as intake,
+    ):
+        issued = _issue(repository)
+        executor = AuthorizationExecutor(repository, intake)
+
+        class _SlowHandoff:
+            def await_completion(self, job_id: str, *, timeout_seconds: float) -> None:
+                assert timeout_seconds > elapsed
+                clock.value += elapsed
+                executor.execute(job_id)
+
+        result = ResultWaiter(repository, _SlowHandoff(), clock=clock).retrieve(issued)
+        terminal = repository.read(StateRecordPath.authorization_job(issued.job_id)).document
+    assert result["errorCode"] == "not_implemented"
+    assert terminal["executionValidated"] is True

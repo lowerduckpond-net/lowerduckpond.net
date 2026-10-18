@@ -17,7 +17,9 @@ TasksMax=32
 LimitNOFILE=1024
 LimitCPU=120
 LimitCORE=0
-RuntimeMaxSec=5min
+# Local archive work retains its cumulative 5min kernel parser budget.
+# This outer clock also covers serial provider proof and durable final validation.
+RuntimeMaxSec=20min
 TimeoutStartSec=5min
 CPUQuota=100%
 StandardInput=null

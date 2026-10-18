@@ -43,7 +43,8 @@ from lowerduckpond_static_host_agent.state_inventory import IntentRecordInventor
 _SYSTEMCTL: Final = Path("/usr/bin/systemctl")
 _WORKER_UNIT: Final = "lowerduckpond-static-worker@{job_id}.service"
 _HANDOFF_SECONDS: Final = 15.0
-_RESULT_TOTAL_SECONDS: Final = 5.0 * 60.0
+# Worker startup 300 + runtime 1200 + stop 15 + final validation/report 45.
+_RESULT_TOTAL_SECONDS: Final = 26.0 * 60.0
 _RESULT_POLL_SECONDS: Final = 0.05
 _RECOVERY_HANDOFF_LIMIT: Final = 2
 _WRITE_TOTAL_SECONDS: Final = 20.0 * 60.0
@@ -100,10 +101,13 @@ def _sleep(seconds: float) -> None:
 class SystemdJobHandoff:
     """Give systemd only one validated root-owned job UUID."""
 
-    def __init__(self, executable: Path = _SYSTEMCTL) -> None:
+    def __init__(
+        self, executable: Path = _SYSTEMCTL, *, clock: MonotonicClock = time.monotonic
+    ) -> None:
         if not executable.is_absolute():
             raise ValueError("systemd handoff executable must be absolute")
         self._executable = executable
+        self._clock = clock
 
     def enqueue(self, job_id: str) -> None:
         self._start(job_id, wait=False, timeout_seconds=_HANDOFF_SECONDS)
@@ -120,6 +124,18 @@ class SystemdJobHandoff:
         arguments = [os.fspath(self._executable), "start"]
         arguments.append("--wait" if wait else "--no-block")
         arguments.append(_WORKER_UNIT.format(job_id=canonical_id))
+        started = self._clock()
+        phase = "completion-wait" if wait else "enqueue"
+
+        def failure(reason: str, detail: str) -> RuntimeBoundaryError:
+            # Fixed labels and numeric fields only: exception strings, command
+            # arguments and subprocess output may contain private data.
+            return RuntimeBoundaryError(
+                f"authorized job handoff failed: phase={phase} reason={reason} "
+                f"attempt=1 elapsed_seconds={self._clock() - started:.3f} "
+                f"budget_seconds={timeout_seconds:.3f} {detail}"
+            )
+
         try:
             completed = subprocess.run(  # noqa: S603
                 arguments,
@@ -132,10 +148,13 @@ class SystemdJobHandoff:
                 env={"LANG": "C.UTF-8"},
                 timeout=timeout_seconds,
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise RuntimeBoundaryError("authorized job handoff failed") from error
+        except subprocess.TimeoutExpired as error:
+            raise failure("subprocess-timeout", "exception=TimeoutExpired") from error
+        except OSError as error:
+            number = error.errno if type(error.errno) is int else 0
+            raise failure("os-error", f"exception=OSError errno={number}") from error
         if completed.returncode != 0:
-            raise RuntimeBoundaryError("authorized job handoff failed")
+            raise failure("systemctl-exit", f"exit_status={completed.returncode}")
 
 
 class ResultWaiter:

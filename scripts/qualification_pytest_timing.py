@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+import traceback
 from collections.abc import Generator
 from pathlib import Path
 
@@ -111,22 +112,25 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) ->
 
     error = call.excinfo.value
     operator: dict[str, object] | None = None
-    if isinstance(error, OperatorClientError):
-        category = OPERATOR_FAILURES.get(str(error), "operator-transport")
+    underlying = _operator_exception(error, OperatorClientError)
+    if underlying is not None:
+        category = OPERATOR_FAILURES.get(str(underlying), "operator-transport")
         from lowerduckpond_static_operator import client  # noqa: PLC0415
 
+        frames = list(traceback.walk_tb(underlying.__traceback__))
         client_location = next(
             (
-                entry
-                for entry in reversed(call.excinfo.traceback)
-                if entry.path == Path(client.__file__)
+                (frame, line)
+                for frame, line in reversed(frames)
+                if Path(frame.f_code.co_filename).resolve() == Path(client.__file__).resolve()
             ),
             None,
         )
         operator = {
-            "reason": operator_failure.reason(str(error)),
-            "client_function": client_location.name if client_location else "unknown",
-            "client_line": client_location.lineno + 1 if client_location else "unknown",
+            "reason": operator_failure.reason(str(underlying)),
+            "client_function": client_location[0].f_code.co_name if client_location else "unknown",
+            "client_line": client_location[1] if client_location else "unknown",
+            "handoff": operator_failure.handoff(str(underlying)),
         }
     else:
         category = "assertion" if isinstance(error, AssertionError) else "test-error"
@@ -149,3 +153,19 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[None]) ->
         line=location.lineno + 1 if location else "unknown",
         operator=operator,
     )
+
+
+def _operator_exception(error: BaseException, kind: type[BaseException]) -> BaseException | None:
+    """Retain a wrapped client failure without copying arbitrary exception text."""
+    seen: set[int] = set()
+    current: BaseException | None = error
+    for _ in range(8):
+        if current is None or id(current) in seen:
+            break
+        seen.add(id(current))
+        if isinstance(current, kind):
+            return current
+        current = current.__cause__ or (
+            None if current.__suppress_context__ else current.__context__
+        )
+    return None

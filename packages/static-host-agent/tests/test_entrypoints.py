@@ -10,7 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from lowerduckpond_static_host_agent import entrypoints
+from lowerduckpond_static_host_agent import entrypoints, parser_budget
 from lowerduckpond_static_host_agent.archive_cleanup_service import ArchiveCleanupClient
 from lowerduckpond_static_host_agent.archive_handler import ArchiveLifecycleHandler
 from lowerduckpond_static_host_agent.audit import AuditError
@@ -95,6 +95,7 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(  # noqa
             self._value = value
 
         def __enter__(self) -> object:
+            assert parser_budget._active is not None
             return self._value
 
         def __exit__(self, *_exception: object) -> None:
@@ -114,6 +115,7 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(  # noqa
             )
 
         def execute(self, selected_job_id: str, *, blocking: bool) -> None:
+            assert parser_budget._active is not None
             captured.update(job_id=selected_job_id, blocking=blocking)
 
     monkeypatch.setattr(
@@ -142,6 +144,7 @@ def test_executor_entrypoint_registers_the_available_lifecycle_handlers(  # noqa
     monkeypatch.setattr(entrypoints, "AuthorizationExecutor", _Executor)
 
     assert entrypoints.executor_main([job_id]) == 0
+    assert parser_budget._active is None
 
     arguments = captured["arguments"]
     assert type(arguments) is dict
