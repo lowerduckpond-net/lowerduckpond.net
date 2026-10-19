@@ -7,8 +7,8 @@ must bind exact source, existing consumer/producer, lease/manifest, stopped acto
 original evidence, preserved bytes, bucket/key/VersionId/size/hash and reviewed
 caller/program files. No private production identities belong in this document.
 
-**Current status: source prototype, not execution-ready.** The supported staged
-closeout adapter below is not implemented. The driver rejects execution before
+**Current status: staged implementation under final validation, not execution-ready.**
+The source hard gate remains. The driver rejects execution before
 creating its output directory, reserving an exec or gathering proofs. The native
 entry and native owner's pre-marker check independently reject it as well. There
 is no approval field, CLI option or environment flag that enables execution.
@@ -48,19 +48,20 @@ Ordinary archived-tenant delete changes tenant/runtime authority and purges all
 versions for a key; it is broader than this exception. The old reconstruction-only
 retirement gate and its resumable deletion branch must not be bypassed or reused.
 
-## Required closeout implementation
+## Staged closeout
 
 Ordinary closeout currently uses the same execution guard, so it cannot remove
 a retired run's backup prefix, stopped containers and anonymous volumes, image
 tag, or original qualification directory. It would also remove local failure
 logs and retirement copies. This prevents accidental evidence loss, but it is
-not a reason to prohibit verified disposal forever. The current execution blocker
-prevents creating that dead end while a supported adapter is missing.
+not a reason to prohibit verified disposal forever. The narrow staged adapters
+provide their own ownership and evidence checks; ordinary closeout gains no
+generic bypass.
 
-The narrower design, **not an implemented capability**, has two stages:
+The implementation has two separately authorized stages:
 
 1. Separately authorized remote cleanup reuses the existing exact owned-backup
-   removal and independent archive/DNS absence checks while existing scoped
+   removal and independent archive/DNS observations while existing scoped
    credentials remain valid. It retains every original actor and identity record:
    active lease reuse explicitly requires those actors to be present, stopped and
    unchanged. It cannot delete another archive, replay a consumed DELETE, revoke
@@ -90,17 +91,52 @@ authority gap; new credentials are not implied. Missing or uncertain retirement
 completion must not permanently prevent independently verified resource cleanup,
 and cleanup must not manufacture retirement success.
 
-The adapter, authenticated proof path, export/fence implementation and concurrent
-crash/recovery tests are prerequisites **before any live retirement**. They are
-still outstanding. Their later execution needs separate exact disposal scope;
-none is included in the current one-VersionId design. Current read-only inspection
-and independent credential cleanup remain available.
+Final combined validation and independent review remain prerequisites **before
+any live retirement**. The source gate cannot be overridden by an approval flag.
+Later execution needs separate exact remote and local disposal scope; neither is
+included in the one-VersionId plan. Read-only inspection and independent
+credential cleanup remain available.
+
+`m3_11_frozen_remote` preserves and independently rereads every owned backup
+version, including empty objects; multipart data cannot be preserved through this
+route and blocks entry. It never sends an archive DELETE. Its receipt truthfully
+distinguishes an absent archive from the still-present original version after a
+pre-DELETE failure. Global empty-bucket acceptance remains unchanged.
+
+`m3_11_frozen_disposal` uses no provider factories or child credentials. Before
+local removal it verifies the exact terminal capture, original use/release/drain
+records, all current native actor identities, full remote absence proof and all
+retained copies. It exports the complete original directory with metadata and
+symlink targets, plus stopped actor root filesystems, logs and inspect records.
+Persistent mounts, mapped devices, hardlinks, special entries, xattrs and ACLs
+that the narrow exporter cannot preserve stop the operation. No volume-removal
+flag or broad Docker cleanup is available. Only the named actors, original owned
+image reference and original subtree can be removed. Shared controller/evidence
+volumes, lease records and other fixtures remain outside this scope.
+
+External path and immutable-identity tombstones survive disposal. A complete
+intent atomically precedes both; partial publication cannot reopen execution.
+Ordinary archive execution rejects an existing intent. Only a separately
+authorized remote stage may complete the matching exclusion metadata, without
+entering the archive transaction. Unpublished metadata and partial evidence
+copies remain retained; conflicting authoritative bytes stop for investigation.
+
+Every resource has its own fsynced submission identity. Lost acknowledgments
+remain missing; independent absence does not manufacture them. Read-only
+reconciliation reports actual state without journal writes. An explicit
+continuation may submit only remaining identities that were never submitted,
+or finish a completion/certificate publication after removal. A previously
+submitted effect that remains visible is unresolved and cannot be replayed.
+Terminal certificates revalidate full original proof and export bytes, exact
+intents, native ID/name/label/image absence, and the persistent fence. They do
+not recursively accept another consumer's certificate as their evidence.
 
 ## Concurrent ownership
 
 Retirement takes nonblocking locks in this order: current consumer controller,
 lease runtime-use, storage target, producing run, exclusive
-`fixture-operation.lock`. Run leases hold shared operation ownership. Direct
+`fixture-operation.lock`, then persistent path and immutable-identity locks.
+Run leases hold shared operation ownership. Direct
 command/phase, reconstruction Fixture methods, attached debugging commands and
 directory disposal hold shared ownership through the complete action. Copied
 diagnostic workspaces resolve the original's lock. Parent and child processes
@@ -181,3 +217,35 @@ variability under the owner's minimum 1.5 times observed-window policy. Preserve
 safe budgets. Incomplete work is a lower bound, never a successful baseline.
 There is no completed live retirement sample. Full-size archive/restore timing
 qualification remains a separate later requirement.
+
+## Staged timing and proof collection
+
+The [changed-path timing audit](frozen-fixture-timing.md) separates completed
+constituent observations from provisional composed ceilings. Remote and terminal
+local helpers each have a nonrenewing six-hour allowance; the staged caller has
+seven hours from its original entry, including prelude, proof work, startup and
+reporting. Per-call admission reserves a complete inner operation; it never clips
+an inner timeout to the remaining outer time. Those ceilings are unmeasured
+provisional budgets, not expected runtimes or new performance requirements.
+
+Long remote preservation uses `m3_11_frozen_refresh.Refresh`. Each refresh selects
+a completed scheduled run through GET, invokes the separately reviewed full
+native collector and host observer, binds all their files, then runs the isolated
+600-second full-byte validator. The complete exchange gets 3,600 seconds,
+including the existing 1,800/600/600-second children. Reusing the same receipt
+does not change its 5,400-second native origin. No suitable proof means stop,
+without dispatch, queued mutation, short polling, or a new human reply deadline.
+Refresh occurs outside the revocation-exclusion lock. The check immediately
+before sending a provider mutation is check-only and still requires current
+proof and genuine credential validity.
+
+Terminal local disposal instead uses immutable terminal facts, after all child
+credentials have been removed and independently denied. The read-only terminal
+collector brackets six authenticated native GitHub GETs with two authenticated
+original-controller inventory snapshots. It binds controller/daemon/image/source,
+original request/use, native run/job/steps, both artifact ZIP digests, full signed
+authentication policy, historical uncertainty and every original obligation.
+Each raw response and per-call receipt is retained as it arrives, including when
+a later read fails. Selection and transfer require the original response bytes;
+projection-only receipts cannot authorize disposal. Terminal facts have no
+artificial active-proof expiry, but local resource checks stay fresh under locks.

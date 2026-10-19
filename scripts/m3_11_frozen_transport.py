@@ -21,6 +21,9 @@ MAX_PROGRAM = 100_000
 MAX_BUNDLE = 512 * 1024
 MAX_EXPANDED_BUNDLE = 8 * 1024 * 1024
 STARTUP_SECONDS = 180
+STAGED_MUTATIONS = {"remote-cleanup", "remote-continue", "local-disposal", "local-continue"}
+STAGED_OBSERVATIONS = {"remote-observe", "local-observe"}
+OPERATIONS = {"execute", "reconcile", "terminal-snapshot"} | STAGED_MUTATIONS | STAGED_OBSERVATIONS
 
 BOOTSTRAP = """import signal, time
 def startup_expired(*args): raise TimeoutError('retirement startup budget ended')
@@ -62,18 +65,22 @@ sys.meta_path.insert(0, Overlay())
 from scripts.m3_11_frozen_entry import run
 signal.setitimer(signal.ITIMER_REAL, 0)
 signal.signal(signal.SIGALRM, signal.SIG_DFL)
-raise SystemExit(run({**bundle['payload'], 'authorization': initial['authorization']}))
+payload = {**bundle['payload'], 'authorization': initial['authorization']}
+if payload['operation'] == 'terminal-snapshot': payload['bundle_sha256'] = EXPECTED_DATA_SHA256
+raise SystemExit(run(payload))
 """
 
 
-def require_operation(program: str, bundle: str, *, operation: str, plan_sha256: object) -> None:
+def require_operation(
+    program: str, bundle: str, *, operation: str, plan_sha256: object
+) -> dict[str, object]:
     """Validate the actual sealed payload before reserving or submitting exec.
 
     A caller's observation label cannot turn an execute payload into a read-only
     operation. Bind both the exact bootstrap and its bounded compressed input.
     Source/module review remains the separate private caller's responsibility.
     """
-    if operation not in {"execute", "reconcile"} or len(bundle.encode()) > MAX_BUNDLE:
+    if operation not in OPERATIONS or len(bundle.encode()) > MAX_BUNDLE:
         raise ValueError("retirement operation or bundle bound is invalid")
     expected = "EXPECTED_DATA_SHA256 = " + repr(hashlib.sha256(bundle.encode()).hexdigest())
     if program != expected + "\n" + BOOTSTRAP:
@@ -107,6 +114,7 @@ def require_operation(program: str, bundle: str, *, operation: str, plan_sha256:
             raise ValueError
     except (ValueError, TypeError, KeyError, zlib.error) as error:
         raise ValueError("sealed retirement payload differs from caller operation/plan") from error
+    return payload
 
 
 def build(repository: Path, payload: dict[str, object]) -> dict[str, object]:

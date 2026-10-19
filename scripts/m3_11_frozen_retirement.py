@@ -21,6 +21,8 @@ from scripts.m3_11_qualification_evidence import canonical_bytes, fields, uuid7
 from scripts.m3_11_retirement_archive import Archives, records
 from scripts.m3_11_retirement_files import RetirementError, digest, directory, record, sync
 from scripts.qualification_disposition import DIRECTORY
+from scripts.qualification_fence import commit as commit_exclusion
+from scripts.qualification_fence import registry, require_committed, require_unfenced
 
 FORMAT = "lowerduckpond-m3-11-frozen-archive-retirement-v1"
 AUTHORIZATION = "lowerduckpond-m3-11-frozen-archive-authorization-v2"
@@ -45,12 +47,12 @@ def require_supported_closeout() -> None:
     """Keep native execution disabled until the narrower exit path is reviewed.
 
     Transaction primitives remain testable against synthetic stores. Neither
-    approval nor a runtime flag may replace the missing staged closeout adapter.
-    Removing this blocker requires that adapter, its race/crash regressions and
+    approval nor a runtime flag may replace independent review of the integrated
+    staged closeout adapter. Removing this blocker requires its race/crash regressions and
     a newly reviewed source/program binding, not merely a new approval document.
     """
     raise RetirementError(
-        "live retirement unavailable: supported staged closeout is not implemented"
+        "live retirement unavailable: integrated staged closeout review is incomplete"
     )
 
 
@@ -197,10 +199,16 @@ class FrozenRetirement:
             return self._reconcile(approval)
         if not fresh:
             raise RetirementError("retirement already entered; no replay; reconcile only")
+        require_unfenced(self.run)
         if fresh:
             if self.fixture.archives.observed() != expected:
                 raise RetirementError("frozen retirement inventory changed before disposition")
             self.fixture.before_disposition()
+            if registry(self.run) is not None:
+                exclusion = commit_exclusion(
+                    self.run, plan_sha256=digest(self.plan), authorization_sha256=digest(approval)
+                )
+                require_committed(self.run, exclusion)
             # This directory itself permanently closes every supported mutation
             # consumer. A crash before any following record must stay fail closed.
             self.root.mkdir(mode=0o700)

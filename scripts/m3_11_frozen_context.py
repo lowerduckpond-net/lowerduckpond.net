@@ -65,6 +65,8 @@ def actor(row: dict[str, object]) -> dict[str, object]:
 
 
 class NativeFixture:
+    helper_seconds = HELPER_SECONDS
+
     def __init__(  # noqa: PLR0913 - independent native and retained-proof boundaries
         self,
         *,
@@ -74,11 +76,14 @@ class NativeFixture:
         revalidate_copies_and_cleanup: Callable[[], str],
         docker: ReadOnlyDocker,
         require_cleanup_current: Callable[[], None],
+        refresh_cleanup: Callable[[], None] | None = None,
     ) -> None:
         self.config, self.fixture, self.root = configuration, fixture, evidence_root
         self.revalidate = revalidate_copies_and_cleanup
         self.docker = docker
         self.cleanup_current = require_cleanup_current
+        self.refresh_cleanup = refresh_cleanup
+        self.submitting = False
         self.held = False
         self.archives: Archives
         self.final_roles: Callable[[], None] | None = None
@@ -136,9 +141,10 @@ class NativeFixture:
             )
             require(
                 self.manifest.policy.deadline(instant(self.manifest.created_at)) - datetime.now(UTC)
-                > timedelta(seconds=HELPER_SECONDS)
+                > timedelta(seconds=self.helper_seconds)
                 and all(
-                    instant(intent.deadline) - datetime.now(UTC) > timedelta(seconds=HELPER_SECONDS)
+                    instant(intent.deadline) - datetime.now(UTC)
+                    > timedelta(seconds=self.helper_seconds)
                     for intent in self.manifest.intents
                 ),
                 "retirement work budget cannot fit genuine credential validity",
@@ -195,19 +201,30 @@ class NativeFixture:
         require_supported_closeout()
         self.owner()
         require_remaining(POST_EFFECT_RESERVE)
+        from scripts.m3_11_frozen_envelope import verify  # noqa: PLC0415
+
+        self.closeout_envelope = verify(self)
+        require_remaining(POST_EFFECT_RESERVE)
 
     @contextmanager
     def submission(self) -> Iterator[None]:
         # The global cleanup lock is never held over local revalidation or
         # network readiness. It excludes revocation only for the one request.
         require_remaining(POST_EFFECT_RESERVE)
+        self.owner()
         with existing_lock(self.root / ".credential-cleanup.lock"):
-            self.owner()
-            yield
+            self.submitting = True
+            try:
+                self.owner()
+                yield
+            finally:
+                self.submitting = False
 
     def owner(self) -> None:
         require(self.held, "retirement does not hold original ownership")
         require_remaining(120)
+        if self.refresh_cleanup is not None and not self.submitting:
+            self.refresh_cleanup()
         self.cleanup_current()
         now = datetime.now(UTC)
         require(
@@ -242,13 +259,8 @@ class NativeFixture:
             "retirement runtime users changed",
         )
         current = self.lease.directory / ("use-" + str(self.plan["consumer_attempt"]) + ".json")
-        require(
-            current in self.uses
-            and not (
-                self.lease.directory / ("released-" + str(self.plan["consumer_attempt"]) + ".json")
-            ).exists(),
-            "retirement consumer no longer owns its retained lease",
-        )
+        require(current in self.uses, "retirement lacks its original consumer use")
+        self.consumer_use(current)
         for path in self.uses:
             use = fields(read_private(path), {"attempt_id", "binding_sha256", "kind"})
             require(
@@ -302,6 +314,14 @@ class NativeFixture:
                 "kind": "attempt",
             },
             "retirement exclusive consumer binding differs",
+        )
+
+    def consumer_use(self, current: Path) -> None:
+        require(
+            not (
+                self.lease.directory / ("released-" + str(self.plan["consumer_attempt"]) + ".json")
+            ).exists(),
+            "retirement consumer no longer owns its retained lease",
         )
 
     def client(self, role: str) -> S3Client:
@@ -370,6 +390,20 @@ class NativeFixture:
         )
 
     def guard(self, plan: dict[str, object]) -> None:
+        self.frozen_state(plan)
+        for role in ("backup", "operator"):
+            self.storage.target.require_owner(
+                self.client(role), self.storage.binding, version=self.storage.owner_version
+            )
+        self.preserved_evidence(plan)
+
+    def frozen_state(self, plan: dict[str, object]) -> None:
+        """Common immutable actor/failure checks; no remote ownership assumption.
+
+        The staged remote owner additionally requires its exact removal journal
+        when the original owner object is absent. Ordinary retirement still
+        requires the owner object through ``guard`` above.
+        """
         require(plan == self.plan, "retirement plan changed during ownership")
         self.owner()
         if self.final_roles is None:
@@ -475,10 +509,8 @@ class NativeFixture:
             set(found_ids) == {row["id"] for row in actors}, "retirement has unknown fixture actors"
         )
         self.storage._require_inputs(self.environment)
-        for role in ("backup", "operator"):
-            self.storage.target.require_owner(
-                self.client(role), self.storage.binding, version=self.storage.owner_version
-            )
+
+    def preserved_evidence(self, plan: dict[str, object]) -> None:
         require(
             self.revalidate() == plan["evidence_sha256"],
             "native preserved-file or cleanup revalidation differs",

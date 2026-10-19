@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from scripts.m3_11_private_inputs import read_private
+from scripts.qualification_fence import require_unfenced
 
 DIRECTORY = "frozen-archive-retirement"
 ORIGIN = "diagnostic-origin.json"
@@ -42,6 +43,7 @@ def original_run(run: Path) -> Path:
 def require_available(run: Path) -> None:
     """Check again under the original run lock immediately before execution."""
     root = original_run(run)
+    require_unfenced(root)
     for base in {run, root}:
         marker = base / DIRECTORY
         if marker.exists() or marker.is_symlink():

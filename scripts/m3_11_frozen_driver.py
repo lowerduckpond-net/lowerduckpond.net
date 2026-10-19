@@ -20,6 +20,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO, cast
 
+from scripts import m3_11_frozen_budget as stage_budget
+from scripts import m3_11_frozen_stage_receipt as receipts
 from scripts.m3_11_frozen_context import MAX_READS
 from scripts.m3_11_frozen_entry import ACK_SECONDS
 from scripts.m3_11_frozen_frames import frame, send
@@ -31,7 +33,12 @@ from scripts.m3_11_frozen_retirement import (
     require_supported_closeout,
     reserve,
 )
-from scripts.m3_11_frozen_transport import STARTUP_SECONDS, require_operation
+from scripts.m3_11_frozen_transport import (
+    STAGED_MUTATIONS,
+    STAGED_OBSERVATIONS,
+    STARTUP_SECONDS,
+    require_operation,
+)
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_retirement_files import RetirementError, digest, directory, record, sync
 from scripts.m3_11_unattended.storage_admission import HELPER_SECONDS
@@ -148,6 +155,80 @@ def observation(outer: dict[str, object], authorization: dict[str, object]) -> N
         raise RetirementError("retirement observation differs from its read-only contract")
 
 
+def stage_terminal(
+    value: dict[str, object],
+    approved: dict[str, object],
+    *,
+    operation: str,
+    plan: dict[str, object],
+) -> None:
+    outer = fields(
+        value,
+        {
+            "status",
+            "operation",
+            "result",
+            "elapsed_seconds",
+            "provider_delete_submissions",
+            "provider_inventory_owner_reads",
+        },
+    )
+    observing = operation in STAGED_OBSERVATIONS
+    local = operation.startswith("local-")
+    seconds = stage_budget.LOCAL_SECONDS if local else stage_budget.REMOTE_SECONDS
+    result = outer["result"]
+    if (
+        not isinstance(result, dict)
+        or outer["operation"] != operation
+        or outer["status"] != ("observed" if observing else "verified")
+        or result.get("plan_sha256") != approved.get("plan_sha256")
+        or result.get("authorization_sha256") != digest(approved)
+        or type(outer["elapsed_seconds"]) not in (float, int)
+        or not math.isfinite(float(cast(float, outer["elapsed_seconds"])))
+        or not 0 <= float(cast(float, outer["elapsed_seconds"])) < seconds
+        or type(outer["provider_delete_submissions"]) is not int
+        or type(outer["provider_inventory_owner_reads"]) is not int
+    ):
+        raise RetirementError("staged result differs from exact operation/authority/budget")
+    if local:
+        receipts.local(result, plan, observing=observing)
+        if (
+            outer["provider_delete_submissions"] != 0
+            or outer["provider_inventory_owner_reads"] != 0
+            or result.get("provider_calls") != 0
+        ):
+            raise RetirementError("local staged result performed provider operations")
+        if not observing and (
+            result.get("original_directory") != "absent"
+            or result.get("qualification_changed") is not False
+            or result.get("lease_changed") is not False
+        ):
+            raise RetirementError(
+                "local staged disposal is incomplete or changed original semantics"
+            )
+    elif (
+        result.get("archive_delete_submissions") != 0
+        or result.get("credential_mutations") != 0
+        or result.get("actors_retained") is not True
+        or result.get("lease_released") is not False
+        or not 0 < outer["provider_inventory_owner_reads"] <= stage_budget.MAX_PROVIDER_REQUESTS
+        or not (
+            outer["provider_delete_submissions"] == 0
+            if observing
+            else (0 if operation == "remote-continue" else 1)
+            <= outer["provider_delete_submissions"]
+            <= stage_budget.MAX_PROVIDER_REQUESTS
+        )
+    ):
+        raise RetirementError("remote staged result exceeded its exact mutation scope")
+    if not local:
+        receipts.remote(result, plan, observing=observing)
+    if observing and (
+        result.get("mutation_submissions") != 0 or result.get("no_replay") is not True
+    ):
+        raise RetirementError("staged observation attempted effects or replay")
+
+
 def execute(  # noqa: PLR0912,PLR0913,PLR0915 - one bounded submission and protocol transaction
     *,
     program: str,
@@ -159,23 +240,40 @@ def execute(  # noqa: PLR0912,PLR0913,PLR0915 - one bounded submission and proto
     verify: Callable[[], dict[str, object]],
     caller_started: float | None = None,
     observation_only: bool = False,
+    stage_operation: str | None = None,
 ) -> dict[str, object]:
     now = time.monotonic()
     started = now if caller_started is None else caller_started
     if not math.isfinite(started) or not 0 <= started <= now:
         raise RetirementError("retirement caller clock is invalid")
-    deadline = started + CALLER_SECONDS
+    staged = stage_operation is not None
+    if staged and (
+        stage_operation not in STAGED_MUTATIONS | STAGED_OBSERVATIONS or observation_only
+    ):
+        raise RetirementError("staged operation must be explicit without a competing mode")
+    operation = stage_operation or ("reconcile" if observation_only else "execute")
+    observing = operation in STAGED_OBSERVATIONS or observation_only
+    helper_seconds = (
+        (
+            stage_budget.REMOTE_SECONDS
+            if operation.startswith("remote-")
+            else stage_budget.LOCAL_SECONDS
+        )
+        if staged
+        else HELPER_SECONDS
+    )
+    deadline = started + (stage_budget.CALLER_SECONDS if staged else CALLER_SECONDS)
     if now >= deadline:
         raise TimeoutError("retirement enclosing caller allowance already ended")
     if type(observation_only) is not bool:
         raise RetirementError("retirement observation mode must be explicit")
-    require_operation(
+    bound = require_operation(
         program,
         bundle,
-        operation="reconcile" if observation_only else "execute",
+        operation=operation,
         plan_sha256=authorization.get("plan_sha256"),
     )
-    if not observation_only:
+    if not observing:
         require_supported_closeout()
     if re.fullmatch(r"[0-9a-f]{64}", controller) is None:
         raise RetirementError("retirement controller identity is invalid")
@@ -187,7 +285,7 @@ def execute(  # noqa: PLR0912,PLR0913,PLR0915 - one bounded submission and proto
     output.mkdir(mode=0o700)  # A lost parent never silently adopts an old submission.
     sync(output.parent)
     verify()  # No exec and no reservation if local prerequisites already fail.
-    if deadline - time.monotonic() < HELPER_SECONDS + STARTUP_SECONDS + 120:
+    if deadline - time.monotonic() < helper_seconds + STARTUP_SECONDS + 120:
         raise TimeoutError("retirement lacks the whole child and reporting allowance")
     reserve(
         output / "exec-submitted.json",
@@ -207,7 +305,7 @@ def execute(  # noqa: PLR0912,PLR0913,PLR0915 - one bounded submission and proto
             output / "stderr", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
         )
         with os.fdopen(descriptor, "wb") as stderr:
-            if deadline - time.monotonic() < HELPER_SECONDS + STARTUP_SECONDS + 120:
+            if deadline - time.monotonic() < helper_seconds + STARTUP_SECONDS + 120:
                 raise TimeoutError("retirement pre-exec reserve ended; do not replay")
             process = subprocess.Popen(  # noqa: S603 - fixed executable, reviewed program, no shell
                 [  # noqa: S607 - existing supported Docker CLI, no shell
@@ -235,11 +333,19 @@ def execute(  # noqa: PLR0912,PLR0913,PLR0915 - one bounded submission and proto
             )
             incoming, outgoing = cast(BinaryIO, process.stdout), cast(BinaryIO, process.stdin)
             send(outgoing, {"bundle": bundle, "authorization": authorization}, deadline=deadline)
-            for sequence in range(MAX_FRAMES):
+            for sequence in range(64 if staged else MAX_FRAMES):
                 value = frame(incoming, deadline=deadline)
                 record(output / f"remote-{sequence:02d}.json", value)
-                if value.get("operation") == "revalidate-preserved-files-and-cleanup":
-                    if deadline - time.monotonic() < ACK_SECONDS + 120:
+                if value.get("operation") in {
+                    "revalidate-preserved-files-and-cleanup",
+                    "revalidate-preserved-files",
+                }:
+                    exchange = (
+                        stage_budget.REFRESH_SECONDS
+                        if operation.startswith("remote-")
+                        else ACK_SECONDS
+                    )
+                    if deadline - time.monotonic() < exchange + 120:
                         raise TimeoutError("retirement lacks full native verification reserve")
                     proof = verify()
                     if proof.get("evidence_sha256") != value.get("evidence_sha256"):
@@ -248,10 +354,18 @@ def execute(  # noqa: PLR0912,PLR0913,PLR0915 - one bounded submission and proto
                     continue
                 outgoing.close()
                 status = process.wait(timeout=max(0.1, min(120, deadline - time.monotonic())))
-                expected_status = "observed" if observation_only else "verified"
+                expected_status = "observed" if observing else "verified"
                 if value.get("status") != expected_status or status != 0:
                     raise RetirementError("retirement child has an unresolved outcome")
-                terminal(value, authorization, observation_only=observation_only)
+                if staged:
+                    stage_terminal(
+                        value,
+                        authorization,
+                        operation=operation,
+                        plan=cast(dict[str, object], bound["plan"]),
+                    )
+                else:
+                    terminal(value, authorization, observation_only=observation_only)
                 record(
                     output / "verified.json",
                     {

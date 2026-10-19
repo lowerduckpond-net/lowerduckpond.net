@@ -309,6 +309,9 @@ def test_proof_exchange_leaves_room_for_full_local_child_and_response() -> None:
 def test_native_permanent_marker_admission_requires_post_effect_and_report_reserve(
     owner: context.NativeFixture, monkeypatch: pytest.MonkeyPatch, remaining: int
 ) -> None:
+    # This regression isolates the enclosing allowance. Envelope eligibility has
+    # separate native inventory, credential-clock and capacity boundary tests.
+    monkeypatch.setattr("scripts.m3_11_frozen_envelope.verify", lambda _fixture: {})
     monkeypatch.setattr(admission, "_deadline", float(remaining))
     monkeypatch.setattr(admission, "time", SimpleNamespace(monotonic=lambda: 0.0))
     if remaining < context.POST_EFFECT_RESERVE + admission.REPORT_SECONDS:
@@ -818,7 +821,7 @@ def test_missing_supported_closeout_blocks_native_execution_before_effects(
     monkeypatch.setattr(owner, "owner", unexpected)
     if boundary == "driver":
         program, bundle = driver_program(case)
-        with pytest.raises(ValueError, match="staged closeout is not implemented"):
+        with pytest.raises(ValueError, match="staged closeout review is incomplete"):
             driver.execute(
                 program=program,
                 bundle=bundle,
@@ -846,7 +849,7 @@ def test_missing_supported_closeout_blocks_native_execution_before_effects(
         assert len(emitted) == 1 and emitted[0]["status"] == "unresolved"
         assert emitted[0]["no_replay"] is True
     else:
-        with pytest.raises(ValueError, match="staged closeout is not implemented"):
+        with pytest.raises(ValueError, match="staged closeout review is incomplete"):
             owner.before_disposition()
     assert not effects and not output.exists() and not transaction.root.exists()
     assert not fixture.store.deletes

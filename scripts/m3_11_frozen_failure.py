@@ -9,6 +9,8 @@ from scripts.m3_11_retirement_files import RetirementError
 from scripts.m3_11_unattended.model import LifecycleError
 from scripts.provider_preflight_diagnostics import exception_facts
 
+MAX_ATTEMPTS = 10000
+
 SOURCES = frozenset(
     {
         "m3_11_frozen_retirement.py",
@@ -17,11 +19,36 @@ SOURCES = frozenset(
         "m3_11_frozen_client.py",
         "m3_11_frozen_driver.py",
         "m3_11_frozen_frames.py",
+        "m3_11_frozen_stage_entry.py",
+        "m3_11_frozen_stage_receipt.py",
+        "m3_11_frozen_stage.py",
+        "m3_11_frozen_remote.py",
+        "m3_11_frozen_remote_proof.py",
+        "m3_11_frozen_disposal.py",
+        "m3_11_frozen_residual.py",
+        "m3_11_frozen_export.py",
+        "m3_11_frozen_actor_export.py",
+        "m3_11_frozen_backups.py",
+        "m3_11_frozen_collect.py",
+        "m3_11_frozen_terminal.py",
+        "m3_11_frozen_terminal_bundle.py",
+        "m3_11_frozen_github.py",
+        "m3_11_frozen_envelope.py",
+        "m3_11_frozen_capture_resume.py",
+        "m3_11_frozen_certificate.py",
+        "m3_11_frozen_refresh.py",
+        "m3_11_frozen_validate.py",
     }
 )
 
 
-def document(error: BaseException, *, started: float) -> dict[str, object]:
+def document(
+    error: BaseException,
+    *,
+    started: float,
+    phase: str = "frozen-retirement",
+    attempt_count: int = 1,
+) -> dict[str, object]:
     facts = exception_facts(error)
     types: dict[type[BaseException], str] = {
         RetirementError: "RetirementError",
@@ -37,7 +64,26 @@ def document(error: BaseException, *, started: float) -> dict[str, object]:
         trace = trace.tb_next
     return {
         "format": "lowerduckpond-frozen-retirement-failure-v1",
-        "phase": "frozen-retirement",
+        "phase": phase
+        if phase
+        in {
+            "frozen-retirement",
+            "execute",
+            "reconcile",
+            "remote-cleanup",
+            "remote-continue",
+            "remote-observe",
+            "local-disposal",
+            "local-continue",
+            "local-observe",
+            "terminal-snapshot",
+            "terminal-github-get",
+            "terminal-capture",
+        }
+        else "unclassified",
+        "attempt_count": attempt_count
+        if type(attempt_count) is int and 0 < attempt_count <= MAX_ATTEMPTS
+        else None,
         "native_exception_type": native_type,
         "exception_chain": facts,
         "source": source,

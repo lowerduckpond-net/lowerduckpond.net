@@ -26,6 +26,7 @@ from scripts.m3_11_unattended.storage_admission import (
 
 ACK_SECONDS = 720  # Full 600-second local child plus frame/fsync/report overhead.
 NEXT_EFFECT_RESERVE = 180
+REFRESH_RESERVE = NEXT_EFFECT_RESERVE + 120
 FRAME_BYTES = 1024 * 1024
 
 
@@ -34,8 +35,9 @@ def emit(value: dict[str, object]) -> None:
 
 
 class LocalProof:
-    def __init__(self, evidence_sha256: str) -> None:
+    def __init__(self, evidence_sha256: str, *, ack_seconds: int = ACK_SECONDS) -> None:
         self.evidence_sha256 = evidence_sha256
+        self.ack_seconds = ack_seconds
         self.valid_until: datetime | None = None
 
     def current(self) -> None:
@@ -45,8 +47,23 @@ class LocalProof:
             "cleanup proof lacks time for the next bounded effect and report",
         )
 
+    def refresh_if_needed(self) -> None:
+        # Long read-only preservation may span several native proof windows.
+        # The holder calls this only outside the revocation-exclusion lock.
+        # A verifier must select newly observed evidence; the old native origin
+        # is never changed by waiting, rereading, or this callback.
+        if self.valid_until is None or self.valid_until - datetime.now(UTC) <= timedelta(
+            seconds=REFRESH_RESERVE
+        ):
+            self()
+            require(
+                self.valid_until is not None
+                and self.valid_until - datetime.now(UTC) > timedelta(seconds=REFRESH_RESERVE),
+                "fresh cleanup evidence lacks the whole next effect reserve",
+            )
+
     def __call__(self) -> str:
-        require_remaining(ACK_SECONDS)
+        require_remaining(self.ack_seconds)
         nonce = str(uuid.uuid7())
         emit(
             {
@@ -56,7 +73,7 @@ class LocalProof:
             }
         )
         value = fields(
-            frame(sys.stdin.buffer, deadline=time.monotonic() + ACK_SECONDS),
+            frame(sys.stdin.buffer, deadline=time.monotonic() + self.ack_seconds),
             {
                 "nonce",
                 "evidence_sha256",
@@ -71,7 +88,7 @@ class LocalProof:
             value["nonce"] == nonce
             and value["evidence_sha256"] == self.evidence_sha256
             and value["status"] == "native-files-and-cleanup-verified"
-            and now - timedelta(seconds=ACK_SECONDS) <= observed <= now,
+            and now - timedelta(seconds=self.ack_seconds) <= observed <= now,
             "local proof is not the current bound validation",
         )
         self.valid_until = instant(value["proof_valid_until"])
@@ -88,9 +105,24 @@ class LocalProof:
 def run(payload: object) -> int:
     started = time.monotonic()
     try:
+        if isinstance(payload, dict) and payload.get("operation") == "terminal-snapshot":
+            from scripts.m3_11_frozen_stage_entry import terminal_snapshot  # noqa: PLC0415
+
+            terminal_snapshot(payload)
+            return 0
         value = fields(
             payload, {"plan", "authorization", "fixture", "runtime_revision", "operation"}
         )
+        from scripts.m3_11_frozen_transport import (  # noqa: PLC0415
+            STAGED_MUTATIONS,
+            STAGED_OBSERVATIONS,
+        )
+
+        if value["operation"] in STAGED_MUTATIONS | STAGED_OBSERVATIONS:
+            from scripts.m3_11_frozen_stage_entry import run as staged  # noqa: PLC0415
+
+            staged(value)
+            return 0
         require(value["operation"] in {"execute", "reconcile"}, "unknown retirement operation")
         if value["operation"] == "execute":
             require_supported_closeout()
@@ -126,7 +158,13 @@ def run(payload: object) -> int:
         emit(
             {
                 "status": "unresolved",
-                "failure": document(error, started=started),
+                "failure": document(
+                    error,
+                    started=started,
+                    phase=str(payload.get("operation"))
+                    if isinstance(payload, dict)
+                    else "frozen-retirement",
+                ),
                 "no_replay": True,
                 "qualification_authority": "none",
             }
