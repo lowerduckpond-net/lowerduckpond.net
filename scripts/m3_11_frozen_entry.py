@@ -14,7 +14,7 @@ from scripts import production_qualification_inputs as source
 from scripts.m3_11_frozen_context import NativeFixture, require
 from scripts.m3_11_frozen_failure import document
 from scripts.m3_11_frozen_frames import frame
-from scripts.m3_11_frozen_retirement import FrozenRetirement
+from scripts.m3_11_frozen_retirement import FrozenRetirement, require_supported_closeout
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.model import instant
@@ -92,6 +92,8 @@ def run(payload: object) -> int:
             payload, {"plan", "authorization", "fixture", "runtime_revision", "operation"}
         )
         require(value["operation"] in {"execute", "reconcile"}, "unknown retirement operation")
+        if value["operation"] == "execute":
+            require_supported_closeout()
         with bounded_helper():
             source.current_candidate(Path("/work/source"), str(value["runtime_revision"]))
             transaction_plan = value["plan"]

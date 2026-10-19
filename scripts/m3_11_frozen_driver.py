@@ -23,8 +23,15 @@ from typing import BinaryIO, cast
 from scripts.m3_11_frozen_context import MAX_READS
 from scripts.m3_11_frozen_entry import ACK_SECONDS
 from scripts.m3_11_frozen_frames import frame, send
-from scripts.m3_11_frozen_retirement import FORMAT, OBSERVATION, RETAINED, fingerprint, reserve
-from scripts.m3_11_frozen_transport import STARTUP_SECONDS
+from scripts.m3_11_frozen_retirement import (
+    FORMAT,
+    OBSERVATION,
+    RETAINED,
+    fingerprint,
+    require_supported_closeout,
+    reserve,
+)
+from scripts.m3_11_frozen_transport import STARTUP_SECONDS, require_operation
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_retirement_files import RetirementError, digest, directory, record, sync
 from scripts.m3_11_unattended.storage_admission import HELPER_SECONDS
@@ -78,7 +85,7 @@ def terminal(
         "versions_retired": 1,
         "qualification_authority": "none",
         "fixture_execution": "permanently-excluded",
-        "fixture_disposal": "permanently-excluded",
+        "fixture_disposal": "separately-authorized-closeout-required",
         "original_tenant_job_audit_unchanged": True,
         "retained": RETAINED,
         "lease_released": False,
@@ -91,7 +98,7 @@ def terminal(
         or not math.isfinite(float(cast(float, outer["elapsed_seconds"])))
         or not 0 <= float(cast(float, outer["elapsed_seconds"])) < HELPER_SECONDS
         or type(outer["provider_delete_submissions"]) is not int
-        or outer["provider_delete_submissions"] not in (0, 1)
+        or outer["provider_delete_submissions"] != 1
         or type(outer["provider_inventory_owner_reads"]) is not int
         or not 0 < outer["provider_inventory_owner_reads"] <= MAX_READS
     ):
@@ -160,6 +167,16 @@ def execute(  # noqa: PLR0912,PLR0913,PLR0915 - one bounded submission and proto
     deadline = started + CALLER_SECONDS
     if now >= deadline:
         raise TimeoutError("retirement enclosing caller allowance already ended")
+    if type(observation_only) is not bool:
+        raise RetirementError("retirement observation mode must be explicit")
+    require_operation(
+        program,
+        bundle,
+        operation="reconcile" if observation_only else "execute",
+        plan_sha256=authorization.get("plan_sha256"),
+    )
+    if not observation_only:
+        require_supported_closeout()
     if re.fullmatch(r"[0-9a-f]{64}", controller) is None:
         raise RetirementError("retirement controller identity is invalid")
     if not environment.get("DOCKER_HOST", "").startswith("unix:///") or environment.get(

@@ -83,7 +83,7 @@ def case(tmp_path: Path) -> tuple[frozen.FrozenRetirement, Fixture, dict[str, ob
         "approval_reference_sha256": "e" * 64,
         "acknowledge_exact_version_loss": True,
         "acknowledge_permanent_fixture_retirement": True,
-        "acknowledge_permanent_disposal_block": True,
+        "acknowledge_separate_closeout_required": True,
     }
     return frozen.FrozenRetirement(value, fixture), fixture, approval
 
@@ -104,6 +104,7 @@ def test_one_exact_version_and_permanent_fixture_fence(
     ]
     assert result["qualification_authority"] == "none"
     assert result["fixture_execution"] == "permanently-excluded"
+    assert result["fixture_disposal"] == "separately-authorized-closeout-required"
     assert result["lease_released"] is result["credential_cleanup_complete"] is False
     assert (transaction.run / "failure.json").read_bytes() == original
     with pytest.raises(ValueError, match="permanently"):
@@ -156,7 +157,7 @@ def test_no_disposition_or_mutation_when_original_readiness_fails(
         "plan_sha256",
         "acknowledge_exact_version_loss",
         "acknowledge_permanent_fixture_retirement",
-        "acknowledge_permanent_disposal_block",
+        "acknowledge_separate_closeout_required",
         "approved_at",
     ],
 )
@@ -402,3 +403,59 @@ def test_read_only_reconciliation_does_not_repair_incomplete_or_malformed_journa
         transaction.execute(approval, reconcile_only=True)
     assert journal_snapshot(transaction.run) == before
     assert len(fixture.store.deletes) == submissions
+
+
+def test_final_guard_cannot_relabel_stale_empty_inventory_as_completion(
+    case: tuple[frozen.FrozenRetirement, Fixture, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transaction, fixture, approval = case
+    observed = fixture.archives.observed
+    guard = fixture.guard
+    emptied = []
+
+    def inventory() -> list[tuple[str, str]]:
+        result = observed()
+        if not result:
+            emptied.append(True)
+        return result
+
+    def changed(plan: dict[str, object]) -> None:
+        guard(plan)
+        if emptied:
+            fixture.store.objects["unexpected", "new-version"] = b"do not delete"
+
+    monkeypatch.setattr(fixture.archives, "observed", inventory)
+    monkeypatch.setattr(fixture, "guard", changed)
+    with pytest.raises(ValueError):
+        transaction.execute(approval)
+    assert len(fixture.store.deletes) == 1
+    assert not (transaction.root / "absence.json").exists()
+    assert not (transaction.root / "retired.json").exists()
+    assert fixture.store.objects["unexpected", "new-version"] == b"do not delete"
+
+
+def test_final_observation_uses_inventory_after_slow_guard(
+    case: tuple[frozen.FrozenRetirement, Fixture, dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transaction, fixture, approval = case
+    fixture.store.failure = "after"
+    with pytest.raises(ConnectionError):
+        transaction.execute(approval)
+    before = journal_snapshot(transaction.root)
+    original = fixture.guard
+    calls = []
+
+    def guard(plan: dict[str, object]) -> None:
+        original(plan)
+        calls.append(True)
+        if len(calls) == 3:  # noqa: PLR2004 - final guard after initial and journal checks
+            fixture.store.objects["archives/example.zip", "exact-version"] = b"preserved"
+
+    monkeypatch.setattr(fixture, "guard", guard)
+    result = transaction.execute(approval, reconcile_only=True)
+    assert result["version_state"] == "present"
+    assert not result["recorded_retirement"]
+    assert journal_snapshot(transaction.root) == before
+    assert len(fixture.store.deletes) == 1

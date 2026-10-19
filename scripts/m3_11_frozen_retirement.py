@@ -1,4 +1,4 @@
-"""One exact archive submission after permanent disposable-fixture retirement.
+"""One exact archive submission after permanent fixture execution retirement.
 
 The approved plan comes from native frozen-state validation. A pending record
 is a consumed submission identity, including a crash before the SDK call. It
@@ -23,7 +23,7 @@ from scripts.m3_11_retirement_files import RetirementError, digest, directory, r
 from scripts.qualification_disposition import DIRECTORY
 
 FORMAT = "lowerduckpond-m3-11-frozen-archive-retirement-v1"
-AUTHORIZATION = "lowerduckpond-m3-11-frozen-archive-authorization-v1"
+AUTHORIZATION = "lowerduckpond-m3-11-frozen-archive-authorization-v2"
 OBSERVATION = "lowerduckpond-m3-11-frozen-archive-observation-v1"
 RETAINED = ["original-failure", "containers", "state", "backup-prefix", "private-copies"]
 PLAN_FIELDS = {
@@ -39,6 +39,19 @@ PLAN_FIELDS = {
     "archive",
     "retained",
 }
+
+
+def require_supported_closeout() -> None:
+    """Keep native execution disabled until the narrower exit path is reviewed.
+
+    Transaction primitives remain testable against synthetic stores. Neither
+    approval nor a runtime flag may replace the missing staged closeout adapter.
+    Removing this blocker requires that adapter, its race/crash regressions and
+    a newly reviewed source/program binding, not merely a new approval document.
+    """
+    raise RetirementError(
+        "live retirement unavailable: supported staged closeout is not implemented"
+    )
 
 
 def reserve(path: Path, value: dict[str, object]) -> None:
@@ -133,7 +146,7 @@ class FrozenRetirement:
                 "approval_reference_sha256",
                 "acknowledge_exact_version_loss",
                 "acknowledge_permanent_fixture_retirement",
-                "acknowledge_permanent_disposal_block",
+                "acknowledge_separate_closeout_required",
             },
         )
         if (
@@ -141,11 +154,12 @@ class FrozenRetirement:
             or document["plan_sha256"] != digest(self.plan)
             or document["acknowledge_exact_version_loss"] is not True
             or document["acknowledge_permanent_fixture_retirement"] is not True
-            or document["acknowledge_permanent_disposal_block"] is not True
+            or document["acknowledge_separate_closeout_required"] is not True
             or not isinstance(document["approved_at"], str)
         ):
             raise RetirementError(
-                "exact version loss, permanent fixture retirement and disposal block need approval"
+                "exact version loss, permanent execution retirement and separate closeout "
+                "need approval"
             )
         approved = datetime.fromisoformat(document["approved_at"])
         if approved.tzinfo is None or approved > self.clock():
@@ -174,7 +188,7 @@ class FrozenRetirement:
         with self.fixture.locked(self.plan):
             return self._execute(approval, reconcile_only=reconcile_only)
 
-    def _execute(self, approval: dict[str, object], *, reconcile_only: bool) -> dict[str, object]:  # noqa: PLR0912 - fail-closed journal states
+    def _execute(self, approval: dict[str, object], *, reconcile_only: bool) -> dict[str, object]:  # noqa: PLR0912, PLR0915 - fail-closed journal states
         directory(self.run)
         self.fixture.guard(self.plan)
         expected = self._expected()
@@ -239,6 +253,10 @@ class FrozenRetirement:
             if self.fixture.archives.observed():
                 raise RetirementError("exact-version absence is not independently proven")
         self._guard(approval)
+        # Guarding includes full local/provider checks and may be slow. Never
+        # stamp an earlier empty observation with the time after that work.
+        if self.fixture.archives.observed():
+            raise RetirementError("exact-version absence changed during final guard")
         if not absence.exists():
             record(
                 absence,
@@ -285,7 +303,7 @@ class FrozenRetirement:
             "versions_retired": 1,
             "qualification_authority": "none",
             "fixture_execution": "permanently-excluded",
-            "fixture_disposal": "permanently-excluded",
+            "fixture_disposal": "separately-authorized-closeout-required",
             "original_tenant_job_audit_unchanged": True,
             "retained": RETAINED,
             "lease_released": False,
@@ -321,6 +339,11 @@ class FrozenRetirement:
         ):
             raise RetirementError("recorded retirement differs from observed evidence")
         self._guard(approval)
+        # Observation timestamps also describe the final fresh inventory, not
+        # an inventory from before a potentially lengthy evidence guard.
+        observed = self.fixture.archives.observed()
+        if observed not in ([], self._expected()) or (recorded_complete and observed):
+            raise RetirementError("retirement observation changed during final guard")
         return {
             "format": OBSERVATION,
             "plan_sha256": digest(self.plan),

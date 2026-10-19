@@ -7,9 +7,12 @@ can be changed for diagnosis; the original fenced source, selected artifact,
 backup prefix and original failed reports remain retained during investigation.
 Every failed run must ordinarily be closed out locally and in DigitalOcean after
 debugging is finished, including runs whose remaining failures cannot usefully be
-explored. The separately approved [frozen fixture retirement](frozen-fixture-retirement.md)
-is an explicit exception: its permanent execution fence also blocks disposal and
-closeout to preserve original history; credential cleanup still proceeds.
+explored. The proposed [frozen fixture retirement](frozen-fixture-retirement.md)
+permanently excludes execution, but does not permanently prohibit verified
+disposal. Ordinary closeout is currently blocked pending a separately authorized,
+supported adapter that preserves history and prevents unsafe reuse. Native
+retirement itself is unavailable until that adapter is implemented and reviewed;
+credential cleanup still proceeds independently.
 
 This command runs on the secure workstation in the existing private production
 environment shell. It reads current storage credentials from the encrypted

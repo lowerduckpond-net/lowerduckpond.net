@@ -7,14 +7,25 @@ must bind exact source, existing consumer/producer, lease/manifest, stopped acto
 original evidence, preserved bytes, bucket/key/VersionId/size/hash and reviewed
 caller/program files. No private production identities belong in this document.
 
+**Current status: source prototype, not execution-ready.** The supported staged
+closeout adapter below is not implemented. The driver rejects execution before
+creating its output directory, reserving an exec or gathering proofs. The native
+entry and native owner's pre-marker check independently reject it as well. There
+is no approval field, CLI option or environment flag that enables execution.
+Read-only reconciliation remains distinct and cannot submit DELETE. Historical
+seals that promised permanent disposal exclusion are superseded; they must not
+be relabeled as approval for this narrower contract.
+
 ## Irreversible effects and recovery
 
-Before the single DELETE, `frozen-archive-retirement/` is created in the producing
+The tested transaction primitive creates `frozen-archive-retirement/` before the
+single DELETE in the producing
 qualification directory. Its presence permanently excludes that fixture from
-supported restart, reapply, reconstruction, debug recovery, report repair,
-disposal and directory closeout. Partial/malformed markers also exclude it even
-if no DELETE was submitted. There is no unretire operation. The owner must
-explicitly approve this additional permanent execution and disposal restriction.
+supported restart, reapply, reconstruction, debug recovery and report repair.
+Partial/malformed markers also exclude it even if no DELETE was submitted.
+There is no unretire operation. The owner must explicitly approve this permanent
+execution restriction and the requirement for a separate verified closeout.
+Permanent disposal prohibition is not part of the revised contract.
 
 Original tenant/job/result, admission correlation and audit records remain
 history. No tenant deletion job or replacement archive authority is manufactured.
@@ -36,6 +47,54 @@ reuse), or separately authorizing another empty bucket and its configuration.
 Ordinary archived-tenant delete changes tenant/runtime authority and purges all
 versions for a key; it is broader than this exception. The old reconstruction-only
 retirement gate and its resumable deletion branch must not be bypassed or reused.
+
+## Required closeout implementation
+
+Ordinary closeout currently uses the same execution guard, so it cannot remove
+a retired run's backup prefix, stopped containers and anonymous volumes, image
+tag, or original qualification directory. It would also remove local failure
+logs and retirement copies. This prevents accidental evidence loss, but it is
+not a reason to prohibit verified disposal forever. The current execution blocker
+prevents creating that dead end while a supported adapter is missing.
+
+The narrower design, **not an implemented capability**, has two stages:
+
+1. Separately authorized remote cleanup reuses the existing exact owned-backup
+   removal and independent archive/DNS absence checks while existing scoped
+   credentials remain valid. It retains every original actor and identity record:
+   active lease reuse explicitly requires those actors to be present, stopped and
+   unchanged. It cannot delete another archive, replay a consumed DELETE, revoke
+   credentials, dispose actors or release the lease.
+2. Separately authorized local-only disposal requires authenticated complete
+   terminal lease evidence, native release/drain conditions, fresh actor identity
+   and quiescence checks, and a full private evidence export with fsync and an
+   independent reread. A persistent external identity fence and shared operation
+   lock must survive deletion/restoration of the original directory. Exact local
+   disposal must work without child credentials or provider calls. Original
+   failure, tenant/job/audit history and uncertain submission identities remain
+   preserved outside its deletion scope.
+
+Terminal evidence must bind the exact manifest and issuer-stopped fact plus all
+seven original created/removed/denied obligations. A compact `closed` status row,
+expired credential or missing secret does not suffice. Failed qualification
+`closure` remains unresolved by design; that field cannot be the terminal lease
+gate. The active 13-hour credential admission floor and 5,400-second proof age do
+not apply to authenticated immutable terminal facts. Local identity checks remain
+fresh; the earlier remote absence proof retains its actual observation timestamp.
+
+This ordering avoids requiring revoked credentials to finish local disposal.
+It does not require immediate credential cancellation, postpone scheduled cleanup,
+or require waiting for credential expiry before bucket reuse. If remote cleanup
+has not completed before access ends, that is a concrete remaining obligation and
+authority gap; new credentials are not implied. Missing or uncertain retirement
+completion must not permanently prevent independently verified resource cleanup,
+and cleanup must not manufacture retirement success.
+
+The adapter, authenticated proof path, export/fence implementation and concurrent
+crash/recovery tests are prerequisites **before any live retirement**. They are
+still outstanding. Their later execution needs separate exact disposal scope;
+none is included in the current one-VersionId design. Current read-only inspection
+and independent credential cleanup remain available.
 
 ## Concurrent ownership
 
@@ -101,7 +160,20 @@ automatic replay, even if the version remains visible. A separately selected
 read-only reconciliation program can observe presence/absence and validate an
 already-recorded completion, but cannot DELETE, create a marker, or append
 authoritative absence/completion records. Absence alone never manufactures a
-completed retirement receipt. Independent empty inventories and a closed bound terminal receipt
+completed retirement receipt. Both modes repeat the dual-principal inventory
+after the final potentially slow guard, and timestamp that actual final
+observation. Execute success requires exactly one integer DELETE count;
+reconciliation requires zero. The driver validates the checksum-bound program
+and decoded payload operation and plan before any exec or reservation, so an
+observation label cannot submit an execute payload.
+
+The added final inventory performs eight bounded GET requests (four per
+principal). Their nominal request allowances total 320 seconds under the shared
+nonrenewing helper deadline, not an extra independent 320-second allowance.
+There is no completed live retirement measurement; budget sufficiency must be
+reassessed with the final adapter before enabling native execution. Existing
+budgets have not been reduced or extended to hide this incomplete readiness.
+Independent empty inventories and a closed bound terminal receipt
 are required. Qualification remains failed; release/cleanup closure is not implied.
 
 The private proposal records comparable timing samples, counts, revisions and

@@ -19,6 +19,7 @@ from lowerduckpond_m3_archive.storage import S3Client
 from lowerduckpond_static_host_agent.archive_configuration import ArchiveConfiguration
 
 from scripts.m3_11_frozen_client import make_client
+from scripts.m3_11_frozen_retirement import require_supported_closeout
 from scripts.m3_11_live_storage import LiveStorage
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_qualification_evidence import fields
@@ -191,6 +192,7 @@ class NativeFixture:
                 self.held = False
 
     def before_disposition(self) -> None:
+        require_supported_closeout()
         self.owner()
         require_remaining(POST_EFFECT_RESERVE)
 

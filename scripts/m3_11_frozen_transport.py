@@ -14,10 +14,12 @@ import json
 import zlib
 from pathlib import Path
 
+from scripts.m3_11_retirement_files import digest
 from scripts.production_qualification_inputs import git, revision
 
 MAX_PROGRAM = 100_000
 MAX_BUNDLE = 512 * 1024
+MAX_EXPANDED_BUNDLE = 8 * 1024 * 1024
 STARTUP_SECONDS = 180
 
 BOOTSTRAP = """import signal, time
@@ -62,6 +64,49 @@ signal.setitimer(signal.ITIMER_REAL, 0)
 signal.signal(signal.SIGALRM, signal.SIG_DFL)
 raise SystemExit(run({**bundle['payload'], 'authorization': initial['authorization']}))
 """
+
+
+def require_operation(program: str, bundle: str, *, operation: str, plan_sha256: object) -> None:
+    """Validate the actual sealed payload before reserving or submitting exec.
+
+    A caller's observation label cannot turn an execute payload into a read-only
+    operation. Bind both the exact bootstrap and its bounded compressed input.
+    Source/module review remains the separate private caller's responsibility.
+    """
+    if operation not in {"execute", "reconcile"} or len(bundle.encode()) > MAX_BUNDLE:
+        raise ValueError("retirement operation or bundle bound is invalid")
+    expected = "EXPECTED_DATA_SHA256 = " + repr(hashlib.sha256(bundle.encode()).hexdigest())
+    if program != expected + "\n" + BOOTSTRAP:
+        raise ValueError("retirement program differs from its bound bootstrap")
+    try:
+        decoder = zlib.decompressobj()
+        raw = decoder.decompress(base64.b85decode(bundle), MAX_EXPANDED_BUNDLE + 1)
+        if (
+            len(raw) > MAX_EXPANDED_BUNDLE
+            or not decoder.eof
+            or decoder.unused_data
+            or decoder.unconsumed_tail
+        ):
+            raise ValueError
+        value = json.loads(raw)
+        if (
+            not isinstance(value, dict)
+            or set(value) != {"modules", "payload"}
+            or not isinstance(value["modules"], dict)
+            or raw != json.dumps(value, sort_keys=True).encode()
+        ):
+            raise ValueError
+        payload = value["payload"]
+        if (
+            not isinstance(payload, dict)
+            or set(payload) != {"plan", "fixture", "runtime_revision", "operation"}
+            or payload["operation"] != operation
+            or not isinstance(payload["plan"], dict)
+            or digest(payload["plan"]) != plan_sha256
+        ):
+            raise ValueError
+    except (ValueError, TypeError, KeyError, zlib.error) as error:
+        raise ValueError("sealed retirement payload differs from caller operation/plan") from error
 
 
 def build(repository: Path, payload: dict[str, object]) -> dict[str, object]:

@@ -45,6 +45,13 @@ Case = tuple[FrozenRetirement, Fixture, dict[str, object]]
 
 
 @pytest.fixture
+def synthetic_closeout_support(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exercise transaction primitives with fake providers, never native readiness."""
+    for module in (driver, entry, context):
+        monkeypatch.setattr(module, "require_supported_closeout", lambda: None)
+
+
+@pytest.fixture
 def locked_owner(
     owner: context.NativeFixture, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[context.NativeFixture, dict[str, object], list[Path]]:
@@ -126,21 +133,28 @@ def test_unreleased_prior_consumer_blocks_native_locked_entry(
 
 
 def program_for(payload: dict[str, object]) -> tuple[str, str]:
-    raw = json.dumps({"modules": {}, "payload": payload}).encode()
+    raw = json.dumps({"modules": {}, "payload": payload}, sort_keys=True).encode()
     bundle = base64.b85encode(zlib.compress(raw)).decode()
     return program_for_bundle(bundle), bundle
 
 
 def program_for_bundle(bundle: str) -> str:
     return (
-        "EXPECTED_DATA_SHA256="
+        "EXPECTED_DATA_SHA256 = "
         + repr(hashlib.sha256(bundle.encode()).hexdigest())
         + "\n"
         + transport.BOOTSTRAP
     )
 
 
+def driver_program(case: Case, operation: str = "execute") -> tuple[str, str]:
+    return program_for(
+        {"plan": case[0].plan, "fixture": {}, "runtime_revision": "b" * 40, "operation": operation}
+    )
+
+
 @pytest.mark.parametrize("operation", ["execute", "reconcile"])
+@pytest.mark.usefixtures("synthetic_closeout_support")
 def test_real_bootstrap_entry_driver_protocol_and_no_replay(  # noqa: PLR0915 - one real protocol exchange
     case: Case, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
@@ -291,6 +305,7 @@ def test_proof_exchange_leaves_room_for_full_local_child_and_response() -> None:
 
 
 @pytest.mark.parametrize("remaining", [2459, 2460])
+@pytest.mark.usefixtures("synthetic_closeout_support")
 def test_native_permanent_marker_admission_requires_post_effect_and_report_reserve(
     owner: context.NativeFixture, monkeypatch: pytest.MonkeyPatch, remaining: int
 ) -> None:
@@ -328,8 +343,9 @@ def test_observation_cannot_hide_a_provider_mutation_or_claim_completion(case: C
 
 
 @pytest.mark.parametrize("where", ["before-reservation", "after-reservation"])
+@pytest.mark.usefixtures("synthetic_closeout_support")
 def test_driver_never_submits_after_enclosing_allowance_consumed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, where: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, where: str, case: Case
 ) -> None:
     tmp_path.chmod(0o700)
     clock, sent = [0.0], []
@@ -351,9 +367,9 @@ def test_driver_never_submits_after_enclosing_allowance_consumed(
     output = tmp_path / "driver"
     with pytest.raises(TimeoutError):
         driver.execute(
-            program="synthetic",
-            bundle="synthetic",
-            authorization={},
+            program=driver_program(case)[0],
+            bundle=driver_program(case)[1],
+            authorization=case[2],
             controller="a" * 64,
             environment={"DOCKER_HOST": "unix:///synthetic"},
             output=output,
@@ -364,8 +380,9 @@ def test_driver_never_submits_after_enclosing_allowance_consumed(
 
 
 @pytest.mark.parametrize("prelude_seconds", [2500.0, 6001.0])
+@pytest.mark.usefixtures("synthetic_closeout_support")
 def test_original_caller_origin_includes_preimport_and_review_work(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prelude_seconds: float
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prelude_seconds: float, case: Case
 ) -> None:
     tmp_path.chmod(0o700)
     monkeypatch.setattr(driver, "time", SimpleNamespace(monotonic=lambda: prelude_seconds))
@@ -374,9 +391,9 @@ def test_original_caller_origin_includes_preimport_and_review_work(
     output = tmp_path / "original-clock"
     with pytest.raises(TimeoutError):
         driver.execute(
-            program="synthetic",
-            bundle="synthetic",
-            authorization={},
+            program=driver_program(case)[0],
+            bundle=driver_program(case)[1],
+            authorization=case[2],
             controller="a" * 64,
             environment={"DOCKER_HOST": "unix:///synthetic"},
             output=output,
@@ -386,6 +403,7 @@ def test_original_caller_origin_includes_preimport_and_review_work(
     assert not sent and not (output / "exec-submitted.json").exists()
 
 
+@pytest.mark.usefixtures("synthetic_closeout_support")
 def test_driver_cannot_promote_malformed_verified_frame(
     case: Case, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -407,8 +425,8 @@ def test_driver_cannot_promote_malformed_verified_frame(
     output = tmp_path / "malformed"
     with pytest.raises((ValueError, RuntimeError)):
         driver.execute(
-            program="synthetic",
-            bundle="synthetic",
+            program=driver_program(case)[0],
+            bundle=driver_program(case)[1],
             authorization=approval,
             controller="a" * 64,
             environment={"DOCKER_HOST": "unix:///synthetic"},
@@ -618,8 +636,9 @@ def test_partial_initial_frame_cannot_renew_startup_deadline(
 
 
 @pytest.mark.parametrize("error", [KeyboardInterrupt, SystemExit])
+@pytest.mark.usefixtures("synthetic_closeout_support")
 def test_driver_interrupt_preserves_uncertain_identity_and_never_reexecutes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: type[BaseException]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: type[BaseException], case: Case
 ) -> None:
     tmp_path.chmod(0o700)
     processes: list[object] = []
@@ -642,9 +661,9 @@ def test_driver_interrupt_preserves_uncertain_identity_and_never_reexecutes(
 
     def invoke() -> None:
         driver.execute(
-            program="synthetic",
-            bundle="synthetic",
-            authorization={},
+            program=driver_program(case)[0],
+            bundle=driver_program(case)[1],
+            authorization=case[2],
             controller="a" * 64,
             environment={"DOCKER_HOST": "unix:///synthetic"},
             output=output,
@@ -662,6 +681,7 @@ def test_driver_interrupt_preserves_uncertain_identity_and_never_reexecutes(
 
 
 @pytest.mark.parametrize("error", [KeyboardInterrupt, SystemExit])
+@pytest.mark.usefixtures("synthetic_closeout_support")
 def test_entry_interrupt_reports_unresolved_without_claiming_retirement(
     monkeypatch: pytest.MonkeyPatch, error: type[BaseException]
 ) -> None:
@@ -690,11 +710,153 @@ def test_entry_interrupt_reports_unresolved_without_claiming_retirement(
 
 
 @pytest.mark.parametrize("acknowledgement", [None, False, 1])
-def test_permanent_disposal_requires_explicit_boolean_acknowledgement(
+def test_separate_closeout_requires_explicit_boolean_acknowledgement(
     case: Case, acknowledgement: object
 ) -> None:
     transaction, fixture, approval = case
-    changed = {**approval, "acknowledge_permanent_disposal_block": acknowledgement}
+    changed = {**approval, "acknowledge_separate_closeout_required": acknowledgement}
     with pytest.raises(ValueError):
         transaction.execute(changed)
     assert not fixture.store.deletes and not transaction.root.exists()
+
+
+@pytest.mark.parametrize("operation", ["execute", "reconcile"])
+def test_driver_rejects_opposite_sealed_operation_before_any_exec_or_reservation(
+    case: Case, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    program, bundle = driver_program(case, operation)
+    effects: list[object] = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: effects.append(a))
+    output = tmp_path / "mismatched-mode"
+
+    def verify() -> dict[str, object]:
+        effects.append("verify")
+        return {}
+
+    with pytest.raises(ValueError, match="operation/plan"):
+        driver.execute(
+            program=program,
+            bundle=bundle,
+            authorization=case[2],
+            controller="a" * 64,
+            environment={"DOCKER_HOST": "unix:///synthetic"},
+            output=output,
+            verify=verify,
+            observation_only=operation == "execute",
+        )
+    assert not output.exists() and effects == []
+    assert not case[1].store.deletes
+
+
+@pytest.mark.parametrize("fault", ["program", "plan", "trailing", "expansion", "unknown"])
+def test_driver_mode_check_binds_program_plan_and_bounded_exact_bundle(
+    case: Case, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
+) -> None:
+    program, bundle = driver_program(case)
+    authorization = case[2]
+    if fault == "program":
+        program += "\nraise RuntimeError('unbound executable')\n"
+    elif fault == "plan":
+        authorization = {**authorization, "plan_sha256": "0" * 64}
+    elif fault == "trailing":
+        bundle = base64.b85encode(base64.b85decode(bundle) + b"trailing").decode()
+        program = program_for_bundle(bundle)
+    elif fault == "expansion":
+        monkeypatch.setattr(transport, "MAX_EXPANDED_BUNDLE", 64)
+    else:
+        program, bundle = driver_program(case, "unexpected")
+    effects: list[object] = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: effects.append(a))
+    output = tmp_path / "unbound-input"
+    with pytest.raises(ValueError):
+        driver.execute(
+            program=program,
+            bundle=bundle,
+            authorization=authorization,
+            controller="a" * 64,
+            environment={"DOCKER_HOST": "unix:///synthetic"},
+            output=output,
+            verify=dict,
+        )
+    assert not output.exists() and not effects and not case[1].store.deletes
+
+
+@pytest.mark.parametrize("count", [0, True, 2, -1])
+def test_execution_terminal_requires_exactly_one_integer_delete(case: Case, count: object) -> None:
+    result = case[0].execute(case[2])
+    outer = {
+        "status": "verified",
+        "retirement": result,
+        "elapsed_seconds": 1.0,
+        "provider_delete_submissions": 1,
+        "provider_inventory_owner_reads": 2,
+    }
+    driver.terminal(outer, case[2])
+    with pytest.raises(ValueError):
+        driver.terminal({**outer, "provider_delete_submissions": count}, case[2])
+
+
+@pytest.mark.parametrize("boundary", ["driver", "entry", "native-owner"])
+def test_missing_supported_closeout_blocks_native_execution_before_effects(
+    case: Case,
+    owner: context.NativeFixture,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+) -> None:
+    transaction, fixture, approval = case
+    output = tmp_path / "must-not-reserve"
+    effects: list[str] = []
+
+    def unexpected(*args: object, **kwargs: object) -> Any:  # noqa: ANN401 - forbidden boundary
+        effects.append("unexpected-effect")
+        pytest.fail("unimplemented closeout must stop before native work")
+
+    monkeypatch.setattr(source, "current_candidate", unexpected)
+    monkeypatch.setattr(entry, "LocalProof", unexpected)
+    monkeypatch.setattr(subprocess, "Popen", unexpected)
+    monkeypatch.setattr(owner, "owner", unexpected)
+    if boundary == "driver":
+        program, bundle = driver_program(case)
+        with pytest.raises(ValueError, match="staged closeout is not implemented"):
+            driver.execute(
+                program=program,
+                bundle=bundle,
+                authorization=approval,
+                controller="a" * 64,
+                environment={"DOCKER_HOST": "unix:///synthetic"},
+                output=output,
+                verify=unexpected,
+            )
+    elif boundary == "entry":
+        emitted: list[dict[str, object]] = []
+        monkeypatch.setattr(entry, "emit", emitted.append)
+        assert (
+            entry.run(
+                {
+                    "plan": transaction.plan,
+                    "fixture": {},
+                    "authorization": approval,
+                    "runtime_revision": "b" * 40,
+                    "operation": "execute",
+                }
+            )
+            == 1
+        )
+        assert len(emitted) == 1 and emitted[0]["status"] == "unresolved"
+        assert emitted[0]["no_replay"] is True
+    else:
+        with pytest.raises(ValueError, match="staged closeout is not implemented"):
+            owner.before_disposition()
+    assert not effects and not output.exists() and not transaction.root.exists()
+    assert not fixture.store.deletes
+
+
+def test_old_permanent_disposal_approval_is_not_reinterpreted(case: Case) -> None:
+    transaction, fixture, approval = case
+    previous = {**approval, "format": "lowerduckpond-m3-11-frozen-archive-authorization-v1"}
+    del previous["acknowledge_separate_closeout_required"]
+    previous["acknowledge_permanent_disposal_block"] = True
+    with pytest.raises(ValueError):
+        transaction.execute(previous)
+    assert fixture.guards == 0 and not fixture.store.deletes and not transaction.root.exists()
