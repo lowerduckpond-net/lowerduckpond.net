@@ -279,11 +279,13 @@ def execute(  # noqa: PLR0912,PLR0913,PLR0915 - one bounded submission and proto
     ):
         raise RetirementError("retirement requires its bound local daemon endpoint")
     directory(output.parent)
-    output.mkdir(mode=0o700)  # A lost parent never silently adopts an old submission.
-    sync(output.parent)
+    if output.exists() or output.is_symlink():
+        raise FileExistsError("retirement invocation already exists; no replay")
     verify()  # No exec and no reservation if local prerequisites already fail.
     if deadline - time.monotonic() < helper_seconds + STARTUP_SECONDS + 120:
         raise TimeoutError("retirement lacks the whole child and reporting allowance")
+    output.mkdir(mode=0o700)  # A lost parent never silently adopts an old submission.
+    sync(output.parent)
     reserve(
         output / "exec-submitted.json",
         {

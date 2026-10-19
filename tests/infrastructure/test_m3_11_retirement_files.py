@@ -10,6 +10,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from lowerduckpond_static_host_agent import durable
 from lowerduckpond_static_host_agent.durable import _rename_noreplace
 
 from scripts import m3_11_retirement_files as files
@@ -159,11 +160,11 @@ def test_interruption_at_atomic_publication_resumes_without_linked_evidence(
             rename(parent, old, new)
         raise OSError("controller stopped during publication")
 
-    monkeypatch.setattr(files, "_rename_noreplace", interrupted)
+    monkeypatch.setattr(durable, "_rename_noreplace", interrupted)
     with pytest.raises(OSError):
         files.preserve(target, iter([raw]), len(raw))
     assert target.exists() is published
-    monkeypatch.setattr(files, "_rename_noreplace", rename)
+    monkeypatch.setattr(durable, "_rename_noreplace", rename)
     files.preserve(target, iter([raw]), len(raw))
     assert target.read_bytes() == raw
     assert target.stat().st_nlink == 1

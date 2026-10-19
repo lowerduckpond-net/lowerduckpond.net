@@ -16,8 +16,6 @@ from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
-from lowerduckpond_static_host_agent.durable import _rename_noreplace
-
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, uuid7
 from scripts.m3_11_retirement_files import digest, directory, sync
@@ -129,6 +127,10 @@ def record(path: Path, value: dict[str, object]) -> None:
     authoritative intent allows later explicit normalization of missing marker
     records, without overwriting either partial bytes or conflicting finals.
     """
+    # CI's read-only selection and receipt gate import the execution fence before
+    # workspace packages are installed. Publication alone needs this primitive.
+    from lowerduckpond_static_host_agent.durable import _rename_noreplace  # noqa: PLC0415
+
     directory(path.parent)
     if path.exists() or path.is_symlink():
         if read_private(path) != value:

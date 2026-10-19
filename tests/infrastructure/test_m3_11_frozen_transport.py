@@ -391,6 +391,7 @@ def test_driver_never_submits_after_enclosing_allowance_consumed(
             verify=verify,
         )
     assert not sent
+    assert output.exists() == (where == "after-reservation")
     assert (output / "exec-submitted.json").exists() == (where == "after-reservation")
 
 
@@ -869,6 +870,7 @@ def test_rejected_prerequisite_blocks_native_execution_before_effects(
         with pytest.raises(ValueError, match="synthetic prerequisite rejected"):
             owner.before_disposition()
     assert rejections == [boundary] and not effects
+    assert not output.exists()
     assert not (output / "exec-submitted.json").exists() and not transaction.root.exists()
     assert not fixture.store.deletes
 
