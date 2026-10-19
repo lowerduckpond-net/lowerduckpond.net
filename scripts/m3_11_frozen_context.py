@@ -77,12 +77,14 @@ class NativeFixture:
         docker: ReadOnlyDocker,
         require_cleanup_current: Callable[[], None],
         refresh_cleanup: Callable[[], None] | None = None,
+        observation_only: bool = False,
     ) -> None:
         self.config, self.fixture, self.root = configuration, fixture, evidence_root
         self.revalidate = revalidate_copies_and_cleanup
         self.docker = docker
         self.cleanup_current = require_cleanup_current
         self.refresh_cleanup = refresh_cleanup
+        self.observation_only = observation_only
         self.submitting = False
         self.held = False
         self.archives: Archives
@@ -155,7 +157,9 @@ class NativeFixture:
             }
             stack.enter_context(existing_lock(Path(LEASE_DIRECTORY) / (digest(target) + ".lock")))
             stack.enter_context(existing_lock(self.run / "run.lock"))
-            stack.enter_context(ownership(self.run, exclusive=True))
+            stack.enter_context(
+                ownership(self.run, exclusive=True, create=not self.observation_only)
+            )
             self.deliveries = {
                 intent.role: self.lease.credential(intent) for intent in self.manifest.intents
             }

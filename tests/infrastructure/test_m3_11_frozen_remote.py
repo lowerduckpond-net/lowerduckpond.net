@@ -14,10 +14,12 @@ import pytest
 from scripts import m3_11_frozen_remote as remote
 from scripts import m3_11_frozen_remote_proof as remote_proof
 from scripts.m3_11_backup_removal import Removal
+from scripts.m3_11_frozen_disposal import NativeLocal
 from scripts.m3_11_live_storage import FORMAT as STORAGE_FORMAT
 from scripts.m3_11_private_inputs import write_private
 from scripts.m3_11_retirement_files import digest
 from scripts.m3_11_unattended.model import LeaseManifest
+from scripts.m3_11_unattended.state import LeaseState
 
 from .test_m3_11_backup_removal import Storage
 from .test_m3_11_backup_removal import removal as removal  # noqa: PLC0414
@@ -159,3 +161,62 @@ def test_remote_stage_preserves_real_journal_and_exact_uncertainty(
     ):
         with pytest.raises(ValueError):
             verify(changed)
+    if boundary == "lost-owner":
+        before = list(store.operations)
+        assert_native_materialization(case, native, manifest, canonical, result)
+        assert store.operations == before
+
+
+def assert_native_materialization(
+    case: SimpleNamespace,
+    native: remote.NativeRemote,
+    manifest: LeaseManifest,
+    canonical: dict[str, object],
+    result: dict[str, object],
+) -> None:
+    # The read-only remote result was never a native completed.json. Move
+    # the exact approved observation through the real NativeLocal consumer,
+    # which verifies originals before it may publish this evidence locally.
+    selected = {
+        **case.plan,
+        "remote_directory": str(native.stage_root),
+        "remote_receipt_file": "observation-" + digest(canonical) + ".json",
+        "remote_receipt_sha256": digest(canonical),
+        "remote_observation": canonical,
+    }
+    consumer = NativeLocal(
+        evidence_root=case.root, docker=case.daemon, revalidate_copies=lambda: "f" * 64
+    )
+    consumer.selected(selected)
+    consumer.held = True  # NativeLocal real ownership is separately covered.
+    consumer.lease = cast(LeaseState, SimpleNamespace(manifest=lambda: manifest))
+    path = native.stage_root / str(selected["remote_receipt_file"])
+    before = {item: item.read_bytes() for item in native.stage_root.rglob("*") if item.is_file()}
+    with pytest.raises(ValueError, match="read-only observation"):
+        consumer.remote_evidence()
+    assert not path.exists()
+    assert before == {
+        item: item.read_bytes() for item in native.stage_root.rglob("*") if item.is_file()
+    }
+    consumer.prepare_capture = True
+    changed = {**canonical, "archive_observed_at": "2019-01-01T00:00:00Z"}
+    consumer.plan = {
+        **selected,
+        "remote_observation": changed,
+        "remote_receipt_file": "observation-" + digest(changed) + ".json",
+        "remote_receipt_sha256": digest(changed),
+    }
+    with pytest.raises(ValueError):
+        consumer.remote_evidence()
+    assert before == {
+        item: item.read_bytes() for item in native.stage_root.rglob("*") if item.is_file()
+    }
+    consumer.plan = selected
+    consumer.remote_evidence()
+    assert consumer.remote == result and json.loads(path.read_bytes()) == canonical
+    consumer.prepare_capture = False
+    published = path.read_bytes()
+    consumer.remote_evidence()
+    assert path.read_bytes() == published
+    assert not (native.stage_root / "completed.json").exists()
+    assert not list(native.stage_root.glob("*owner*.acknowledged.json"))

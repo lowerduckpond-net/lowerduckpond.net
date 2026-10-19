@@ -19,6 +19,7 @@ from scripts.m3_11_frozen_transport import require_operation
 from scripts.m3_11_private_inputs import read_private, read_private_bytes
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_retirement_files import (
+    CHUNK,
     RetirementError,
     digest,
     directory,
@@ -78,7 +79,9 @@ def verify(selection: object, lease: LeaseState) -> dict[str, object]:
         != invocation.get("controller")
     ):
         raise RetirementError("terminal collector source or original lease differs")
-    before, after = read_private(root / "before.json"), read_private(root / "after.json")
+    before, after = (
+        read_private(root / name, maximum=github.MAX_BODY) for name in ("before.json", "after.json")
+    )
     facts = consistent(before, after, lease)
     native = github.verify(root / "github", value["github_contract"], lease.manifest())
     calls = read_private(root / "native-calls.json").get("calls")
@@ -228,7 +231,12 @@ def install(selection: object, encoded: object, *, registry: Path) -> None:
     (temporary / "github").mkdir(mode=0o700)
     sync(registry)
     for name, raw in decoded.items():
-        preserve(temporary / name, iter([raw]), len(raw), str(files[name]["sha256"]))
+        preserve(
+            temporary / name,
+            (raw[i : i + CHUNK] for i in range(0, len(raw), CHUNK)),
+            len(raw),
+            str(files[name]["sha256"]),
+        )
     for name in FILES:
         if fingerprint(temporary / name, github.MAX_ZIP) != files[name]:
             raise RetirementError("terminal capture publication reread differs")

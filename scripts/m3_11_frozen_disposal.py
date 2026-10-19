@@ -40,8 +40,7 @@ from scripts.m3_11_unattended.state import LeaseState, journey_result
 from scripts.m3_11_unattended.storage_admission import existing_lock, require_remaining
 from scripts.qualification_context import IMAGE_ENV, resource_names
 from scripts.qualification_fence import lock as identity_lock
-from scripts.qualification_fence import registry, require_committed
-from scripts.qualification_mutation import ownership
+from scripts.qualification_fence import ownership, registry, require_committed
 
 FORMAT = "lowerduckpond-m3-11-frozen-local-disposal-v1"
 ROLES = {"destination", "host", "acme", "archive"}
@@ -156,6 +155,7 @@ class NativeLocal:
                 "remote_directory",
                 "remote_receipt_file",
                 "remote_receipt_sha256",
+                "remote_observation",
                 "image",
                 "export_directory",
                 "maximum_export_bytes",
@@ -249,10 +249,16 @@ class NativeLocal:
                 "archive_bucket": manifest.targets.archive_bucket,
             }
             locks.enter_context(existing_lock(Path(LEASE_DIRECTORY) / (digest(target) + ".lock")))
-            if self.run.exists():
-                locks.enter_context(existing_lock(self.run / "run.lock"))
+            # These external locks were durably created before retirement. The
+            # fixture's internal lock files are exported/removable evidence and
+            # cannot be required or recreated during partial-tree continuation.
             locks.enter_context(
-                ownership(self.run, exclusive=True, fixture_id=str(self.exclusion["fixture_id"]))
+                ownership(
+                    self.run,
+                    exclusive=True,
+                    fixture_id=str(self.exclusion["fixture_id"]),
+                    create=False,
+                )
             )
             require_committed(self.run, self.exclusion)
             require(
@@ -296,6 +302,7 @@ class NativeLocal:
                     identity_lock(
                         self.root / "fixture-dispositions" / ("identity-" + owner + ".lock"),
                         exclusive=True,
+                        create=self.prepare_capture,
                     )
                 )
             self.removed: set[str] = set()
@@ -427,14 +434,35 @@ class NativeLocal:
             or re.fullmatch(r"observation-[a-f0-9]{64}.json", filename),
             "local disposal remote receipt filename is invalid",
         )
-        receipt = read_private(remote / filename)
+        supplied = self.plan["remote_observation"]
+        require(
+            supplied is None
+            if filename == "completed.json"
+            else isinstance(supplied, dict)
+            and filename == "observation-" + digest(supplied) + ".json",
+            "local disposal observation transfer differs from its approved exact bytes",
+        )
+        path = remote / filename
+        publish = not path.exists() and not path.is_symlink()
+        if publish:
+            require(
+                self.prepare_capture and isinstance(supplied, dict),
+                "read-only observation cannot materialize missing remote evidence",
+            )
+            receipt = cast(dict[str, object], supplied)
+        else:
+            receipt = read_private(path)
+            require(
+                supplied is None or receipt == supplied,
+                "local disposal observation differs from original materialization",
+            )
         require(
             digest(receipt) == self.plan["remote_receipt_sha256"],
             "local disposal remote evidence file binding differs",
         )
         from scripts.m3_11_frozen_certificate import saved_document  # noqa: PLC0415
 
-        self.remote = remote_proof.verify(
+        verified = remote_proof.verify(
             self.run,
             self.retirement,
             self.fixture,
@@ -447,6 +475,14 @@ class NativeLocal:
             else saved_document(preserved, self.export_root, "live-storage.json"),
             fixture_id=None if preserved is None else str(self.exclusion["fixture_id"]),
         )
+        if publish:
+            # Exact separate local-disposal authority covers this append-only
+            # observation import. Complete offline original-journal/copy proof
+            # above precedes publication. No ACK or provider request is made.
+            self.copy_guard()
+            record(path, receipt)
+            require(read_private(path) == receipt, "remote observation publication reread differs")
+        self.remote = verified
 
     def consumers(self, removed: set[str]) -> None:
         """Terminal-only view; ordinary active-lease admission remains strict."""

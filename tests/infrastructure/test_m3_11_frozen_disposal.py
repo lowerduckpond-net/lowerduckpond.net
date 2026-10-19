@@ -16,13 +16,14 @@ import pytest
 from scripts import m3_11_frozen_disposal as local
 from scripts import m3_11_frozen_retirement as retirement
 from scripts.m3_11_frozen_context import actor
-from scripts.m3_11_frozen_stage import AUTHORIZATION
+from scripts.m3_11_frozen_stage import AUTHORIZATION, Effects
 from scripts.m3_11_private_inputs import write_private
 from scripts.m3_11_retirement_files import digest
 from scripts.m3_11_unattended import storage_admission
 from scripts.m3_11_unattended.state import LeaseState
 from scripts.qualification_context import IMAGE_ENV, resource_names
 from scripts.qualification_fence import commit, require_unfenced
+from scripts.qualification_fence import lock as external_lock
 from scripts.qualification_mutation import ownership
 
 from .test_m3_11_frozen_actor_export import Reader
@@ -160,7 +161,7 @@ def case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     }
     with ownership(run, exclusive=True):
         exclusion = commit(run, plan_sha256=digest(plan), authorization_sha256="e" * 64)
-    selected = {
+    selected: dict[str, object] = {
         "format": local.FORMAT,
         "implementation_revision": "a" * 40,
         "retirement_plan": plan,
@@ -171,6 +172,7 @@ def case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         "remote_directory": str(root),
         "remote_receipt_file": "completed.json",
         "remote_receipt_sha256": "c" * 64,
+        "remote_observation": None,
         "image": {
             "id": daemon.image,
             "reference": "molecule_local/" + resource_names(owner)[IMAGE_ENV],
@@ -352,3 +354,62 @@ def test_interrupted_export_keeps_partial_bytes_and_can_continue_before_any_remo
     assert result["original_directory"] == "absent" and not case.run.exists()
     saved = list(case.native.stage_root.glob("actors/*.interrupted-*/rootfs.tar.partial"))
     assert len(saved) == 1 and saved[0].read_bytes() == retained
+
+
+@pytest.mark.parametrize("boundary", ["fixture-operation.lock", "run.lock", "before-root"])
+def test_partial_disposal_observation_never_recreates_removed_internal_locks(
+    case: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
+    original = Effects.submit
+
+    def interrupt(
+        effects: Effects, name: str, identity: dict[str, object], operation: Callable[[], Any]
+    ) -> Any:  # noqa: ANN401 - real effect boundary preserves arbitrary adapter results
+        if boundary == "before-root" and name == "remove-directory":
+            raise KeyboardInterrupt
+        result = original(effects, name, identity, operation)
+        if name.startswith("remove-entry-") and identity["path"] == boundary:
+            raise KeyboardInterrupt
+        return result
+
+    monkeypatch.setattr(Effects, "submit", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        case.native.execute(case.plan, case.approval)
+    assert case.run.exists()
+    absent = [
+        name for name in ("run.lock", "fixture-operation.lock") if not (case.run / name).exists()
+    ]
+    assert absent
+    before = {path: path.read_bytes() for path in case.root.rglob("*") if path.is_file()}
+    mutations = list(case.daemon.mutations)
+    observed = case.native.reconcile(case.plan, case.approval)
+    assert observed["mutation_submissions"] == 0
+    assert before == {path: path.read_bytes() for path in case.root.rglob("*") if path.is_file()}
+    assert case.daemon.mutations == mutations
+    assert all(not (case.run / name).exists() for name in absent)
+    # A concurrent operation cannot enter through a new internal inode. Only
+    # surviving external ownership is used by this terminal continuation.
+    case.native.selected(case.plan)
+    with case.native.locked(), pytest.raises(BlockingIOError), ownership(case.run):
+        pytest.fail("ordinary mutation crossed terminal exclusive ownership")
+    monkeypatch.setattr(Effects, "submit", original)
+    result = case.native.reconcile(case.plan, case.approval, continue_unsubmitted=True)
+    assert result["original_directory"] == "absent" and not case.run.exists()
+    assert case.daemon.mutations == mutations
+
+
+def test_observation_requires_surviving_external_lock_and_never_recreates_it(
+    case: SimpleNamespace,
+) -> None:
+    case.daemon.fail_after = "1" * 64
+    with pytest.raises(KeyboardInterrupt):
+        case.native.execute(case.plan, case.approval)
+    path = case.root / "fixture-dispositions" / ("path-" + digest(str(case.run)) + ".lock")
+    with external_lock(path, exclusive=False, create=False), pytest.raises(BlockingIOError):
+        case.native.reconcile(case.plan, case.approval)
+    path.unlink()
+    before = {item: item.read_bytes() for item in case.root.rglob("*") if item.is_file()}
+    with pytest.raises(FileNotFoundError):
+        case.native.reconcile(case.plan, case.approval)
+    assert not path.exists()
+    assert before == {item: item.read_bytes() for item in case.root.rglob("*") if item.is_file()}

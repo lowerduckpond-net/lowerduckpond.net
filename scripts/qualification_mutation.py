@@ -24,18 +24,18 @@ LOCK = "fixture-operation.lock"
 
 @contextmanager
 def ownership(
-    run: Path, *, exclusive: bool = False, fixture_id: str | None = None
+    run: Path, *, exclusive: bool = False, fixture_id: str | None = None, create: bool = True
 ) -> Iterator[None]:
     origin = original_run(run)
     if origin.resolve() != origin or origin.is_symlink():
         raise ValueError("fixture operation root is not canonical")
-    with persistent_ownership(origin, exclusive=exclusive, fixture_id=fixture_id):
+    with persistent_ownership(origin, exclusive=exclusive, fixture_id=fixture_id, create=create):
         if not origin.exists():
             if not exclusive:
                 require_available(run)
             yield
             return
-        with lock(origin / LOCK, exclusive=exclusive):
+        with lock(origin / LOCK, exclusive=exclusive, create=create):
             if not exclusive:
                 require_available(run)
             yield

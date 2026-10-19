@@ -140,6 +140,7 @@ def run(payload: object) -> int:
                 revalidate_copies_and_cleanup=proof,
                 docker=ReadOnlyDocker(),
                 require_cleanup_current=proof.current,
+                observation_only=value["operation"] == "reconcile",
             )
             result = FrozenRetirement(transaction_plan, fixture).execute(
                 value["authorization"], reconcile_only=value["operation"] == "reconcile"

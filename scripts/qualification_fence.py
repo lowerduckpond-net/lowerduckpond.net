@@ -68,8 +68,9 @@ def require_unfenced(run: Path) -> None:
 
 
 @contextmanager
-def lock(path: Path, *, exclusive: bool) -> Iterator[None]:
-    descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+def lock(path: Path, *, exclusive: bool, create: bool = True) -> Iterator[None]:
+    flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
+    descriptor = os.open(path, flags | (os.O_CREAT if create else 0), 0o600)
     try:
         before = os.fstat(descriptor)
         if (
@@ -89,21 +90,25 @@ def lock(path: Path, *, exclusive: bool) -> Iterator[None]:
 
 
 @contextmanager
-def ownership(run: Path, *, exclusive: bool, fixture_id: str | None = None) -> Iterator[None]:
+def ownership(
+    run: Path, *, exclusive: bool, fixture_id: str | None = None, create: bool = True
+) -> Iterator[None]:
     if fixture_id is not None and not exclusive:
         raise ValueError("explicit immutable identity is only valid for exclusive disposal")
     root = registry(run)
     if root is None:
         yield
         return
-    root.mkdir(mode=0o700, exist_ok=True)
+    if create:
+        root.mkdir(mode=0o700, exist_ok=True)
     directory(root)
-    sync(root.parent)
+    if create:
+        sync(root.parent)
     with ExitStack() as held:
         # The path lock is always acquired, even before fixture.json exists or
         # after it was removed. Immutable identity additionally fences copies.
         path_key = keys(run)[0]
-        held.enter_context(lock(root / (path_key + ".lock"), exclusive=exclusive))
+        held.enter_context(lock(root / (path_key + ".lock"), exclusive=exclusive, create=create))
         identities = keys(run)[1:]
         if fixture_id is not None:
             expected = "identity-" + uuid7(fixture_id).hex
@@ -111,7 +116,7 @@ def ownership(run: Path, *, exclusive: bool, fixture_id: str | None = None) -> I
                 raise ValueError("fixture immutable identity differs from original ownership")
             identities = [expected]
         for key in identities:
-            held.enter_context(lock(root / (key + ".lock"), exclusive=exclusive))
+            held.enter_context(lock(root / (key + ".lock"), exclusive=exclusive, create=create))
         if not exclusive:
             require_unfenced(run)
         yield

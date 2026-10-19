@@ -98,3 +98,29 @@ child.main()
     assert b"synthetic-parser-boundary" in first.stdout
     second = subprocess.run(args, check=False, capture_output=True, timeout=60)  # noqa: S603
     assert second.returncode != 0 and b"not new and absolute" in second.stderr
+
+
+def test_terminal_cli_uses_preserved_producer_without_active_cleanup_or_selection(
+    tmp_path: Path,
+) -> None:
+    tmp_path.chmod(0o700)
+    evidence = tmp_path / "evidence.json"
+    write_private(evidence, {"image_path": str(tmp_path / "image")})
+    scratch = tmp_path / "proof"
+    code = """
+import sys
+from scripts import m3_11_frozen_local as local
+from scripts import m3_11_frozen_validate as child
+def forbidden(*args, **kwargs):
+    raise AssertionError('terminal validation requested active credential proof')
+def preserved(evidence, *, scratch):
+    assert scratch.is_dir() and (scratch / 'tmp').is_dir()
+    assert scratch.stat().st_mode & 0o777 == 0o700
+    return {'status': 'native-preserved-files-verified'}
+local.verify_local = local.cleanup = forbidden
+local.verify_preserved = preserved
+child.main()
+"""
+    args = [sys.executable, "-B", "-c", code, "--preserved-only", str(evidence), str(scratch)]
+    first = subprocess.run(args, check=True, capture_output=True, timeout=60)  # noqa: S603
+    assert b"native-preserved-files-verified" in first.stdout

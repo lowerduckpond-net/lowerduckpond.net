@@ -19,7 +19,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import cast
 
-from scripts.m3_11_private_inputs import read_private, read_private_bytes
+from scripts.m3_11_private_inputs import read_private, read_private_bytes, write_private
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_retirement_files import RetirementError, digest, directory, preserve, record
 from scripts.m3_11_unattended.model import LeaseManifest, instant
@@ -123,10 +123,10 @@ def verify(output: Path, contract: object, manifest: LeaseManifest) -> dict[str,
         "native terminal collector contract differs",
     )
     directory(output)
-    run = _run(read_private(output / "run.json"), selected)
-    attempt = _run(read_private(output / "attempt.json"), selected)
+    run = _run(read_private(output / "run.json", maximum=MAX_BODY), selected)
+    attempt = _run(read_private(output / "attempt.json", maximum=MAX_BODY), selected)
     require(all(run[key] == attempt[key] for key in RUN_KEYS), "native terminal attempt changed")
-    rows = _list(read_private(output / "jobs.json"), "jobs")
+    rows = _list(read_private(output / "jobs.json", maximum=MAX_BODY), "jobs")
     jobs = [row for row in rows if row.get("name") == "connect"]
     require(len(jobs) == 1, "native terminal Connect job is ambiguous")
     job = jobs[0]
@@ -159,7 +159,7 @@ def verify(output: Path, contract: object, manifest: LeaseManifest) -> dict[str,
             len(matches) == 1 and matches[0].get("conclusion") == conclusion,
             "native terminal executed another cleanup path",
         )
-    artifacts = _list(read_private(output / "artifacts.json"), "artifacts")
+    artifacts = _list(read_private(output / "artifacts.json", maximum=MAX_BODY), "artifacts")
     documents: dict[str, dict[str, object]] = {}
     hashes: dict[str, object] = {}
     for kind, prefix, filename in (
@@ -378,7 +378,7 @@ def capture(
         require(len(raw) <= MAX_BODY, "native terminal response exceeds its byte bound")
         value = json.loads(raw)
         require(isinstance(value, dict), "native terminal response is not an object")
-        record(output / (filename + ".json"), value)
+        write_private(output / (filename + ".json"), value, maximum=MAX_BODY)
         responses[filename] = value
     _run(responses["run"], contract)
     for kind, prefix_name in (

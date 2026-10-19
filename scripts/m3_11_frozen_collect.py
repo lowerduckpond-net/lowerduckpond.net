@@ -24,6 +24,7 @@ from scripts.m3_11_frozen_context import require
 from scripts.m3_11_frozen_failure import document
 from scripts.m3_11_frozen_terminal_bundle import FILES, verify
 from scripts.m3_11_frozen_transport import require_operation
+from scripts.m3_11_private_inputs import write_private
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_retirement_files import (
     CHUNK,
@@ -177,7 +178,7 @@ class Collector:
         if self.output is not None:
             preserve(
                 self.output / f"response-{index}.bin",
-                iter([raw]),
+                (raw[i : i + CHUNK] for i in range(0, len(raw), CHUNK)),
                 len(raw),
                 hashlib.sha256(raw).hexdigest(),
             )
@@ -290,14 +291,19 @@ class Collector:
         record(output / "invocation.json", invocation)
         for name, data in (("program.txt", self.program), ("bundle.txt", self.bundle)):
             raw = data.encode()
-            preserve(output / name, iter([raw]), len(raw), hashlib.sha256(raw).hexdigest())
-        record(output / "before.json", self.snapshot())
+            preserve(
+                output / name,
+                (raw[i : i + CHUNK] for i in range(0, len(raw), CHUNK)),
+                len(raw),
+                hashlib.sha256(raw).hexdigest(),
+            )
+        write_private(output / "before.json", self.snapshot(), maximum=github.MAX_BODY)
         github.capture(self.github_get, run_id, output / "github", contract, lease.manifest())
-        record(output / "after.json", self.snapshot())
+        write_private(output / "after.json", self.snapshot(), maximum=github.MAX_BODY)
         for index, raw in enumerate(self.raw_responses):
             preserve(
                 output / f"response-{index}.bin",
-                iter([raw]),
+                (raw[i : i + CHUNK] for i in range(0, len(raw), CHUNK)),
                 len(raw),
                 hashlib.sha256(raw).hexdigest(),
             )

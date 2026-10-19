@@ -103,8 +103,8 @@ def cleanup(selection: object, contract: dict[str, object], *, now: datetime) ->
     return min(stamps) + timedelta(seconds=PROOF_AGE_SECONDS)
 
 
-def verify_local(evidence: object, selection: object, *, scratch: Path) -> dict[str, object]:
-    value = fields(
+def inputs(evidence: object) -> dict[str, object]:
+    return fields(
         evidence,
         {
             "archive",
@@ -116,8 +116,15 @@ def verify_local(evidence: object, selection: object, *, scratch: Path) -> dict[
             "cleanup_contract",
         },
     )
-    contract = cast(dict[str, object], value["cleanup_contract"])
-    cleanup(selection, contract, now=datetime.now(UTC))
+
+
+def verify_preserved(evidence: object, *, scratch: Path) -> dict[str, object]:
+    """Full original byte/authority proof, independent of active credential life.
+
+    This proves preserved history only. Terminal cleanup/release/source facts
+    remain separate prerequisites enforced by NativeLocal before any disposal.
+    """
+    value = inputs(evidence)
     for item in cast(list[dict[str, object]], value["files"]):
         bound_file(item)
     result = verify(
@@ -131,10 +138,22 @@ def verify_local(evidence: object, selection: object, *, scratch: Path) -> dict[
         result["result"] == bound_file(value["original_result"]),
         "retirement original result differs from the preserved native state",
     )
+    return {
+        "evidence_sha256": digest(value),
+        "status": "native-preserved-files-verified",
+        "observed_at": stamp(datetime.now(UTC)),
+    }
+
+
+def verify_local(evidence: object, selection: object, *, scratch: Path) -> dict[str, object]:
+    value = inputs(evidence)
+    contract = cast(dict[str, object], value["cleanup_contract"])
+    cleanup(selection, contract, now=datetime.now(UTC))
+    result = verify_preserved(value, scratch=scratch)
     now = datetime.now(UTC)
     valid_until = cleanup(selection, contract, now=now)
     return {
-        "evidence_sha256": digest(value),
+        **result,
         "status": "native-files-and-cleanup-verified",
         "proof_valid_until": stamp(valid_until),
         "observed_at": stamp(now),

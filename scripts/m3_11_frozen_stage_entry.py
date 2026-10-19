@@ -202,6 +202,7 @@ def run(value: dict[str, object]) -> None:
                 docker=ReadOnlyDocker(),
                 require_cleanup_current=proof.current,
                 refresh_cleanup=proof.refresh_if_needed,
+                observation_only=operation == "remote-observe",
             )
             handler = {
                 "remote-cleanup": remote.execute,

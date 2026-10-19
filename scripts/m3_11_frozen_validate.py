@@ -79,12 +79,18 @@ def main() -> None:
     sys.dont_write_bytecode = True
     os.umask(0o077)
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from scripts.m3_11_frozen_local import verify_local  # noqa: PLC0415
+    from scripts.m3_11_frozen_local import verify_local, verify_preserved  # noqa: PLC0415
     from scripts.m3_11_private_inputs import read_private  # noqa: PLC0415
     from scripts.m3_11_retirement_files import directory  # noqa: PLC0415
 
-    evidence_path, selection_path, scratch = (Path(value) for value in sys.argv[1:])
-    evidence, selection = read_private(evidence_path), read_private(selection_path)
+    preserved_only = sys.argv[1] == "--preserved-only"
+    if preserved_only:
+        evidence_path, scratch = (Path(value) for value in sys.argv[2:])
+        selection = None
+    else:
+        evidence_path, selection_path, scratch = (Path(value) for value in sys.argv[1:])
+        selection = read_private(selection_path)
+    evidence = read_private(evidence_path)
     directory(scratch.parent)
     if scratch.exists() or scratch.is_symlink() or not scratch.is_absolute():
         raise ValueError("offline proof scratch is not new and absolute")
@@ -92,9 +98,12 @@ def main() -> None:
     scratch.mkdir(mode=0o700)
     (scratch / "tmp").mkdir(mode=0o700)
     tempfile.tempdir = str(scratch / "tmp")
-    print(
-        json.dumps(verify_local(evidence, selection, scratch=scratch), sort_keys=True), flush=True
+    result = (
+        verify_preserved(evidence, scratch=scratch)
+        if preserved_only
+        else verify_local(evidence, selection, scratch=scratch)
     )
+    print(json.dumps(result, sort_keys=True), flush=True)
 
 
 if __name__ == "__main__":

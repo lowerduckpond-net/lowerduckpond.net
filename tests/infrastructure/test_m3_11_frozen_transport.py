@@ -132,6 +132,28 @@ def test_unreleased_prior_consumer_blocks_native_locked_entry(
             pass
 
 
+@pytest.mark.parametrize("missing", ["fixture-operation.lock", "run.lock", "external-path"])
+def test_native_read_only_owner_does_not_recreate_missing_lock_files(
+    locked_owner: tuple[context.NativeFixture, dict[str, object], list[Path]], missing: str
+) -> None:
+    owner, plan, _paths = locked_owner
+    with owner.locked(plan):
+        pass
+    run = Path(str(plan["original_run"]))
+    path = (
+        owner.root / "fixture-dispositions" / ("path-" + digest(str(run)) + ".lock")
+        if missing == "external-path"
+        else run / missing
+    )
+    path.unlink()
+    owner.observation_only = True
+    before = {item: item.read_bytes() for item in owner.root.rglob("*") if item.is_file()}
+    with pytest.raises(FileNotFoundError), owner.locked(plan):
+        pytest.fail("read-only owner repaired a missing required lock")
+    assert not path.exists()
+    assert before == {item: item.read_bytes() for item in owner.root.rglob("*") if item.is_file()}
+
+
 def program_for(payload: dict[str, object]) -> tuple[str, str]:
     raw = json.dumps({"modules": {}, "payload": payload}, sort_keys=True).encode()
     bundle = base64.b85encode(zlib.compress(raw)).decode()

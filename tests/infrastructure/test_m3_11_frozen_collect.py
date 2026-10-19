@@ -114,6 +114,7 @@ def case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         calls=calls,
         output=tmp_path / "capture",
         result=command_result,
+        responses=responses,
     )
 
 
@@ -139,6 +140,19 @@ def test_full_collector_binds_all_original_responses_and_can_transfer_offline(
     bundle_module.install(installed, bundle_module.pack(selection), registry=registry)
     assert bundle_module.verify(installed, case.lease)["native"] == verified["native"]
     assert len(case.calls) == 8  # noqa: PLR2004 - no network/provider calls during offline install
+
+
+def test_large_native_response_survives_capture_and_complete_offline_transfer(
+    case: SimpleNamespace,
+) -> None:
+    # Actual native JSON is allowed up to 4 MiB, independently of the 1 MiB
+    # streaming chunk size. Exercise both writers and the full file consumer.
+    endpoint = "repos/lowerduckpond-net/lowerduckpond.net/actions/runs/456"
+    native = json.loads(case.responses[endpoint])
+    native["large_native_metadata"] = "x" * (1024 * 1024)
+    case.responses[endpoint] = json.dumps(native).encode()
+    assert 1024 * 1024 < len(case.responses[endpoint]) < github.MAX_BODY
+    test_full_collector_binds_all_original_responses_and_can_transfer_offline(case)
 
 
 @pytest.mark.parametrize(

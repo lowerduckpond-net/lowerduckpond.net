@@ -15,6 +15,7 @@ from lowerduckpond_static_contracts import decode_json_object
 from scripts import m3_10_qualification_report as report
 from scripts import m3_11_frozen_entry as entry
 from scripts import m3_11_frozen_local as local
+from scripts import m3_11_frozen_stage_entry as stage_entry
 from scripts.m3_11_retirement_files import record
 from scripts.m3_11_unattended.model import stamp
 from scripts.qualification_disposition import DIRECTORY
@@ -122,6 +123,36 @@ def test_actual_local_proof_result_is_accepted_by_entry(
     monkeypatch.setattr(entry, "frame", lambda *a, **kw: {**value, "nonce": emitted[-1]["nonce"]})
     proof = entry.LocalProof(str(value["evidence_sha256"]))
     assert proof() == value["evidence_sha256"]
+
+
+@pytest.mark.parametrize("changed_original", [False, True])
+def test_terminal_copy_proof_revalidates_original_bytes_without_active_credential_proof(
+    selection: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, changed_original: bool
+) -> None:
+    monkeypatch.setattr(
+        local,
+        "verify",
+        lambda *a, **kw: {
+            "result": {"result": "changed" if changed_original else "native-bound-result"}
+        },
+    )
+    for binding in selection.chosen.values():
+        Path(binding["path"]).unlink()
+    monkeypatch.setattr(local, "cleanup", lambda *a, **kw: pytest.fail("active cleanup read"))
+    if changed_original:
+        with pytest.raises(ValueError, match="original result"):
+            local.verify_preserved(selection.evidence, scratch=selection.root)
+        return
+    value = local.verify_preserved(selection.evidence, scratch=selection.root)
+    assert "proof_valid_until" not in value
+    emitted: list[dict[str, object]] = []
+    monkeypatch.setattr(stage_entry, "emit", emitted.append)
+    monkeypatch.setattr(stage_entry, "require_remaining", lambda n: None)
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=object()))
+    monkeypatch.setattr(
+        stage_entry, "frame", lambda *a, **kw: {**value, "nonce": emitted[-1]["nonce"]}
+    )
+    assert stage_entry.CopyProof(str(value["evidence_sha256"]))() == value["evidence_sha256"]
 
 
 def test_bound_file_parses_only_the_bytes_it_authenticated(

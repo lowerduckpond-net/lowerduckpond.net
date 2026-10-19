@@ -249,3 +249,22 @@ Each raw response and per-call receipt is retained as it arrives, including when
 a later read fails. Selection and transfer require the original response bytes;
 projection-only receipts cannot authorize disposal. Terminal facts have no
 artificial active-proof expiry, but local resource checks stay fresh under locks.
+
+Partial local disposal never reacquires internal `run.lock` or
+`fixture-operation.lock` files: those are exported evidence and may already have
+been removed. Both observation and explicit continuation require the original
+surviving external path and immutable-identity locks. Missing external locks stop
+the operation. Observation creates no lock, directory, receipt or resource.
+Continuation holds the external exclusion through each remaining effect and
+rejects any previously submitted effect that remains uncertain.
+
+The terminal preserved-copy exchange uses the isolated validator's
+`--preserved-only` entry. It revalidates all original bound bytes and native
+bundle/state/correlation/audit records without requiring active credentials or
+fresh active-lease receipts. Independent authenticated terminal cleanup facts
+remain a separate mandatory prerequisite. If remote completion was lost, the
+separate local plan can bind the exact read-only absence observation. The native
+consumer verifies it against original submission journals and preserved backup
+bytes before append-only materialization; it neither invents an acknowledgement
+nor repeats a provider request. Read-only local observation cannot materialize
+missing evidence.
