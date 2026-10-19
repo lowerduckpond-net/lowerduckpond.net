@@ -119,6 +119,7 @@ files = [
   "tests/infrastructure/operator_process_support.py",
   "tests/infrastructure/operator_provider_support.py",
   "tests/infrastructure/test_m3_11_operator_migration.py",
+  "tests/infrastructure/test_m3_11_operator_daemon_boundary.py",
   "tests/infrastructure/test_m3_11_operator_path.py",
   "tests/infrastructure/test_m3_11_operator_publish.py",
   "tests/infrastructure/test_m3_11_operator_records.py",

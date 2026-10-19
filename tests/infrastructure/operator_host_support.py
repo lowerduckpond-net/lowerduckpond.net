@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -27,10 +28,10 @@ from scripts.m3_11_unattended import (
 )
 from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.docker import OWNER, SOCKET
-from scripts.m3_11_unattended.model import LifecycleError, digest
+from scripts.m3_11_unattended.model import LifecycleError
 from scripts.m3_11_unattended.state import cleanup_lock
 
-from .operator_flow_support import ARTIFACT, DAEMON, SOURCE, Services
+from .operator_flow_support import ARTIFACT, DAEMON, SOURCE, DaemonUtilityProcessError, Services
 
 IMAGE = "sha256:" + "b" * 64
 
@@ -373,17 +374,34 @@ class Host:
                 envelope["operation"] in {"import", "reuse-admission"}
             )
             self.utility_calls.append(envelope)
-            with self.inside():
-                result = connect_activate.daemon_utility(
-                    envelope,
+            invoke = connect_activate.daemon_utility
+
+            def utility(value: object) -> dict[str, object]:
+                return invoke(
+                    value,
                     evidence_root=self.evidence,
                     import_root=self.spool,
                     configuration_root=self.configuration,
                     cleanup_root=self.spool.parent,
                 )
-            return canonical_bytes(
-                {"format": envelope["format"], "input_sha256": digest(envelope), "result": result}
-            )
+
+            # Exercise the real CLI's exception/status/sanitization contract.
+            # Filesystem failures inside the utility are process failures;
+            # unexpected accesses outside this boundary remain harness errors.
+            output, errors = io.BytesIO(), io.StringIO()
+            with self.inside(), pytest.MonkeyPatch.context() as process:
+                process.setattr(connect_activate, "daemon_utility", utility)
+                process.setattr(sys, "argv", ["connect_activate", "daemon-utility"])
+                process.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(stdin)))
+                process.setattr(sys, "stdout", io.TextIOWrapper(output))
+                process.setattr(sys, "stderr", errors)
+                status = connect_activate.main()
+                raw = output.getvalue()
+                diagnostic = errors.getvalue().encode()
+            if status:
+                raise DaemonUtilityProcessError(status, raw, diagnostic)
+            assert not diagnostic
+            return raw
         if operation == "run" and "scripts.m3_11_unattended.evidence" in arguments:
             directory = (
                 self.evidence / "runs" / Path(arguments[arguments.index("--directory") + 1]).name

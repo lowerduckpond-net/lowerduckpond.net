@@ -30,6 +30,14 @@ ARTIFACT = b"SYNTHETIC-PREPARED-ARTIFACT"
 DAEMON = dict.fromkeys(("ID", "Name", "DockerRootDir", "ServerVersion"), "synthetic-daemon")
 
 
+class DaemonUtilityProcessError(Exception):
+    """A native utility result crossing the synthetic Docker process boundary."""
+
+    def __init__(self, returncode: int, stdout: bytes, stderr: bytes) -> None:
+        self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+        super().__init__("synthetic daemon utility exited")
+
+
 class Services:
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         self.local_run = subprocess.run
@@ -245,6 +253,10 @@ class Services:
         elif program == "docker" and self.docker_handler is not None:
             try:
                 output = self.docker_handler(arguments[1:], stdin)
+            except DaemonUtilityProcessError as error:
+                return subprocess.CompletedProcess(
+                    arguments, error.returncode, error.stdout, error.stderr
+                )
             except OSError as error:
                 raise AssertionError("synthetic daemon filesystem boundary failed") from error
         elif (
@@ -254,7 +266,12 @@ class Services:
             assert stdin is not None
             output = json.dumps(self.http_handler(json.loads(stdin))).encode()
         elif self.transport_handler is not None:
-            output = self.transport_handler(program, arguments[1:], stdin, kwargs)
+            try:
+                output = self.transport_handler(program, arguments[1:], stdin, kwargs)
+            except DaemonUtilityProcessError as error:
+                return subprocess.CompletedProcess(
+                    arguments, error.returncode, error.stdout, error.stderr
+                )
         else:
             pytest.fail("unexpected external process: " + repr(arguments))
         return subprocess.CompletedProcess(arguments, 0, output, b"")
