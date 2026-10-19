@@ -25,10 +25,12 @@ from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes
 from scripts.m3_11_unattended import __main__ as launcher
 from scripts.m3_11_unattended import (
+    approval,
     connect_action,
     connect_activate,
     connect_delivery,
     operator_publish,
+    operator_readiness,
     operator_records,
 )
 from scripts.m3_11_unattended.config import LeaseConfiguration
@@ -40,6 +42,7 @@ from scripts.m3_11_unattended.worker import Worker
 from .operator_flow_support import SOURCE
 from .operator_process_support import Processes
 from .operator_provider_support import Cloud
+from .standing_authority_support import execution
 from .test_m3_11_cleanup_workflow import select
 from .test_m3_11_lease_configuration import mapping
 from .test_m3_11_operator_migration import MigrationCase, complete_history
@@ -147,6 +150,62 @@ class ConnectedCase(MigrationCase):
             *(["--reuse-status", str(retry)] if retry else []),
         )
         output = self.studio / (suffix + "-approval")
+        if retry is not None:
+            body = mapping(read_private(proposal)["proposed"])
+            now = datetime.now(UTC)
+            ready = execution(body, now)
+            # Missing original native timestamp is retained honestly as unknown.
+            mapping(mapping(ready["authority"])["consent"])["approved_at"] = None
+            mapping(ready["assessment"])["authority_sha256"] = digest(ready["authority"])
+            authority = self.studio / "standing-authority.json"
+            assessment = self.studio / "current-authority.json"
+            write_private(authority, mapping(ready["authority"]))
+            write_private(assessment, mapping(ready["assessment"]))
+            self.monkeypatch.setattr(
+                sys,
+                "argv",
+                [
+                    "operator_readiness",
+                    "--proposal",
+                    str(proposal),
+                    "--expected-proposal-sha256",
+                    digest(read_private(proposal)),
+                    "--authority",
+                    str(authority),
+                    "--assessment",
+                    str(assessment),
+                    "--learning-reference",
+                    "SYNTHETIC learned failure and correction",
+                    "--review-reference",
+                    "SYNTHETIC reviewed source and CI",
+                    "--output",
+                    str(output),
+                ],
+            )
+            assert operator_readiness.main() == 0
+            original = {p.name: p.read_bytes() for p in output.iterdir()}
+            assert operator_readiness.main() == 0
+            assert {p.name: p.read_bytes() for p in output.iterdir()} == original
+            result = read_private(output / "live-approval.json")
+            assert mapping(mapping(result["authority"])["consent"])["approved_at"] is None
+            assert "approved_at" not in result
+            assert (
+                operator_readiness.record(
+                    proposal=proposal,
+                    expected=digest(read_private(proposal)),
+                    authority=authority,
+                    assessment=assessment,
+                    learning_reference="SYNTHETIC learned failure and correction",
+                    review_reference="SYNTHETIC reviewed source and CI",
+                    output=output,
+                    now=now + timedelta(days=3),
+                )
+                == result
+            )
+            assert {p.name: p.read_bytes() for p in output.iterdir()} == original
+            with pytest.raises(LifecycleError):
+                approval.validate(result, mode="qualification", now=now + timedelta(days=3))
+            return output / "live-approval.json"
         command(
             self.monkeypatch,
             "record-attempt",
@@ -390,6 +449,8 @@ def test_connected_operator_approval_existing_import_activation_launch_and_seven
                 SOURCE,
                 "--approval",
                 str(retry_approval),
+                "--authority-assessment",
+                str(case.studio / "current-authority.json"),
                 "--config",
                 str(case.host.controller),
                 "--mode",
