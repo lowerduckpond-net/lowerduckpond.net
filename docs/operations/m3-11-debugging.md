@@ -5,8 +5,11 @@ disposable Docker source, destination and controlled-CA containers. It does not
 rerun create/prepare/converge or the preceding lifecycle groups. The destination
 can be changed for diagnosis; the original fenced source, selected artifact,
 backup prefix and original failed reports remain retained during investigation.
-Every failed run must be closed out locally and in DigitalOcean after debugging
-is finished, including runs whose remaining failures cannot usefully be explored.
+Every failed run must ordinarily be closed out locally and in DigitalOcean after
+debugging is finished, including runs whose remaining failures cannot usefully be
+explored. The separately approved [frozen fixture retirement](frozen-fixture-retirement.md)
+is an explicit exception: its permanent execution fence also blocks disposal and
+closeout to preserve original history; credential cleanup still proceeds.
 
 This command runs on the secure workstation in the existing private production
 environment shell. It reads current storage credentials from the encrypted

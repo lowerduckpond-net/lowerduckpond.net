@@ -23,6 +23,8 @@ from scripts.m3_11_debug_types import Fixture
 from scripts.m3_11_live_storage import LiveStorage
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.qualification_context import HOST_ENV
+from scripts.qualification_disposition import require_available
+from scripts.qualification_mutation import ownership
 from scripts.qualification_probe import document
 
 _LEASE_SESSION = ExitStack()
@@ -35,6 +37,7 @@ def lease_use(root: Path) -> None:
     from scripts.m3_11_unattended.state import LeaseState, RunState  # noqa: PLC0415
 
     marker = read_private(root / MARKER)
+    require_available(root)
     original = Path(str(marker["original_run"]))
     attempt = original.parent.parent
     request_path = attempt / "request.json"
@@ -49,6 +52,7 @@ def lease_use(root: Path) -> None:
     with ExitStack() as pending:
         pending.enter_context(RunState(attempt).lock())
         pending.enter_context(lease.use_lock())
+        require_available(root)
         run_id = identity(attempt.name)
         manifest = lease.manifest()
         use = read_private(lease.directory / ("use-" + run_id + ".json"))
@@ -119,9 +123,16 @@ def attach(root: Path) -> Fixture:
     fixture.environment, fixture.live_storage = environment, storage
 
     def command(*args: str, timeout: int = 60, stdin: bytes = b"") -> bytes:
-        result = subprocess.run(  # noqa: S603 - fixture helper commands, private stage log
-            args, env=environment, input=stdin, capture_output=True, timeout=timeout, check=False
-        )
+        require_available(root)
+        with ownership(root):
+            result = subprocess.run(  # noqa: S603 - fixture helper commands, private stage log
+                args,
+                env=environment,
+                input=stdin,
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+            )
         if result.returncode:
             sys.stderr.buffer.write(result.stdout + result.stderr)
             raise ValueError(f"diagnostic fixture command failed with status {result.returncode}")

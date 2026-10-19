@@ -15,9 +15,11 @@ from scripts.m3_11_unattended.docker import Docker
 from scripts.m3_11_unattended.model import digest, identity, instant
 from scripts.m3_11_unattended.state import LeaseState, RunState
 from scripts.m3_11_unattended.worker import SECRETS, safe_environment
+from scripts.qualification_disposition import require_available
 
 
 def require_live(directory: Path) -> None:
+    require_available(directory)
     attempt = directory.parent.parent
     request = read_private(attempt / "request.json")
     lease = LeaseState(attempt.parent.parent / "leases" / identity(request["lease_id"]))
@@ -52,6 +54,7 @@ def access(directory: Path) -> Iterator[dict[str, str]]:
     lease = LeaseState(attempt.parent.parent / "leases" / identity(request["lease_id"]))
     state = RunState(attempt)
     with state.lock(), lease.use_lock():
+        require_available(directory)
         binding = fields(request["binding"], inputs.BINDING)
         run_id = identity(binding["managed_run_id"])
         manifest = lease.manifest()

@@ -31,6 +31,7 @@ from scripts.production_qualification_inputs import (
     revision,
     storage_target_digest,
 )
+from scripts.qualification_mutation import protected_run
 
 FORMAT = "lowerduckpond-m3-10-installed-spaces-v1"
 INPUT_BOUND_FORMAT = "lowerduckpond-m3-10-installed-spaces-v2"
@@ -332,6 +333,7 @@ def _evidence_time(
     )
 
 
+@protected_run
 def create_report(  # noqa: PLR0912, PLR0915 - legacy, managed, and recovered evidence gates
     directory: Path,
     *,
@@ -461,6 +463,7 @@ def write_once(path: Path, raw: bytes, *, before_publish: Callable[[], None] | N
     publish_bytes(path, raw, before_publish=before_publish)
 
 
+@protected_run
 def publish_report(  # noqa: PLR0913 - explicit candidate and recovery publication guards
     directory: Path,
     *,

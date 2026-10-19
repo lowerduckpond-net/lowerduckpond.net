@@ -36,3 +36,7 @@ Accepted decisions:
 - [0028: Use Cloudflare as the public web edge](0028-use-cloudflare-as-the-public-web-edge.md)
 - [0029: Bind qualification to inputs and live observations](0029-bind-qualification-to-inputs-and-live-observations.md)
 - [0030: Reconstruct static hosts from bound backups](0030-reconstruct-static-hosts-from-bound-backups.md)
+
+Proposed decisions:
+
+- [0031: Retain frozen fixtures after exact archive retirement](0031-retain-frozen-fixtures-after-exact-archive-retirement.md)
