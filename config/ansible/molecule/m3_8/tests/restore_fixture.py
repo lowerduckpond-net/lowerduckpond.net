@@ -28,6 +28,7 @@ from scripts.m3_11_live_storage import LiveStorage
 from scripts.m3_11_restore_reservation import adopt
 from scripts.qualification_case import private_document
 from scripts.qualification_context import ARTIFACT_ENV, HOST_ENV
+from scripts.qualification_mutation import protected_fixture
 
 SCENARIO = Path(__file__).resolve().parents[1]
 REPO = SCENARIO.parents[3]
@@ -57,10 +58,12 @@ def wait_systemd(host: Host) -> None:
 
 
 class Fixture:
+    @protected_fixture
     def __init__(
         self, source: Host, snapshot: str, *, live_storage: LiveStorage | None = None
     ) -> None:
         self.environment = dict(os.environ)
+        owned.require_environment(self.environment)
         self.live_storage = live_storage
         if live_storage is not None:
             live_storage.require_source(self.environment)
@@ -102,12 +105,15 @@ class Fixture:
         private(self.inputs / "target.json", canonical_json_bytes(self.target))
         self._bootstrap()
 
+    @protected_fixture
     def command(self, *args: str, timeout: int = 60, stdin: bytes = b"") -> bytes:
         return owned.command(self.environment, *args, timeout=timeout, stdin=stdin)
 
+    @protected_fixture
     def copy_in(self, source: Path, identity: str, destination: str) -> None:
         self.command("docker", "cp", str(source), f"{identity}:{destination}")
 
+    @protected_fixture
     def copy_root_between(self, source: str, destination: str) -> None:
         local = self.root / f"transfer-{uuid.uuid7().hex}"
         self.command("docker", "cp", f"{self.source_id}:{source}", str(local), timeout=120)
@@ -127,6 +133,7 @@ class Fixture:
             destination,
         )
 
+    @protected_fixture
     def copy_operator_inputs(self) -> None:
         # systemd's /run mount is visible to exec, but not necessarily to the
         # Docker copy API. Transfer only these fixed disposable fixture inputs
@@ -168,6 +175,7 @@ for name in names:
             stdin=data,
         )
 
+    @protected_fixture
     def address(self, identity: str) -> str:
         return (
             self.command(
@@ -568,7 +576,9 @@ WantedBy=multi-user.target
         assert not self.destination.file("/var/lib/caddy/caddy/certificates").exists
         assert not self.destination.service("caddy").is_running
 
+    @protected_fixture
     def converge(self, *, succeeds: bool) -> None:
+        owned.require_environment(self.environment)
         uv = shutil.which("uv")
         assert uv is not None
         with (self.root / f"converge-{uuid.uuid7().hex}.log").open("xb") as log:
@@ -593,14 +603,18 @@ WantedBy=multi-user.target
             )
         assert (status == 0) is succeeds, "destination converge: see retained private log"
 
+    @protected_fixture
     def status(self) -> dict[str, object]:
         result = self.destination.run("/usr/local/sbin/restore-static-host --status")
         assert result.rc == 0, result.stderr
         return json.loads(result.stdout)
 
+    @protected_fixture
     def start(self) -> None:
+        owned.require_environment(self.environment)
         assert self.destination.run("systemctl start --no-block %s", UNIT).rc == 0
 
+    @protected_fixture
     def wait(self, phases: set[str], *, seconds: int | None = None) -> dict[str, object]:
         if seconds is None:
             # The live journey carries the preceding groups' complete history.
@@ -621,7 +635,9 @@ WantedBy=multi-user.target
             time.sleep(0.5)
         raise AssertionError("restore did not reach its expected phase")
 
+    @protected_fixture
     def fault(self, fault: str) -> None:
+        owned.require_environment(self.environment)
         checked(
             self.acme,
             f"""
@@ -634,7 +650,9 @@ with urllib.request.urlopen(request, timeout=10) as response:
 """,
         )
 
+    @protected_fixture
     def reboot(self) -> None:
+        owned.require_environment(self.environment)
         # Container restart restarts systemd with persistent ext4 and empty /run.
         # Prove a new PID 1 start time without claiming a separate kernel boot.
         before_pid = self.destination.file("/proc/1/stat").content_string.split()[21]
@@ -657,7 +675,9 @@ with urllib.request.urlopen(request, timeout=10) as response:
             time.sleep(0.5)
         raise AssertionError("restored destination systemd did not return")
 
+    @protected_fixture
     def connection(self, path: Path) -> tuple[str, Path, Path]:
+        owned.require_environment(self.environment)
         path.mkdir(mode=0o700)
         if not self.destination.file(support.OPERATOR_KEY).exists:
             self.copy_operator_inputs()
@@ -666,6 +686,7 @@ with urllib.request.urlopen(request, timeout=10) as response:
             path, container=self.destination_id, transport_path=self.transport
         )
 
+    @protected_fixture
     def fault_observed(self, name: str, *, seconds: int | None = None) -> None:
         assert name in {"deniedDns", "deniedAcme"}
         # Installed-root verification precedes Caddy startup and can cover the

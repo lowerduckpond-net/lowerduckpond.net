@@ -63,7 +63,7 @@ jobs:
   python:
     name: Python
     runs-on: ubuntu-24.04
-    # Keep >=1.5x the slowest recent completed job, including setup (662s).
+    # Keep >=1.5x the slowest recent completed job, including setup (706s).
     timeout-minutes: 20
     steps:
       - name: Check out repository

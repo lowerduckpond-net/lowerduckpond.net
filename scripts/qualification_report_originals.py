@@ -12,6 +12,7 @@ from lowerduckpond_m3_archive.report import ArchiveQualificationReport
 from scripts import m3_11_qualification_evidence as evidence
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_recovery_policy import HISTORICAL_SPAN, Window
+from scripts.qualification_disposition import require_available
 
 
 def modified(path: Path) -> datetime:
@@ -62,6 +63,7 @@ def verify(
     directory: Path, report: dict[str, object], *, phases: tuple[str, ...], now: datetime
 ) -> None:
     """Compare original bytes/observations after the report's historical validation."""
+    require_available(directory)
     if (directory / "diagnostic-origin.json").exists() or (
         directory / "diagnostic-origin.json"
     ).is_symlink():

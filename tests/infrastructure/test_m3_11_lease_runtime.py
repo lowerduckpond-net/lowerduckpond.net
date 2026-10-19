@@ -16,6 +16,7 @@ import pytest
 
 from scripts import m3_11_debug_fixture as debug_fixture
 from scripts import qualification_allocation, qualification_restore
+from scripts.m3_11_debug_files import FORMAT as DEBUG_FORMAT
 from scripts.m3_11_debug_files import MARKER
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_unattended.docker import SOCKET, Docker
@@ -234,11 +235,20 @@ def test_diagnostic_holds_exclusive_use_and_cannot_rejoin_after_release(
     request = read_private(directory / "request.json")
     request["format"] = "lowerduckpond-m3-11-unattended-request-v2"
     replace_private(directory / "request.json", request)
-    workspace = tmp_path / "diagnostic"
+    original = directory / "qualification/synthetic-fixture"
+    (original / "diagnostics").mkdir(mode=0o700)
+    workspace = original / "diagnostics/workspace"
     workspace.mkdir(mode=0o700)
-    write_private(
-        workspace / MARKER, {"original_run": str(directory / "qualification/synthetic-fixture")}
-    )
+    marker: dict[str, object] = {
+        "format": DEBUG_FORMAT,
+        "original_run": str(original),
+        "qualification_authority": "none",
+        "original_files": {},
+    }
+    # Production workspace() binds the same marker at both canonical locations.
+    # A free-standing directory with only an original_run label is not authority.
+    write_private(original / MARKER, marker)
+    write_private(workspace / MARKER, marker)
     with ExitStack() as session:
         monkeypatch.setattr(debug_fixture, "_LEASE_SESSION", session)
         if seconds_before_expiry <= 0:
