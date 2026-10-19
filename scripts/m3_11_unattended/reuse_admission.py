@@ -12,7 +12,7 @@ from typing import cast
 
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import fields
-from scripts.m3_11_unattended import approval, inputs
+from scripts.m3_11_unattended import approval, inputs, standing_authority
 from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.model import (
     LifecycleError,
@@ -185,7 +185,20 @@ def commit(  # noqa: PLR0913 - exact approved request and storage roots, no ambi
     for root in (configuration_root, cleanup_root, lease.directory.parent.parent / "runs"):
         private_directory(root)
     guard()
-    # Root validation and the final lease survey cannot borrow an earlier time.
+    selected_action = standing_authority.action(allowed)
+    if selected_action is not None:
+        # This scan is under the same exclusive runtime/storage ownership as the
+        # first durable admission write. Released attempts still consume actions.
+        for path in lease.directory.glob("admission-*.json"):
+            prior = record_for(lease, path.stem.removeprefix("admission-"))
+            prior_action = standing_authority.action(prior["approved"])
+            if prior_action is not None and prior_action[1] == selected_action[1]:
+                raise LifecycleError(
+                    "standing action already consumed; reconcile original candidate"
+                )
+    # The historical action scan is work, not borrowed time. Recheck the native
+    # lease guard and clock immediately before the first durable claim.
+    guard()
     now = clock()
     approval.validate(approved, mode=str(request["mode"]), now=now)
     record = {

@@ -12,7 +12,7 @@ from pathlib import Path
 
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
-from scripts.m3_11_unattended import approval, historical_absence, setup
+from scripts.m3_11_unattended import approval, historical_absence, setup, standing_authority
 from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.docker import (
     CLEANUP_VOLUME,
@@ -44,10 +44,18 @@ from scripts.provider_preflight_diagnostics import StorageReadinessError
 
 
 def start(  # noqa: PLR0912, PLR0913, PLR0915 - ordered approval and admission gates
-    docker: Docker, *, approved: object, config: Path, source: str, mode: str, daemon_socket: str
+    docker: Docker,
+    *,
+    approved: object,
+    config: Path,
+    source: str,
+    mode: str,
+    daemon_socket: str,
+    authority_assessment: Path | None = None,
 ) -> str:
     revision(source)
     value = approval.validate(approved, mode=mode, now=datetime.now(UTC))
+    standing_authority.require_current(value, authority_assessment, now=datetime.now(UTC))
     prepared = fields(value["prepared"], approval.PREPARED)
     current_candidate(ROOT, source)
     configuration = LeaseConfiguration.load(config)
@@ -89,6 +97,9 @@ def start(  # noqa: PLR0912, PLR0913, PLR0915 - ordered approval and admission g
         raise LifecycleError("approved revision, targets, helper or Docker host changed")
     image = str(prepared["controller_image"])
     candidate = AdmissionCandidate()
+    # Read the current authority first, then sample time after that I/O.
+    standing_authority.require_current(value, authority_assessment, now=datetime.now(UTC))
+    approval.validate(approved, mode=mode, now=datetime.now(UTC))
     with candidate.reporting(), admission(docker, image=image):
         # One active attempt globally, including unresolved cleanup. Never silently
         # remove or replace another controller. The daemon reservation serializes starts.
@@ -158,6 +169,8 @@ def start(  # noqa: PLR0912, PLR0913, PLR0915 - ordered approval and admission g
                         "legacy admission projection differs from the original controller"
                     )
         require_current_watchdogs(docker, source=source, image=image)
+        standing_authority.require_current(value, authority_assessment, now=datetime.now(UTC))
+        approval.validate(approved, mode=mode, now=datetime.now(UTC))
         run_id = str(uuid.uuid7())
         request = {
             "format": "lowerduckpond-m3-11-unattended-request-v2",
@@ -223,8 +236,12 @@ def start(  # noqa: PLR0912, PLR0913, PLR0915 - ordered approval and admission g
                 or not isinstance(admitted.get("admission_sha256"), str)
             ):
                 raise AdmissionUncertainError(run_id)
-            # Execution-time observation does not renew the approval's own expiry.
+            # Recheck the execution clock and latest withdrawal/scope assessment.
+            # Neither observation nor waiting renews original owner consent.
             try:
+                standing_authority.require_current(
+                    value, authority_assessment, now=datetime.now(UTC)
+                )
                 approval.validate(approved, mode=mode, now=datetime.now(UTC))
             except Exception as error:
                 raise AdmissionUncertainError(run_id) from error
@@ -336,6 +353,7 @@ def argument_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("start")
     run.add_argument("revision")
     run.add_argument("--approval", type=Path, required=True)
+    run.add_argument("--authority-assessment", type=Path)
     run.add_argument("--config", type=Path, required=True)
     run.add_argument("--mode", choices=("rehearsal", "qualification"), required=True)
     run.add_argument("--daemon-socket", required=True)
@@ -378,6 +396,7 @@ def main() -> int:
                     source=args.revision,
                     mode=args.mode,
                     daemon_socket=args.daemon_socket,
+                    authority_assessment=args.authority_assessment,
                 )
             )
         else:

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 from scripts.m3_11_qualification_evidence import digest as sha256
 from scripts.m3_11_qualification_evidence import fields
+from scripts.m3_11_unattended import standing_authority
 from scripts.m3_11_unattended.model import LifecycleError, Targets, identity, instant
 from scripts.production_qualification_inputs import revision
 
@@ -29,6 +30,11 @@ def preparation(value: object) -> dict[str, object]:
 
 
 def validate(value: object, *, mode: str, now: datetime) -> dict[str, object]:
+    if isinstance(value, dict) and value.get("format") == standing_authority.EXECUTION_FORMAT:
+        checked = standing_authority.validate(value, mode=mode, now=now)
+        preparation(checked["prepared"])
+        sha256(checked["qualification_inputs_sha256"])
+        return checked
     approved = fields(
         value,
         {
