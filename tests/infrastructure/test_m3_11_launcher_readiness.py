@@ -15,16 +15,27 @@ from scripts.m3_11_unattended import __main__ as cli
 from scripts.m3_11_unattended import approval
 from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.docker import SOCKET, Docker, controller_name
-from scripts.m3_11_unattended.model import LifecycleError, stamp
+from scripts.m3_11_unattended.model import LifecycleError, digest, stamp
+from scripts.m3_11_unattended.reuse_admission import AdmissionUncertainError
 
 from .test_m3_11_unattended_admission import Daemon
 from .test_m3_11_unattended_controller import DAEMON, configuration
 
 
 @pytest.mark.parametrize(
-    "fault", ["none", "lease", "policy", "unreleased", "running", "successful"]
+    "fault",
+    [
+        "none",
+        "lease",
+        "policy",
+        "unreleased",
+        "running",
+        "successful",
+        "lost-launch",
+        "lost-admission",
+    ],
 )
-def test_only_released_failed_same_lease_can_pass_launcher_admission(
+def test_only_released_failed_same_lease_can_pass_launcher_admission(  # noqa: PLR0915 - full native launcher boundary
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fault: str
 ) -> None:
     config = configuration()
@@ -54,6 +65,7 @@ def test_only_released_failed_same_lease_can_pass_launcher_admission(
         "lease_id": lease_id,
         "policy_sha256": config.approved_policy_sha256,
         "use_released": True,
+        "manifest_sha256": "a" * 64,
     }
     status = {"phase": "finished", "qualification": "failed", "credential_cleanup": "unresolved"}
     if fault == "lease":
@@ -74,12 +86,45 @@ def test_only_released_failed_same_lease_can_pass_launcher_admission(
     )
     monkeypatch.setattr(cli, "require_current_watchdogs", lambda *_args, **_kwargs: None)
     requests = []
+
+    def admitted(*_args: object, **kwargs: object) -> dict[str, object]:
+        assert kwargs["operation"] == "reuse-admission"
+        payload = cast(dict[str, object], kwargs["payload"])
+        request = cast(dict[str, object], payload["request"])
+        requests.append(request)
+        if fault == "lost-admission":
+            raise OSError("synthetic lost response after durable admission")
+        return {
+            "format": "lowerduckpond-m3-11-storage-admission-v1",
+            "lease_id": lease_id,
+            "manifest_sha256": "a" * 64,
+            "policy_sha256": config.approved_policy_sha256,
+            "storage_target_sha256": config.targets.storage_digest,
+            "helper_revision": config.helper_revision,
+            "whole_bucket_empty": True,
+            "failure": None,
+            "admitted": {
+                "attempt_id": cast(dict[str, object], request["binding"])["managed_run_id"],
+                "request_sha256": digest(request),
+                "binding_sha256": digest(request["binding"]),
+                "admission_sha256": "b" * 64,
+            },
+        }
+
+    monkeypatch.setattr(cli, "utility", admitted)
     monkeypatch.setattr(
         cli,
         "initialize_run",
-        lambda *_args, **kwargs: requests.append(json.loads(kwargs["request"])),
+        lambda *_args, **_kwargs: pytest.fail(
+            "reuse allocation must remain inside the daemon's ownership locks"
+        ),
     )
-    monkeypatch.setattr(cli, "launch", lambda *_args, **_kwargs: None)
+
+    def launch(*_args: object, **_kwargs: object) -> None:
+        if fault == "lost-launch":
+            raise OSError("synthetic lost launch reply")
+
+    monkeypatch.setattr(cli, "launch", launch)
     arguments = {
         "approved": approved,
         "config": tmp_path / "unused",
@@ -87,7 +132,15 @@ def test_only_released_failed_same_lease_can_pass_launcher_admission(
         "mode": "rehearsal",
         "daemon_socket": SOCKET,
     }
-    if fault == "none":
+    if fault in {"lost-launch", "lost-admission"}:
+        with pytest.raises(AdmissionUncertainError) as rejected:
+            cli.start(cast(Docker, daemon), **arguments)  # type: ignore[arg-type]
+        assert len(requests) == 1
+        assert (
+            rejected.value.attempt_id
+            == cast(dict[str, object], requests[0]["binding"])["managed_run_id"]
+        )
+    elif fault == "none":
         result = cli.start(cast(Docker, daemon), **arguments)  # type: ignore[arg-type] # heterogeneous CLI inputs
         assert result != old_run
         assert requests[0]["lease_id"] == lease_id

@@ -38,11 +38,12 @@ from scripts.m3_11_unattended.model import (
     digest,
     identity,
 )
+from scripts.m3_11_unattended.reuse_admission import AdmissionUncertainError
 from scripts.production_qualification_inputs import current_candidate, fingerprint, revision
 from scripts.provider_preflight_diagnostics import StorageReadinessError
 
 
-def start(  # noqa: PLR0912, PLR0913 - all approval and host bindings are explicit
+def start(  # noqa: PLR0912, PLR0913, PLR0915 - ordered approval and admission gates
     docker: Docker, *, approved: object, config: Path, source: str, mode: str, daemon_socket: str
 ) -> str:
     revision(source)
@@ -156,39 +157,6 @@ def start(  # noqa: PLR0912, PLR0913 - all approval and host bindings are explic
                         "legacy admission projection differs from the original controller"
                     )
         require_current_watchdogs(docker, source=source, image=image)
-        if value["lease_id"] is not None:
-            # Released runtime ownership preserves archive data. It is not an
-            # empty-bucket proof. Reject retained output before consuming a new
-            # attempt; worker preflight/acceptance still provide actual proof.
-            if len(reuse_manifests) != 1:
-                raise LifecycleError("released prior controllers disagree on the retained manifest")
-            reuse_manifest = reuse_manifests.pop()
-            readiness = utility(
-                docker,
-                prepared=prepared,
-                operation="storage-admission",
-                daemon_socket=daemon_socket,
-                payload={
-                    "configuration": configuration.document(cleanup_only=True),
-                    "lease_id": value["lease_id"],
-                    "manifest_sha256": reuse_manifest,
-                },
-            )
-            if (
-                readiness.get("format") != "lowerduckpond-m3-11-storage-admission-v1"
-                or readiness.get("lease_id") != value["lease_id"]
-                or readiness.get("manifest_sha256") != reuse_manifest
-                or readiness.get("policy_sha256") != configuration.approved_policy_sha256
-                or readiness.get("storage_target_sha256") != configuration.targets.storage_digest
-                or readiness.get("helper_revision") != source
-            ):
-                raise LifecycleError("reused lease lacks current whole-bucket storage readiness")
-            if readiness.get("whole_bucket_empty") is not True:
-                raise StorageReadinessError(readiness.get("failure"))
-            if readiness.get("failure") is not None:
-                raise LifecycleError("storage readiness contradicts its provider diagnostic")
-            # Execution-time observation does not renew the approval's own expiry.
-            approval.validate(approved, mode=mode, now=datetime.now(UTC))
         run_id = str(uuid.uuid7())
         request = {
             "format": "lowerduckpond-m3-11-unattended-request-v2",
@@ -206,10 +174,68 @@ def start(  # noqa: PLR0912, PLR0913 - all approval and host bindings are explic
             "controller_image": prepared["controller_image"],
             "daemon": prepared["daemon"],
         }
-        initialize_run(
-            docker, image=image, request=canonical_bytes(request), run_id=run_id, config=config
-        )
-        launch(docker, source=source, image=image, run_id=run_id, daemon_socket=daemon_socket)
+        if value["lease_id"] is not None:
+            # Released runtime ownership preserves archive data. It is not an
+            # empty-bucket proof. Reject retained output before consuming a new
+            # attempt; worker preflight/acceptance still provide actual proof.
+            if len(reuse_manifests) != 1:
+                raise LifecycleError("released prior controllers disagree on the retained manifest")
+            reuse_manifest = reuse_manifests.pop()
+            try:
+                readiness = utility(
+                    docker,
+                    prepared=prepared,
+                    operation="reuse-admission",
+                    daemon_socket=daemon_socket,
+                    payload={
+                        "configuration": configuration.document(),
+                        "lease_id": value["lease_id"],
+                        "manifest_sha256": reuse_manifest,
+                        "request": request,
+                        "approved": approved,
+                    },
+                )
+            except Exception as error:
+                raise AdmissionUncertainError(run_id) from error
+            if (
+                readiness.get("format") != "lowerduckpond-m3-11-storage-admission-v1"
+                or readiness.get("lease_id") != value["lease_id"]
+                or readiness.get("manifest_sha256") != reuse_manifest
+                or readiness.get("policy_sha256") != configuration.approved_policy_sha256
+                or readiness.get("storage_target_sha256") != configuration.targets.storage_digest
+                or readiness.get("helper_revision") != source
+            ):
+                raise AdmissionUncertainError(run_id)
+            if readiness.get("whole_bucket_empty") is not True:
+                if readiness.get("admitted") is not None:
+                    raise AdmissionUncertainError(run_id)
+                raise StorageReadinessError(readiness.get("failure"))
+            if readiness.get("failure") is not None:
+                raise AdmissionUncertainError(run_id)
+            admitted = readiness.get("admitted")
+            if (
+                not isinstance(admitted, dict)
+                or admitted.get("attempt_id") != run_id
+                or admitted.get("request_sha256") != digest(request)
+                or admitted.get("binding_sha256") != digest(request["binding"])
+                or not isinstance(admitted.get("admission_sha256"), str)
+            ):
+                raise AdmissionUncertainError(run_id)
+            # Execution-time observation does not renew the approval's own expiry.
+            try:
+                approval.validate(approved, mode=mode, now=datetime.now(UTC))
+            except Exception as error:
+                raise AdmissionUncertainError(run_id) from error
+        else:
+            initialize_run(
+                docker, image=image, request=canonical_bytes(request), run_id=run_id, config=config
+            )
+        try:
+            launch(docker, source=source, image=image, run_id=run_id, daemon_socket=daemon_socket)
+        except Exception as error:
+            if value["lease_id"] is not None:
+                raise AdmissionUncertainError(run_id) from error
+            raise
         return run_id
 
 
@@ -354,6 +380,13 @@ def main() -> int:
             )
         else:
             print(operate(Docker(), args.run_id, args.action).decode(), end="")
+    except AdmissionUncertainError as error:
+        parser.exit(
+            1,
+            "Retained admission candidate "
+            + error.attempt_id
+            + " requires read-only reconciliation before another submission.\n",
+        )
     except StorageReadinessError as error:
         print(json.dumps(error.diagnostic, sort_keys=True), file=sys.stderr)
         parser.exit(1, "Reused lease storage is not ready; no attempt allocated.\n")

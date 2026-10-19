@@ -165,7 +165,14 @@ def utility_arguments(prepared: object, *, operation: str, daemon_socket: str) -
         value["helper_revision"] != source
         or re.fullmatch(r"sha256:[0-9a-f]{64}", image) is None
         or operation
-        not in {"discover-import", "inspect-import", "import", "admission", "storage-admission"}
+        not in {
+            "discover-import",
+            "inspect-import",
+            "import",
+            "admission",
+            "storage-admission",
+            "reuse-admission",
+        }
         or not daemon_socket.startswith("/")
         or any(c in daemon_socket for c in (",", "\n", "\0"))
     ):
@@ -192,15 +199,21 @@ def utility_arguments(prepared: object, *, operation: str, daemon_socket: str) -
         "--mount",
         f"type=volume,source={helper_volume(source)},target=/opt/lifecycle,readonly",
         "--mount",
-        f"type=volume,source={EVIDENCE_VOLUME},target=/evidence,readonly",
+        f"type=volume,source={EVIDENCE_VOLUME},target=/evidence"
+        + ("" if operation == "reuse-admission" else ",readonly"),
         *(
             ["--mount", f"type=volume,source={LEASE_VOLUME},target={LEASE_DIRECTORY},readonly"]
-            if operation == "storage-admission"
+            if operation in {"storage-admission", "reuse-admission"}
             else []
         ),
         *(
             ["--mount", f"type=volume,source={CLEANUP_VOLUME},target=/cleanup"]
-            if operation == "import"
+            if operation in {"import", "reuse-admission"}
+            else []
+        ),
+        *(
+            ["--mount", f"type=volume,source={CONFIG_VOLUME},target=/configuration"]
+            if operation == "reuse-admission"
             else []
         ),
         "--workdir",
@@ -254,7 +267,9 @@ def utility(
         docker.command(
             *utility_arguments(value, operation=operation, daemon_socket=daemon_socket),
             stdin=canonical_bytes(envelope),
-            timeout=CALLER_SECONDS if operation == "storage-admission" else 1200,
+            timeout=CALLER_SECONDS
+            if operation in {"storage-admission", "reuse-admission"}
+            else 1200,
         ),
         envelope,
     )

@@ -226,12 +226,27 @@ class Services:
             )
             output = self.native(arguments[1:], stdin)
         elif program == "git":
-            output = self.git(arguments[4:])
+            if arguments[1:6] == [
+                "--no-optional-locks",
+                "--no-replace-objects",
+                "-c",
+                "core.fsmonitor=false",
+                "-C",
+            ]:
+                assert kwargs["timeout"] == 60  # noqa: PLR2004 - source-read timeout
+                assert cast(dict[str, str], kwargs["env"])["GIT_OPTIONAL_LOCKS"] == "0"
+                output = self.git(arguments[7:])
+            else:
+                assert arguments[1:3] == ["--no-replace-objects", "-C"]
+                output = self.git(arguments[4:])
         elif arguments[1:] == ["-m", "scripts.m3_11_unattended.connect_api", "--exchange"]:
             assert stdin is not None
             output = json.dumps(self.connect(json.loads(stdin))).encode()
         elif program == "docker" and self.docker_handler is not None:
-            output = self.docker_handler(arguments[1:], stdin)
+            try:
+                output = self.docker_handler(arguments[1:], stdin)
+            except OSError as error:
+                raise AssertionError("synthetic daemon filesystem boundary failed") from error
         elif (
             arguments[1:] == ["-m", "scripts.m3_11_unattended.http", "--exchange"]
             and self.http_handler is not None

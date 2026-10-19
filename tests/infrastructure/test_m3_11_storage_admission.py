@@ -21,7 +21,7 @@ from scripts import provider_preflight_diagnostics as diagnostics
 from scripts.m3_11_private_inputs import write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes
 from scripts.m3_11_unattended import __main__ as cli
-from scripts.m3_11_unattended import approval, docker, storage_admission
+from scripts.m3_11_unattended import approval, docker, readiness_credentials, storage_admission
 from scripts.m3_11_unattended import connect_activate as activation
 from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.model import LifecycleError, digest, instant, stamp
@@ -91,6 +91,14 @@ def prepared(
     lock.write_bytes(b"")
     lock.chmod(0o600)
     monkeypatch.setattr(storage_admission, "LEASE_DIRECTORY", str(root))
+    # Credential semantics are exercised independently through all seven native roles.
+    monkeypatch.setattr(
+        readiness_credentials,
+        "validate_all_roles",
+        lambda *_args, **kwargs: kwargs["guard"],
+    )
+    cleanup_lock = directory.parent.parent / ".credential-cleanup.lock"
+    cleanup_lock.touch(mode=0o600)
     inventory = Inventory()
     monkeypatch.setattr(storage_admission, "make_policy_client", lambda _config: inventory)
     monkeypatch.setattr(
@@ -230,7 +238,7 @@ def test_launch_blocks_nonempty_reuse_before_allocating_attempt(
 
     def readiness(*_args: object, **kwargs: object) -> dict[str, object]:
         assert daemon.reserved
-        assert kwargs["operation"] == "storage-admission"
+        assert kwargs["operation"] == "reuse-admission"
         failure = diagnostics.document(
             ValueError("private-sentinel"), phase="storage", started=time.monotonic()
         )
@@ -416,7 +424,7 @@ def test_actual_daemon_entry_preserves_nonempty_diagnostic_and_source_binding(
     assert inventory.calls == []
 
 
-@pytest.mark.parametrize("operation", ["admission", "storage-admission"])
+@pytest.mark.parametrize("operation", ["admission", "storage-admission", "reuse-admission"])
 def test_native_utility_encloses_new_helper_without_changing_existing_bounds(
     monkeypatch: pytest.MonkeyPatch,
     operation: str,
@@ -452,7 +460,7 @@ def test_native_utility_encloses_new_helper_without_changing_existing_bounds(
     )
     assert result == {"verified": True}
     arguments, timeout = calls[0]
-    if operation == "storage-admission":
+    if operation in {"storage-admission", "reuse-admission"}:
         assert timeout == storage_admission.CALLER_SECONDS
         assert timeout > storage_admission.HELPER_SECONDS
         assert (

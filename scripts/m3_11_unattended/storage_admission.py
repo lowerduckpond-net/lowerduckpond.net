@@ -23,9 +23,17 @@ from scripts.check_m3_10_provider import PolicyClient, check_storage
 from scripts.m3_10_policy_client import make_policy_client
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_qualification_evidence import canonical_bytes
+from scripts.m3_11_unattended import readiness_credentials, reuse_admission
 from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.docker import LEASE_DIRECTORY, Docker
-from scripts.m3_11_unattended.model import LifecycleError, digest, identity, instant, stamp
+from scripts.m3_11_unattended.model import (
+    Credential,
+    LifecycleError,
+    digest,
+    identity,
+    instant,
+    stamp,
+)
 from scripts.m3_11_unattended.state import LeaseState, RunState, private_directory
 from scripts.m3_11_unattended.watchdog import require_released_consumers
 from scripts.provider_preflight_diagnostics import document as failure_document
@@ -145,7 +153,7 @@ def existing_lock(path: Path) -> Iterator[None]:
         os.close(descriptor)
 
 
-def observe(  # noqa: PLR0913 - explicit approved lease, source and daemon
+def observe(  # noqa: PLR0913, PLR0915 - locked validation through allocation
     config: LeaseConfiguration,
     *,
     lease_id: str,
@@ -153,10 +161,12 @@ def observe(  # noqa: PLR0913 - explicit approved lease, source and daemon
     evidence_root: Path,
     docker: Docker,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    allocate: Callable[[LeaseState, Callable[[], None]], dict[str, object]] | None = None,
 ) -> dict[str, object]:
     started = time.monotonic()
     lease = LeaseState(evidence_root / "leases" / identity(lease_id))
     with existing_lock(lease.directory / "runtime-use.lock"):
+        reuse_admission.require_prior_reservations_released(lease)
         manifest = lease.manifest()
         if (
             manifest.lease_id != lease_id
@@ -171,9 +181,10 @@ def observe(  # noqa: PLR0913 - explicit approved lease, source and daemon
         if not original_uses:
             raise LifecycleError("storage readiness lacks an original released consumer")
         use_digest = digest([read_private(path) for path in original_uses])
-        credential = lease.credential(operator)
-        if credential is None:
-            raise LifecycleError("retained operator delivery is unavailable")
+        deliveries = {intent.role: lease.credential(intent) for intent in manifest.intents}
+        if any(value is None for value in deliveries.values()):
+            raise LifecycleError("a retained credential delivery is unavailable")
+        credential = cast(Credential, deliveries[operator.role])
 
         def unchanged() -> None:
             now = clock()
@@ -188,9 +199,15 @@ def observe(  # noqa: PLR0913 - explicit approved lease, source and daemon
                 or instant(stopped["stopped_at"]) > now
                 or sorted(lease.directory.glob("use-*.json")) != original_uses
                 or digest([read_private(path) for path in original_uses]) != use_digest
-                or lease.credential(operator) != credential
-                or lease.created(operator)
-                != {"intent_sha256": operator.sha256, "credential_id": credential.identifier}
+                or any(
+                    lease.credential(intent) != deliveries[intent.role]
+                    or lease.created(intent)
+                    != {
+                        "intent_sha256": intent.sha256,
+                        "credential_id": cast(Credential, deliveries[intent.role]).identifier,
+                    }
+                    for intent in manifest.intents
+                )
             ):
                 raise LifecycleError(
                     "retained lease is closing, changed or lacks remaining validity"
@@ -238,13 +255,27 @@ def observe(  # noqa: PLR0913 - explicit approved lease, source and daemon
 
             client.meta.events.register("request-created.s3", before_read)  # type: ignore[attr-defined]
             failure = None
-            try:
-                check_storage(cast(PolicyClient, client), bucket=manifest.targets.archive_bucket)
-            except Exception as error:
-                failure = failure_document(error, phase="storage", started=started)
-            if failure is None:
-                unchanged()
-                require_released_consumers(lease, docker)
+            admitted = None
+            with readiness_credentials.read_only_requests(unchanged) as credential_reads:
+                try:
+                    final_roles = readiness_credentials.validate_all_roles(
+                        config, manifest, lease, clock=clock, guard=unchanged
+                    )
+                    check_storage(
+                        cast(PolicyClient, client), bucket=manifest.targets.archive_bucket
+                    )
+                    final_roles()
+                    unchanged()
+                    require_released_consumers(lease, docker)
+                except Exception as error:
+                    failure = failure_document(error, phase="storage", started=started)
+                if failure is None and allocate is not None:
+                    # Only the final local commit excludes cleanup. Network reads
+                    # cannot hold up unrelated lease reconciliation for an hour.
+                    with existing_lock(evidence_root / ".credential-cleanup.lock"):
+                        unchanged()
+                        require_remaining(REPORT_SECONDS)
+                        admitted = allocate(lease, unchanged)
             return {
                 "format": FORMAT,
                 "lease_id": lease_id,
@@ -254,7 +285,9 @@ def observe(  # noqa: PLR0913 - explicit approved lease, source and daemon
                 "helper_revision": config.helper_revision,
                 "whole_bucket_empty": failure is None,
                 "failure": failure,
+                "admitted": admitted,
                 "observed_at": stamp(clock()),
                 "provider_read_count": requests,
+                **credential_reads,
                 "elapsed_seconds": time.monotonic() - started,
             }

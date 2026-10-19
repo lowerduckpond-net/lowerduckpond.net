@@ -252,6 +252,7 @@ files = [
   "scripts/provider_preflight_diagnostics.py",
   "tests/infrastructure/test_provider_preflight_diagnostics.py",
   "tests/infrastructure/test_m3_11_storage_admission.py",
+  "tests/infrastructure/test_m3_11_reuse_admission.py",
   "scripts/m3_10_qualification_report.py",
   "scripts/m3_11_qualification_evidence.py",
   "scripts/m3_11_production_journal.py",

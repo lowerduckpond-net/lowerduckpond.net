@@ -5,22 +5,49 @@ has stopped. Releasing its credential lease establishes runtime quiescence; it
 does not establish an empty archive bucket. Reusing such a lease previously
 allocated another attempt before the worker discovered the retained version.
 
-The unattended `start` path now checks storage before allocating an attempt ID,
-writing its initial state or launching its controller. It holds the existing
-daemon admission reservation and invokes the exact prepared helper. The helper
-rechecks its committed source, artifact, daemon, retained lease manifest, stopped
-issuer, credential lifetime and every prior consumer's released state. It holds
-the original runtime-use and storage-target locks through read-only mounts.
-Neither lock is created by the check. Resumed or replaced consumers, changed
-ownership, closing credentials and insufficient time all block admission.
+The unattended `start` path now validates readiness and durably reserves reuse in
+one native helper operation. It holds the existing daemon admission reservation
+and invokes the exact prepared helper. The helper rechecks its committed source,
+artifact, daemon, retained lease manifest, stopped issuer, credential lifetime
+and every prior consumer's released state. The original runtime-use and
+storage-target locks remain held through allocation. Neither lock is created
+by this check. Resumed or replaced consumers, changed ownership, closing
+credentials and insufficient time block admission.
 
-The helper uses the retained operator credential with the existing read-only
-policy client: private ACL, absent bucket policy and lifecycle rule, enabled
-versioning, and no current objects, versions, delete markers or multipart uploads
-in the **whole bucket**. It issues at most 35 requests with automatic retries
-disabled. It never creates credentials, deletes objects or releases a lease.
+All seven roles must have their original private delivery and immutable creation
+fact. The existing credential validator checks each live identity, name,
+creation window, active status, scope, authentication and expiry. The cleanup
+bootstrap must retain its original principal. Native journal records are read
+again before allocation to catch a close or changed ownership fact. Reads cannot
+make remote state immutable: fresh worker credential validation remains mandatory.
+The helper uses no provisioning or journal publication operation.
+
+The retained operator credential also undergoes the existing private ACL, absent
+bucket policy and lifecycle rule, enabled versioning, and **whole-bucket** empty
+checks. At most 35 bucket-policy requests run with automatic retries disabled.
+The three Spaces role-authentication probes use the same one-attempt policy
+client and their respective archive/backup buckets. Control-plane and journal
+exchanges permit only GET with no body. Native inventory/pagination bounds and
+the shared deadline apply without an arbitrary extra journal-size limit.
 The worker's provider preflight and full storage acceptance remain mandatory.
-An isolated-prefix credential check cannot substitute for this empty baseline.
+An isolated-prefix credential check cannot substitute for the empty baseline.
+
+Only after all checks pass does `reuse-admission` acquire the local cleanup lock
+for the short commit. It records immutable `admission-<candidate>.json` first,
+then the request, initial status, private configuration and exact lease-use
+reservation, all while runtime/storage ownership is held. The run directory and
+its parent are synced. Unlike the observation-only `storage-admission` operation,
+this operation deliberately mounts evidence/configuration/cleanup writable;
+source, storage-lock volume and container root remain read-only. It creates no
+credentials, deletes no objects and releases no lease.
+
+Interrupted writes and lost replies retain the candidate for read-only
+reconciliation and block another admission. No absent controller or elapsed
+wait silently releases that reservation. The watchdog preserves an exact,
+unstarted reservation while still honoring explicit cancellation and original
+credential expiry. A worker may adopt only its exact request and configuration;
+all other consumers must still pass fresh release checks. Launch uncertainty
+reports the known candidate ID instead of suggesting a second submission.
 
 Provider failures retain a closed diagnostic document on stderr and, where a
 qualification timing directory exists, the first private
@@ -47,7 +74,8 @@ is a single successful, separately bound four-request inventory: 0.873244 second
 inside its reader, 1.112831 seconds inside Docker exec, and 1.192744 seconds for
 the caller. Their respective 1.5-times floors are 1.309866, 1.669247 and 1.789116
 seconds. This probe omitted the new helper's source/artifact verification,
-policy reads and complete released-consumer checks. It is **not a comparable
+all-seven-role authentication, policy reads, complete released-consumer checks
+and durable allocation. It is **not a comparable
 completed baseline** for that helper; variability is unknown with one sample.
 No per-request or per-daemon-command completed timing is available from it.
 
@@ -55,26 +83,35 @@ No per-request or per-daemon-command completed timing is available from it.
 | --- | --- | --- | --- |
 | Each Docker read subprocess, invocation through collected exit | 1,200 s | Unchanged 1,200 s | No comparable complete sample; retain the existing safe allowance. Includes daemon response and local process overhead. |
 | Each source Git read, invocation through collected exit | No finite per-call bound | 60 s provisional | Four local read-only commands, no comparable full sample. Shared helper clock also applies; optional writes and fsmonitor are disabled. |
-| Each provider connect/read | 10 s connect, 30 s read; one attempt | Unchanged | No per-call completed sample. These are existing transport bounds, not a wall-time bound on DNS resolution or the complete helper. |
-| Entire helper, before source/daemon checks through result assembly | New path | 3,600 s provisional | Includes source/artifact reads, lock acquisition, released-consumer checks, provider calls and validation. A nonrenewing real-time ceiling covers stalls outside transport timers. |
+| Each Spaces policy/authentication read | Policy client: 10 s connect, 30 s read, one attempt | Same policy client for both | No comparable completed per-request sample. Reuse the existing bounded policy client instead of the worker probe client that permits retries. These socket limits are not a complete DNS/request wall-time bound. |
+| Each provider-control/Connect exchange, child invocation through collected exit | 30 s | Unchanged 30 s | No comparable complete request sample. Connect permits up to three read-only DNS attempts within this same process deadline; no mutation replay or additional outer retry is added. |
+| Entire helper, before source/daemon checks through result assembly | New path | 3,600 s provisional | Includes source/artifact reads, lock acquisition, released-consumer checks, all role/control/provider calls, validation and the lock-held local commit. A nonrenewing real-time ceiling covers stalls outside transport timers. |
 | Native Docker utility call, before container start through result collection | 1,200 s for existing operations | 3,720 s for this operation only | Encloses the helper plus 120 s for container startup, result transfer and teardown. Existing utility operations retain their bounds. |
 
 Every daemon read must have its **full requested timeout plus 60 seconds**
 remaining on the shared helper clock before it starts. Source reads require
-60 + 60 seconds, and provider reads require 10 + 30 + 60 seconds. The helper
+60 + 60 seconds, Spaces reads require 10 + 30 + 60 seconds, and control/Connect
+exchanges require 30 + 60 seconds. The local commit starts only with its
+60-second conservative work reserve plus the 60-second reporting reserve. The helper
 rejects a late read instead of shortening its allowance or renewing the outer
 deadline. These reserves are conservative operational allowances, not measured
 work or additional human response deadlines. The one-hour helper cap limits the
 composition; it is not the sum or product of every worst-case inner timeout.
-Retries and backoff remain zero. Queue/startup time belongs to the enclosing
-caller; observation time and active work must be recorded separately.
+Bucket reads and Spaces probes have no retries or backoff. Existing Connect DNS
+retry handling is included in its 30-second exchange and the enclosing clock.
+`provider_read_count` counts only whole-bucket policy reads; separate
+`control_read_count` and `credential_probe_read_count` report helper-level
+exchanges, not inferred lower-level HTTP attempts. Queue/startup time belongs to
+the enclosing caller; external observation time and active work must be recorded
+separately. The local tests are synthetic execution evidence, not a production
+runtime sample. No existing safe allowance is reduced because they finish fast.
 
 The previous private launch adapter's 3,600-second native-start ceiling cannot
 enclose the new 3,720-second storage call plus the rest of launch readiness. That
 adapter must not execute this revision until its complete outer envelope and
 remaining credential validity have been reviewed. Do not clip the new readiness
 check or silently extend an approval to make it fit. The original approval's
-expiry is rechecked after storage observation; credential deadlines, cleanup
+expiry is checked before committing allocation and again before launch; credential deadlines, cleanup
 reserve, main qualification deadlines and full-size archive service limits are
 unchanged. A preflight failure supplies no full-size archive/restore timing
 validation.
@@ -96,6 +133,13 @@ The existing failed-fixture retirement CLI has its own eligibility requirements;
 its copy and journal patterns do not authorize bypassing those requirements.
 An exact-version disposition must preserve ownership bookkeeping and original
 failed-run evidence, durably record intent, and reconcile uncertain responses
-without replaying deletion. The general purge path can remove multiple versions
-and is not an exact-version-only substitute. None of these changes closes the
+without replaying deletion. Ordinary archived-tenant deletion is an authoritative transition only when its
+claimed authorization job, desired/observed archived state, manifest/platform/
+archive digests and prepared `static-retirement-v2` journal match. The journal
+binds job, operator, tenant and correlation; execution also holds export
+exclusion. Its purge enumerates and removes every version of the key and can
+change tenant/runtime state. It is broader than one identified VersionId.
+Neither ordinary deletion nor low-level exact deletion is eligible or authorized
+here without retained-state capture and scope review. Do not bypass those
+checks with an ad hoc adapter. None of these changes closes the
 seven retained credential obligations or authorizes another qualification.
