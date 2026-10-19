@@ -190,3 +190,50 @@ def test_changed_full_verifier_stops_before_native_requests(case: SimpleNamespac
     with pytest.raises(ValueError, match="changed"):
         case.callback()
     assert case.calls == [] and not list(case.root.glob("refresh-*"))
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"status": "completed", "conclusion": "failure"},
+        {"status": "in_progress", "conclusion": None},
+        {"status": "completed", "conclusion": "cancelled"},
+        {"head_sha": "f" * 40},
+        {"run_attempt": 2},
+    ],
+)
+def test_newest_failed_pending_or_drifted_run_cannot_fall_back_to_older_success(
+    case: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, change: dict[str, object]
+) -> None:
+    original = vars(refresh)["read_command"]
+
+    def inventory(args: list[str], **kwargs: Any) -> bytes:  # noqa: ANN401 - native GET boundary
+        value = json.loads(original(args, **kwargs))
+        old = value["workflow_runs"][0]
+        value["workflow_runs"].append(
+            {**old, "id": 124, "created_at": stamp(datetime.now(UTC)), **change}
+        )
+        return json.dumps(value).encode()
+
+    monkeypatch.setattr(refresh, "read_command", inventory)
+    with pytest.raises(ValueError, match="newest scheduled"):
+        case.callback()
+    assert case.calls == ["inventory"]
+
+
+def test_intent_fsync_time_cannot_clip_the_admitted_native_call(
+    case: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [time.monotonic()]
+    original = record
+
+    def slow_record(path: Path, value: dict[str, object]) -> None:
+        original(path, value)
+        if path.name == "inventory-intent.json":
+            clock[0] += 3500
+
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(refresh, "record", slow_record)
+    with pytest.raises(ValueError, match="intent work consumed"):
+        case.callback()
+    assert case.calls == []

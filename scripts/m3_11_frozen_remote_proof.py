@@ -18,7 +18,7 @@ from scripts.m3_11_backup_fixture import Target, _version
 from scripts.m3_11_backup_removal import Removal
 from scripts.m3_11_frozen_context import require
 from scripts.m3_11_frozen_remote import FORMAT
-from scripts.m3_11_frozen_stage import Effects, authorization
+from scripts.m3_11_frozen_stage import Effects, authorization, read_plan
 from scripts.m3_11_live_storage import FORMAT as STORAGE_FORMAT
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_qualification_evidence import BINDING_FIELDS, fields
@@ -72,7 +72,7 @@ def verify(  # noqa: PLR0913, PLR0917 - all independent retained bindings
     fixture_id: str | None = None,
 ) -> dict[str, object]:
     directory(remote)
-    selected = read_private(remote / "plan.json")
+    selected = read_plan(remote)
     approved = authorization(
         read_private(remote / "authorization.json"), selected, stage="remote-cleanup"
     )

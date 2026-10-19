@@ -8,7 +8,7 @@ import pytest
 from lowerduckpond_static_host_agent.durable import _rename_noreplace
 
 from scripts import m3_11_frozen_stage as stage
-from scripts.m3_11_private_inputs import read_private
+from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_retirement_files import digest, record
 
 
@@ -27,6 +27,11 @@ def test_interrupted_stage_publication_can_only_continue_same_authority(
         if path.name == ("plan.json" if boundary == "plan" else "authorization.json"):
             raise KeyboardInterrupt
 
+    def interrupted_plan(path: Path, value: dict[str, object], *, maximum: int) -> None:
+        write_private(path, value, maximum=maximum)
+        if boundary == "plan":
+            raise KeyboardInterrupt
+
     def interrupted_rename(parent: int, source: str, target: str) -> None:
         original_rename(parent, source, target)
         raise KeyboardInterrupt
@@ -34,6 +39,7 @@ def test_interrupted_stage_publication_can_only_continue_same_authority(
     monkeypatch.setattr(
         stage, "record", original_record if boundary == "published" else interrupted_record
     )
+    monkeypatch.setattr(stage, "write_private", interrupted_plan)
     if boundary == "published":
         monkeypatch.setattr(stage, "_rename_noreplace", interrupted_rename)
     with pytest.raises(KeyboardInterrupt):
@@ -41,6 +47,7 @@ def test_interrupted_stage_publication_can_only_continue_same_authority(
     retained = {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
     assert retained and not list(tmp_path.rglob("*.submitted.json"))
     monkeypatch.setattr(stage, "record", original_record)
+    monkeypatch.setattr(stage, "write_private", write_private)
     monkeypatch.setattr(stage, "_rename_noreplace", original_rename)
     stage.initialize(root, plan, approval, continuing=True)
     assert read_private(root / "plan.json") == plan
@@ -95,6 +102,19 @@ def test_absence_needs_original_exact_submission(tmp_path: Path) -> None:
     ledger.submit("remove-directory", {"path": "synthetic"}, lambda: None)
     with pytest.raises(ValueError, match="ambiguous or changed"):
         ledger.observe("remove-directory", {"path": "another"}, absent=True)
+
+
+def test_large_authority_does_not_expand_ordinary_approval_or_unbounded_plan_limits(
+    tmp_path: Path,
+) -> None:
+    tmp_path.chmod(0o700)
+    with pytest.raises(ValueError, match="byte bound"):
+        stage.initialize(tmp_path / "oversized", {"data": "x" * stage.MAX_PLAN_BYTES}, {})
+    assert not (tmp_path / "oversized").exists()
+    with pytest.raises(ValueError, match="exceeds its bound"):
+        stage.initialize(tmp_path / "approval", {}, {"data": "x" * (256 * 1024)})
+    assert not (tmp_path / "approval").exists()
+    assert not list(tmp_path.rglob("*.submitted.json"))
 
 
 def test_old_human_approval_is_not_an_operational_deadline() -> None:

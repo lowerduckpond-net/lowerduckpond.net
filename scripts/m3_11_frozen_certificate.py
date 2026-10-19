@@ -19,7 +19,7 @@ from scripts import m3_11_frozen_remote_proof as remote
 from scripts.m3_11_frozen_context import require
 from scripts.m3_11_frozen_residual import Residual
 from scripts.m3_11_frozen_retirement import plan as parse_plan
-from scripts.m3_11_frozen_stage import Effects, authorization
+from scripts.m3_11_frozen_stage import Effects, authorization, read_plan
 from scripts.m3_11_frozen_terminal_bundle import verify as terminal
 from scripts.m3_11_private_inputs import read_private, read_private_bytes
 from scripts.m3_11_qualification_evidence import fields
@@ -111,7 +111,7 @@ def verify_absent(  # noqa: PLR0913 - exact original consumer and held local fen
         "disposed consumer certificate differs from original release bindings",
     )
     stage = Path(str(certificate["stage_directory"]))
-    selected = read_private(stage / "plan.json")
+    selected = read_plan(stage)
     require(
         stage == directory / ("local-" + digest(selected))
         and digest(selected) == certificate["plan_sha256"],

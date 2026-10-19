@@ -14,9 +14,11 @@ import pytest
 from scripts import m3_11_frozen_budget as budget
 from scripts import m3_11_frozen_collect as collect
 from scripts import m3_11_frozen_github as github
+from scripts import m3_11_frozen_stage as stage
 from scripts import m3_11_frozen_terminal as terminal
 from scripts import m3_11_frozen_terminal_bundle as bundle_module
 from scripts.m3_11_private_inputs import read_private, write_private
+from scripts.m3_11_qualification_evidence import MAX_BYTES, canonical_bytes
 from scripts.m3_11_retirement_files import digest, fingerprint, preserve
 from scripts.m3_11_unattended.state import LeaseState, replace_private
 
@@ -139,6 +141,17 @@ def test_full_collector_binds_all_original_responses_and_can_transfer_offline(
     installed = {**selection, "directory": str(registry / "terminal-synthetic")}
     bundle_module.install(installed, bundle_module.pack(selection), registry=registry)
     assert bundle_module.verify(installed, case.lease)["native"] == verified["native"]
+    plan: dict[str, object] = {
+        "terminal_selection": installed,
+        "terminal_capture": bundle_module.pack(selection),
+    }
+    assert MAX_BYTES < len(canonical_bytes(plan)) < stage.MAX_PLAN_BYTES
+    # The native stage persists the full closed authority, then continuation
+    # and certificate consumers reopen it through the same bounded reader.
+    journal = registry / "stage"
+    stage.initialize(journal, plan, {"synthetic": "publication-boundary"})
+    assert stage.read_plan(journal) == plan
+    stage.initialize(journal, plan, {"synthetic": "publication-boundary"}, continuing=True)
     assert len(case.calls) == 8  # noqa: PLR2004 - no network/provider calls during offline install
 
 

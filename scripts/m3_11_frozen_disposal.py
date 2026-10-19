@@ -28,7 +28,7 @@ from scripts.m3_11_frozen_budget import EXPORT_SECONDS, MAX_ENTRIES, MAX_LOCAL_B
 from scripts.m3_11_frozen_context import actor, require
 from scripts.m3_11_frozen_residual import Residual
 from scripts.m3_11_frozen_retirement import require_supported_closeout
-from scripts.m3_11_frozen_stage import Effects, authorization, initialize
+from scripts.m3_11_frozen_stage import Effects, authorization, initialize, read_plan
 from scripts.m3_11_frozen_terminal_bundle import install as install_terminal
 from scripts.m3_11_frozen_terminal_bundle import verify as terminal_proof
 from scripts.m3_11_private_inputs import read_private
@@ -790,7 +790,7 @@ class NativeLocal:
             if continue_unsubmitted:
                 initialize(self.stage_root, self.plan, approval, continuing=True)
             require(
-                read_private(self.stage_root / "plan.json") == self.plan
+                read_plan(self.stage_root) == self.plan
                 and read_private(self.stage_root / "authorization.json") == approval,
                 "local observation lacks original exact plan and authority",
             )

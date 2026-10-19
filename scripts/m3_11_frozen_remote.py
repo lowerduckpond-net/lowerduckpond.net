@@ -24,7 +24,7 @@ from scripts.m3_11_frozen_client import make_client
 from scripts.m3_11_frozen_context import NativeFixture, require
 from scripts.m3_11_frozen_retirement import plan as retirement_plan
 from scripts.m3_11_frozen_retirement import require_supported_closeout
-from scripts.m3_11_frozen_stage import Effects, authorization, initialize
+from scripts.m3_11_frozen_stage import Effects, authorization, initialize, read_plan
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_qualification_evidence import fields, uuid7
 from scripts.m3_11_retirement_files import digest, record
@@ -439,7 +439,7 @@ class NativeRemote(NativeFixture):
         self.normalize_fence = False
         self.effects = Effects(self.stage_root, plan=self.stage, approval=approval)
         require(
-            read_private(self.stage_root / "plan.json") == self.stage
+            read_plan(self.stage_root) == self.stage
             and read_private(self.stage_root / "authorization.json") == approval,
             "remote observation lacks its original exact journal",
         )

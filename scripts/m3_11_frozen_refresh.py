@@ -30,7 +30,7 @@ from scripts.m3_11_unattended.model import instant
 
 INVENTORY_SECONDS = 120
 INDEPENDENT_SECONDS = 1800
-HOST_SECONDS = 600
+HOST_SECONDS = 720  # Existing observer owns 600 s; preserve startup/reap/report outside it.
 LOCAL_SECONDS = 600
 MAX_JSON = 4 * 1024 * 1024
 ENDPOINT = (
@@ -120,7 +120,7 @@ class Refresh:
                 deadline - time.monotonic() >= seconds + 120,
                 "cleanup refresh lacks the whole child and reporting allowance",
             )
-            call_start = time.monotonic()
+            intent_start = time.monotonic()
             record(
                 output / (label + "-intent.json"),
                 {
@@ -130,15 +130,27 @@ class Refresh:
                     "configuration_sha256": digest(self.config),
                 },
             )
+            require(
+                deadline - time.monotonic() >= seconds + 120,
+                "cleanup refresh intent work consumed the whole child/report allowance",
+            )
+            call_start = time.monotonic()
             raw = read_command(
                 args, environment=self.environment, deadline=call_start + seconds, maximum=MAX_JSON
             )
+            returned = time.monotonic()
             value = json.loads(raw)
             require(isinstance(value, dict), "cleanup refresh native result is not an object")
             record(output / (label + ".json"), value)
             record(
                 output / (label + "-elapsed.json"),
-                {"elapsed_seconds": time.monotonic() - call_start, "attempt_count": 1},
+                {
+                    "elapsed_seconds": time.monotonic() - intent_start,
+                    "prelude_seconds": call_start - intent_start,
+                    "native_call_seconds": returned - call_start,
+                    "response_record_seconds": time.monotonic() - returned,
+                    "attempt_count": 1,
+                },
             )
             return cast(dict[str, object], value)
 
@@ -154,25 +166,34 @@ class Refresh:
                 "cleanup refresh original evidence changed",
             )
             contract = cast(dict[str, object], evidence["cleanup_contract"])
-            rows = inventory.get("workflow_runs")
-            require(isinstance(rows, list), "native scheduled inventory is unavailable")
-            now = datetime.now(UTC)
-            eligible = [
-                row
-                for row in cast(list[dict[str, object]], rows)
-                if type(row.get("id")) is int
-                and cast(int, row["id"]) > 0
-                and row.get("event") == "schedule"
-                and row.get("run_attempt") == 1
-                and row.get("head_sha") == contract["native_workflow"]
-                and row.get("status") == "completed"
-                and row.get("conclusion") == "success"
-                and timedelta() <= now - instant(row["created_at"]) < timedelta(seconds=5400)
-            ]
+            rows = cast(list[dict[str, object]], inventory.get("workflow_runs"))
+            require(isinstance(rows, list) and rows, "native scheduled inventory is unavailable")
             require(
-                eligible, "no eligible completed scheduled cleanup proof; no dispatch or waiting"
+                all(
+                    isinstance(row, dict)
+                    and type(row.get("id")) is int
+                    and cast(int, row["id"]) > 0
+                    for row in rows
+                ),
+                "native scheduled inventory identities are ambiguous",
             )
-            selected = max(eligible, key=lambda row: instant(row["created_at"]))
+            # Newer failure, pending work or source drift cannot be hidden by an
+            # older success. Native chronology is selected before eligibility.
+            newest = max(instant(row["created_at"]) for row in rows)
+            candidates = [row for row in rows if instant(row["created_at"]) == newest]
+            require(len(candidates) == 1, "newest scheduled inventory is ambiguous")
+            selected = candidates[0]
+            now = datetime.now(UTC)
+            require(
+                selected.get("event") == "schedule"
+                and type(selected.get("run_attempt")) is int
+                and selected["run_attempt"] == 1
+                and selected.get("head_sha") == contract["native_workflow"]
+                and selected.get("status") == "completed"
+                and selected.get("conclusion") == "success"
+                and timedelta() <= now - newest < timedelta(seconds=5400),
+                "no eligible newest scheduled cleanup proof; no fallback, dispatch or waiting",
+            )
             run_id = selected["id"]
             python = str(self.config["python"])
             independent = invoke(

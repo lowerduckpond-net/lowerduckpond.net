@@ -18,13 +18,19 @@ from typing import TypeVar
 from lowerduckpond_static_host_agent.durable import _rename_noreplace
 
 from scripts.m3_11_frozen_retirement import fingerprint, reserve
-from scripts.m3_11_private_inputs import read_private
+from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_retirement_files import RetirementError, digest, directory, record, sync
 from scripts.m3_11_unattended.model import instant, stamp
 
 AUTHORIZATION = "lowerduckpond-m3-11-staged-closeout-authorization-v1"
+MAX_PLAN_BYTES = 8 * 1024 * 1024  # Same enclosing expanded transport bound; includes full capture.
 T = TypeVar("T")
+
+
+def read_plan(root: Path) -> dict[str, object]:
+    """Complete immutable stage authority, including exact terminal capture bytes."""
+    return read_private(root / "plan.json", maximum=MAX_PLAN_BYTES)
 
 
 def initialize(
@@ -42,10 +48,7 @@ def initialize(
         if not continuing:
             raise FileExistsError("staged closeout already entered; no replay")
         directory(root)
-        if (
-            read_private(root / "plan.json") != plan
-            or read_private(root / "authorization.json") != approval
-        ):
+        if read_plan(root) != plan or read_private(root / "authorization.json") != approval:
             raise RetirementError("staged closeout original authority differs")
         return
     parent = os.open(root.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -54,7 +57,7 @@ def initialize(
         os.mkdir(temporary, mode=0o700, dir_fd=parent)
         os.fsync(parent)
         scratch = root.parent / temporary
-        record(scratch / "plan.json", plan)
+        write_private(scratch / "plan.json", plan, maximum=MAX_PLAN_BYTES)
         record(scratch / "authorization.json", approval)
         sync(scratch)
         _rename_noreplace(parent, temporary, root.name)

@@ -232,7 +232,10 @@ Long remote preservation uses `m3_11_frozen_refresh.Refresh`. Each refresh selec
 a completed scheduled run through GET, invokes the separately reviewed full
 native collector and host observer, binds all their files, then runs the isolated
 600-second full-byte validator. The complete exchange gets 3,600 seconds,
-including the existing 1,800/600/600-second children. Reusing the same receipt
+including 1,800/720/600-second child calls (the host's own 600 seconds plus
+120 seconds startup/reap/report). The newest scheduled native run must be
+eligible; a newer failure, pending run or source drift cannot be skipped for an
+older success. Reusing the same receipt
 does not change its 5,400-second native origin. No suitable proof means stop,
 without dispatch, queued mutation, short polling, or a new human reply deadline.
 Refresh occurs outside the revocation-exclusion lock. The check immediately
@@ -268,3 +271,9 @@ consumer verifies it against original submission journals and preserved backup
 bytes before append-only materialization; it neither invents an acknowledgement
 nor repeats a provider request. Read-only local observation cannot materialize
 missing evidence.
+
+Stage plans contain the complete bound terminal capture, so their publication
+and every subsequent reader share an explicit 8 MiB ceiling matching the
+expanded transport envelope. The smaller ordinary approval/effect journal
+limits remain unchanged. Larger or unpreservable captures stop before disposal;
+no native response is truncated to fit.
