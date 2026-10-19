@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -18,12 +19,19 @@ import pytest
 
 from scripts.m3_11_private_inputs import write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes
-from scripts.m3_11_unattended import connect_activate, connect_delivery, connect_host, evidence
+from scripts.m3_11_unattended import (
+    connect_activate,
+    connect_delivery,
+    connect_host,
+    evidence,
+    storage_admission,
+)
 from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.docker import OWNER, SOCKET
-from scripts.m3_11_unattended.model import LifecycleError, digest
+from scripts.m3_11_unattended.model import LifecycleError
+from scripts.m3_11_unattended.state import cleanup_lock
 
-from .operator_flow_support import ARTIFACT, DAEMON, SOURCE, Services
+from .operator_flow_support import ARTIFACT, DAEMON, SOURCE, DaemonUtilityProcessError, Services
 
 IMAGE = "sha256:" + "b" * 64
 
@@ -35,6 +43,15 @@ class Host:
         self.spool = root / "cleanup" / "legacy-import"
         self.spool.parent.mkdir(parents=True, mode=0o700)
         self.evidence.mkdir(mode=0o700)
+        (self.evidence / "runs").mkdir(mode=0o700)
+        # Model the retained host watchdog's original serialization file.
+        with cleanup_lock(self.evidence / "runs"):
+            pass
+        self.configuration = root / "configuration"
+        self.configuration.mkdir(mode=0o700)
+        self.storage_leases = root / "storage-leases"
+        self.storage_leases.mkdir(mode=0o700)
+        monkeypatch.setattr(storage_admission, "LEASE_DIRECTORY", str(self.storage_leases))
         self.rows: dict[str, dict[str, object]] = {}
         self.volumes: set[str] = set()
         self.calls: list[tuple[str, ...]] = []
@@ -348,19 +365,43 @@ class Host:
                 f"type=volume,source=ldp-m311-helper-{SOURCE},target=/opt/lifecycle,readonly"
                 in arguments
             )
-            assert "type=volume,source=ldp-m311-evidence,target=/evidence,readonly" in arguments
+            allocation = envelope["operation"] == "reuse-admission"
+            suffix = "" if allocation else ",readonly"
+            assert "type=volume,source=ldp-m311-evidence,target=/evidence" + suffix in arguments
+            assert any("target=/configuration" in arg for arg in arguments) == allocation
             assert "--read-only" in arguments and IMAGE in arguments
             assert any("target=/cleanup" in arg for arg in arguments) == (
-                envelope["operation"] == "import"
+                envelope["operation"] in {"import", "reuse-admission"}
             )
             self.utility_calls.append(envelope)
-            with self.inside():
-                result = connect_activate.daemon_utility(
-                    envelope, evidence_root=self.evidence, import_root=self.spool
+            invoke = connect_activate.daemon_utility
+
+            def utility(value: object) -> dict[str, object]:
+                return invoke(
+                    value,
+                    evidence_root=self.evidence,
+                    import_root=self.spool,
+                    configuration_root=self.configuration,
+                    cleanup_root=self.spool.parent,
                 )
-            return canonical_bytes(
-                {"format": envelope["format"], "input_sha256": digest(envelope), "result": result}
-            )
+
+            # Exercise the real CLI's exception/status/sanitization contract.
+            # Filesystem failures inside the utility are process failures;
+            # unexpected accesses outside this boundary remain harness errors.
+            output, errors = io.BytesIO(), io.StringIO()
+            with self.inside(), pytest.MonkeyPatch.context() as process:
+                process.setattr(connect_activate, "daemon_utility", utility)
+                process.setattr(sys, "argv", ["connect_activate", "daemon-utility"])
+                process.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(stdin)))
+                process.setattr(sys, "stdout", io.TextIOWrapper(output))
+                process.setattr(sys, "stderr", errors)
+                status = connect_activate.main()
+                raw = output.getvalue()
+                diagnostic = errors.getvalue().encode()
+            if status:
+                raise DaemonUtilityProcessError(status, raw, diagnostic)
+            assert not diagnostic
+            return raw
         if operation == "run" and "scripts.m3_11_unattended.evidence" in arguments:
             directory = (
                 self.evidence / "runs" / Path(arguments[arguments.index("--directory") + 1]).name

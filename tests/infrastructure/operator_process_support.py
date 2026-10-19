@@ -6,6 +6,7 @@ external state loader/probe and journey process supply disposable observations.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -67,6 +68,10 @@ class Child:
 class Processes:
     def __init__(self, host: Host, cloud: Cloud, monkeypatch: pytest.MonkeyPatch) -> None:
         self.host, self.cloud, self.monkeypatch = host, cloud, monkeypatch
+        # The simulated original journey acquires the same persistent target lock.
+        target = {"region": cloud.targets.region, "archive_bucket": cloud.targets.archive_bucket}
+        lock = host.storage_leases / (hashlib.sha256(canonical_bytes(target)).hexdigest() + ".lock")
+        lock.touch(mode=0o600)
         self.fixtures: list[Path] = []
         self.environments: list[dict[str, str]] = []
         self.observations: list[Observations] = []

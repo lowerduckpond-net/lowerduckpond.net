@@ -6,20 +6,23 @@ import hashlib
 import io
 import json
 import urllib.request
+from collections.abc import Callable
 from copy import deepcopy
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import cast
+from typing import cast, override
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
+from lowerduckpond_static_host_agent.archive_configuration import ArchiveConfiguration
 
-from scripts.m3_11_unattended import spaces
+from scripts.m3_11_unattended import readiness_credentials, spaces, storage_admission
 from scripts.m3_11_unattended.model import Targets, stamp
 
 from .cloudflare_transport_support import mock_urlopen
 from .operator_flow_support import Services
+from .test_m3_10_production_gate import Storage
 from .test_m3_11_lease_configuration import mapping
 
 
@@ -97,6 +100,8 @@ class Cloud:
                 }
         services.http_handler = self.exchange
         monkeypatch.setattr(spaces, "create_client", self.s3)
+        monkeypatch.setattr(storage_admission, "make_policy_client", self.policy_client)
+        monkeypatch.setattr(readiness_credentials, "make_policy_client", self.policy_client)
         monkeypatch.setattr("scripts.m3_11_backup_fixture.create_client", self.s3)
         self.production_secret = "SYNTHETIC-PRODUCTION-CADDY-SECRET-ONLY"  # noqa: S105 - synthetic test value only
         selected = hashlib.sha256(self.production_secret.encode()).hexdigest()[:32]
@@ -198,6 +203,53 @@ class Cloud:
         return SimpleNamespace(
             list_objects_v2=listing, list_object_versions=versions, get_object=get
         )
+
+    def policy_client(self, config: ArchiveConfiguration) -> object:
+        cloud = self
+
+        class PolicyStorage(Storage):
+            def __init__(self) -> None:
+                super().__init__()
+                self.guard: Callable[..., None] = lambda **_kwargs: None
+                self.meta = SimpleNamespace(events=SimpleNamespace(register=self.register))
+
+            def register(self, event: str, callback: Callable[..., None]) -> None:
+                assert event == "request-created.s3"
+                self.guard = callback
+
+            @override
+            def __getattr__(self, name: str) -> object:
+                original = cast(Callable[..., object], super().__getattr__(name))
+
+                def read(**arguments: object) -> object:
+                    assert arguments["Bucket"] == config.bucket
+                    self.guard(request=object())
+                    assert (
+                        cloud.keys[config.access_key_id]["secret_key"] == config.secret_access_key
+                    )
+                    if name == "list_objects_v2":
+                        return {
+                            "IsTruncated": False,
+                            "Contents": [
+                                {"Key": key}
+                                for bucket, key in cloud.objects
+                                if bucket == config.bucket
+                            ],
+                        }
+                    if name == "list_object_versions":
+                        return {
+                            "IsTruncated": False,
+                            "Versions": [
+                                {"Key": key, "VersionId": row[0]}
+                                for (bucket, key), row in cloud.objects.items()
+                                if bucket == config.bucket
+                            ],
+                        }
+                    return original(**{**arguments, "Bucket": "archive-fixture"})
+
+                return read
+
+        return PolicyStorage()
 
     def exchange(self, request: dict[str, object]) -> dict[str, object]:  # noqa: PLR0911, PLR0912 - explicit external protocol branches
         self.calls.append(deepcopy(request))

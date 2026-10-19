@@ -435,6 +435,18 @@ def prepare_lease_cleanup(root: Path, docker: Docker, inventory: Inventory) -> b
         manifest = lease.manifest()
         lifecycle = LeaseLifecycle(manifest, inventory, lease, providers={})
         deadline = manifest.policy.deadline(instant(manifest.created_at))
+        from scripts.m3_11_unattended import reuse_admission  # noqa: PLC0415
+
+        if (
+            not state.cancelled
+            and not state.stopped
+            and datetime.now(UTC) < deadline
+            and not any(lease.directory.glob("close-*.json"))
+            and reuse_admission.pending(lease, directory)
+        ):
+            # A durable allocation with an uncertain launch is reconciled in
+            # place. Absence of a controller is not permission to cancel/replay.
+            continue
         terminal = directory / "journey-result.json"
         outcome = read_private(terminal)["outcome"] if terminal.exists() else None
         retained = (
@@ -556,13 +568,26 @@ def cancel_lease(directory: Path, config_path: Path) -> dict[str, object]:
     return result
 
 
-def require_released_consumers(lease: LeaseState, docker: Docker) -> None:
+def require_released_consumers(  # noqa: PLR0912 - own exact reservation and every prior consumer
+    lease: LeaseState, docker: Docker, *, admitted_request: dict[str, object] | None = None
+) -> None:
     """Freshly recheck every original consumer under the exclusive use lock."""
     import json  # noqa: PLC0415
+
+    own = None
+    if admitted_request is not None:
+        from scripts.m3_11_unattended import reuse_admission  # noqa: PLC0415
+
+        reuse_admission.exact_use(lease, admitted_request)
+        own = identity(cast(dict[str, object], admitted_request["binding"])["managed_run_id"])
 
     for path in lease.directory.glob("use-*.json"):
         use = read_private(path)
         attempt = identity(use["attempt_id"])
+        if path.name != "use-" + attempt + ".json":
+            raise LifecycleError("lease consumer filename differs from its identity")
+        if attempt == own:
+            continue  # Only the just-validated exact reservation; all others rechecked.
         if not lease.released_use(attempt_id=attempt, binding_sha256=str(use["binding_sha256"])):
             raise LifecycleError("previous lease consumer has not established quiescence")
         original = read_private(lease.directory.parent.parent / "runs" / attempt / "request.json")

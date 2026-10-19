@@ -284,12 +284,11 @@ class LocalInventory:
             raise LifecycleError("lease inventory fact cannot be replaced")
 
 
-class ConnectInventory:
-    def __init__(self, client: Connect, vault: str, *, spool: Path) -> None:
+class ConnectInventoryReader:
+    """Read native immutable facts without a publication spool or write authority."""
+
+    def __init__(self, client: Connect, vault: str) -> None:
         self.client, self.vault = client, Connect._identity(vault)
-        spool.mkdir(mode=0o700, parents=True, exist_ok=True)
-        private_directory(spool)
-        self.spool = spool
 
     def _read(self, item_id: str, *, published: bool = False) -> dict[str, object]:
         read = self.client.published_item if published else self.client.item
@@ -333,6 +332,14 @@ class ConnectInventory:
             if TAG in (item.get("tags") or []) or str(item.get("title", "")).startswith(PREFIX):
                 records.append(self._read(item_id))
         return _collect(records)
+
+
+class ConnectInventory(ConnectInventoryReader):
+    def __init__(self, client: Connect, vault: str, *, spool: Path) -> None:
+        super().__init__(client, vault)
+        spool.mkdir(mode=0o700, parents=True, exist_ok=True)
+        private_directory(spool)
+        self.spool = spool
 
     def publish(self, record: dict[str, object]) -> None:
         record = validate(record)

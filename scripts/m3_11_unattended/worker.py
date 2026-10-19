@@ -456,10 +456,21 @@ class Worker:
         from scripts.m3_11_unattended.watchdog import require_released_consumers  # noqa: PLC0415
 
         with self.lease_state.use_lock():
-            require_released_consumers(self.lease_state, Docker())
-            self.lease_state.acquire_use(
-                attempt_id=self.run_id, binding_sha256=digest(self.binding), kind="attempt"
-            )
+            reservation = self.lease_state.directory / ("admission-" + self.run_id + ".json")
+            if reservation.exists() or reservation.is_symlink():
+                from scripts.m3_11_unattended import reuse_admission  # noqa: PLC0415
+
+                admitted = reuse_admission.exact_use(self.lease_state, self.request)
+                if admitted["configuration_sha256"] != digest(self.config.document()):
+                    raise LifecycleError("worker configuration differs from reserved admission")
+                require_released_consumers(
+                    self.lease_state, Docker(), admitted_request=self.request
+                )
+            else:
+                require_released_consumers(self.lease_state, Docker())
+                self.lease_state.acquire_use(
+                    attempt_id=self.run_id, binding_sha256=digest(self.binding), kind="attempt"
+                )
         return self.lifecycle.credentials(binding=self.binding)
 
     def _production(

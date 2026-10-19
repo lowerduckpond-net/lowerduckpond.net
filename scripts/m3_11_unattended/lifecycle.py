@@ -943,6 +943,57 @@ def lease_manifest(  # noqa: PLR0913 - explicit approved authorities and inputs
     )
 
 
+def validate_reused_credentials(  # noqa: PLR0913 - shared read-only lease validation
+    manifest: LeaseManifest,
+    state: LeaseState,
+    providers: Mapping[ProviderKind, Provider],
+    observed: dict[str, dict[str, object]],
+    *,
+    clock: Callable[[], datetime],
+    guard: Callable[[], None] = lambda: None,
+) -> dict[str, Credential]:
+    """Validate every original delivery and live ownership without issuing a receipt."""
+    started = clock()
+    deadline = manifest.policy.deadline(instant(manifest.created_at))
+    if (
+        "issuer-stopped" not in observed
+        or deadline - started < MINIMUM_TOKEN_REMAINING
+        or any(slot.startswith("close-") for slot in observed)
+        or any(state.directory.glob("close-*.json"))
+    ):
+        raise LifecycleError("lease is closing, incomplete or lacks remaining validity")
+    values: dict[str, Credential] = {}
+    for intent in manifest.intents:
+        credential = state.credential(intent)
+        created = observed.get("created:" + intent.role)
+        if (
+            credential is None
+            or created is None
+            or created["payload"]
+            != {"intent_sha256": intent.sha256, "credential_id": credential.identifier}
+        ):
+            raise LifecycleError("lease credential identity or private delivery is unavailable")
+        client = providers[intent.provider]
+        guard()
+        metadata = client.inspect(credential.identifier)
+        if (
+            metadata is None
+            or metadata.get("scope") != intent.scope
+            or metadata.get("status") != "active"
+        ):
+            raise LifecycleError("reused lease credential policy or status differs")
+        _owned(intent, metadata, known=credential.identifier)
+        guard()
+        client.verify(intent, credential, now=clock())
+        values[intent.role] = credential
+    if len({value.secret for value in values.values()}) != len(ROLES) or len(
+        {value.identifier for value in values.values()}
+    ) != len(ROLES):
+        raise LifecycleError("reused lease credential identities are not separated")
+    guard()
+    return values
+
+
 class LeaseLifecycle:
     """One uninterrupted issuer; immutable off-host facts and private child values."""
 
@@ -982,39 +1033,9 @@ class LeaseLifecycle:
         observed = self.records()
         started = self.clock()
         deadline = self.manifest.policy.deadline(instant(self.manifest.created_at))
-        if (
-            "issuer-stopped" not in observed
-            or deadline - started < MINIMUM_TOKEN_REMAINING
-            or any(slot.startswith("close-") for slot in observed)
-            or any(self.state.directory.glob("close-*.json"))
-        ):
-            raise LifecycleError("lease is closing, incomplete or lacks remaining validity")
-        values: dict[str, Credential] = {}
-        for intent in self.manifest.intents:
-            credential = self.state.credential(intent)
-            created = observed.get("created:" + intent.role)
-            if (
-                credential is None
-                or created is None
-                or created["payload"]
-                != {"intent_sha256": intent.sha256, "credential_id": credential.identifier}
-            ):
-                raise LifecycleError("lease credential identity or private delivery is unavailable")
-            client = self.providers[intent.provider]
-            metadata = client.inspect(credential.identifier)
-            if (
-                metadata is None
-                or metadata.get("scope") != intent.scope
-                or metadata.get("status") != "active"
-            ):
-                raise LifecycleError("reused lease credential policy or status differs")
-            _owned(intent, metadata, known=credential.identifier)
-            client.verify(intent, credential, now=self.clock())
-            values[intent.role] = credential
-        if len({value.secret for value in values.values()}) != len(ROLES) or len(
-            {value.identifier for value in values.values()}
-        ) != len(ROLES):
-            raise LifecycleError("reused lease credential identities are not separated")
+        values = validate_reused_credentials(
+            self.manifest, self.state, self.providers, observed, clock=self.clock
+        )
         receipt = {
             "format": inputs.LEASE_FIXTURE_FORMAT,
             **fields(binding, inputs.BINDING),

@@ -12,6 +12,7 @@ import hashlib
 import json
 import sys
 import tempfile
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -45,6 +46,7 @@ from scripts.m3_11_unattended.lifecycle import LeaseLifecycle, _intents, _known_
 from scripts.m3_11_unattended.model import (
     LeaseManifest,
     LifecycleError,
+    Targets,
     digest,
     fingerprint,
     identity,
@@ -288,6 +290,39 @@ def daemon_utility(
     *,
     evidence_root: Path = Path("/evidence"),
     import_root: Path = Path("/cleanup/legacy-import"),
+    configuration_root: Path = Path("/configuration"),
+    cleanup_root: Path = Path("/cleanup"),
+) -> dict[str, object]:
+    if isinstance(envelope, dict) and envelope.get("operation") in {
+        "storage-admission",
+        "reuse-admission",
+    }:
+        from scripts.m3_11_unattended.storage_admission import bounded_helper  # noqa: PLC0415
+
+        with bounded_helper():
+            return _daemon_utility(
+                envelope,
+                evidence_root=evidence_root,
+                import_root=import_root,
+                configuration_root=configuration_root,
+                cleanup_root=cleanup_root,
+            )
+    return _daemon_utility(
+        envelope,
+        evidence_root=evidence_root,
+        import_root=import_root,
+        configuration_root=configuration_root,
+        cleanup_root=cleanup_root,
+    )
+
+
+def _daemon_utility(  # noqa: PLR0915 - explicit separate operation authority
+    envelope: object,
+    *,
+    evidence_root: Path,
+    import_root: Path,
+    configuration_root: Path,
+    cleanup_root: Path,
 ) -> dict[str, object]:
     """Private-stdin entry on the exact prepared daemon helper."""
     from scripts.m3_11_unattended import approval  # noqa: PLC0415
@@ -298,7 +333,12 @@ def daemon_utility(
     value = fields(envelope, {"format", "operation", "prepared", "payload"})
     prepared = fields(value["prepared"], approval.PREPARED)
     source = revision(prepared["source_revision"])
-    docker = Docker()
+    if value["operation"] in {"storage-admission", "reuse-admission"}:
+        from scripts.m3_11_unattended.storage_admission import ReadOnlyDocker  # noqa: PLC0415
+
+        docker: Docker = ReadOnlyDocker()
+    else:
+        docker = Docker()
     current_candidate(ROOT, source)
     artifact = evidence_root / "prepared" / source / "static-host-agent.tar"
     with artifact.open("rb") as stream:
@@ -311,6 +351,56 @@ def daemon_utility(
     ):
         raise LifecycleError("daemon utility differs from the exact prepared inputs")
     operation = value["operation"]
+    if operation in {"storage-admission", "reuse-admission"}:
+        from scripts.m3_11_unattended import reuse_admission  # noqa: PLC0415
+        from scripts.m3_11_unattended.storage_admission import observe  # noqa: PLC0415
+
+        payload = fields(
+            value["payload"],
+            {"configuration", "lease_id", "manifest_sha256"}
+            | ({"request", "approved"} if operation == "reuse-admission" else set()),
+        )
+        config = LeaseConfiguration.parse(payload["configuration"])
+        expected_mode = "controller" if operation == "reuse-admission" else "cleanup-only"
+        if config.mode != expected_mode or config.helper_revision != source:
+            raise LifecycleError("storage admission differs from the prepared helper")
+        allocation = None
+        if operation == "reuse-admission":
+            request = reuse_admission.request_binding(
+                payload["request"], payload["approved"], now=datetime.now(UTC)
+            )
+            allowed = cast(dict[str, object], payload["approved"])
+            binding = cast(dict[str, object], request["binding"])
+            if (
+                allowed["prepared"] != prepared
+                or allowed["policy_sha256"] != config.approved_policy_sha256
+                or Targets.parse(allowed["targets"]) != config.targets
+                or binding["storage_target_sha256"] != config.targets.storage_digest
+                or request["lease_id"] != payload["lease_id"]
+            ):
+                raise LifecycleError("reuse admission differs from its prepared envelope")
+
+            def allocate(lease: LeaseState, guard: Callable[[], None]) -> dict[str, object]:
+                return reuse_admission.commit(
+                    lease,
+                    config,
+                    request,
+                    payload["approved"],
+                    configuration_root=configuration_root,
+                    cleanup_root=cleanup_root,
+                    clock=lambda: datetime.now(UTC),
+                    guard=guard,
+                )
+
+            allocation = allocate
+        return observe(
+            config,
+            lease_id=identity(payload["lease_id"]),
+            manifest_sha256=str(payload["manifest_sha256"]),
+            evidence_root=evidence_root,
+            docker=docker,
+            allocate=allocation,
+        )
     if operation in {"discover-import", "inspect-import"}:
         payload = fields(value["payload"], {"historical_reader", "journal_vault", "declarations"})
         from scripts.m3_11_unattended.legacy_discovery import collect  # noqa: PLC0415
