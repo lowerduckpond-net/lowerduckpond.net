@@ -549,3 +549,45 @@ def test_final_guard_cannot_cross_approval_expiry_before_allocation(
         observe(delayed)
     assert not list(lease.directory.glob("admission-*.json"))
     assert before == {path: path.read_bytes() for path in tmp_path.rglob("*") if path.is_file()}
+
+
+@pytest.mark.parametrize(
+    "boundary", ["before", "admission", "request", "status", "controller", "cleanup", "use"]
+)
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt, SystemExit])
+def test_launcher_interrupt_reports_same_candidate_at_real_durable_boundaries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boundary: str,
+    interruption: type[BaseException],
+) -> None:
+    lease, request, observe, _allocate, _daemon = admission_case(tmp_path, monkeypatch)
+    attempt = cast(dict[str, str], request["binding"])["managed_run_id"]
+    candidate = reuse_admission.AdmissionCandidate(attempt)
+
+    def injected(original: Writer) -> Writer:
+        def write(path: Path, value: dict[str, object]) -> None:
+            if boundary == "before":
+                raise interruption("synthetic interruption before first commit")
+            original(path, value)
+            if path.name in {boundary + ".json", boundary + "-" + attempt + ".json"}:
+                raise interruption("synthetic interruption after durable commit")
+
+        return write
+
+    monkeypatch.setattr(reuse_admission, "write_private", injected(write_private))
+    monkeypatch.setattr(reuse_admission, "replace_private", injected(replace_private))
+    monkeypatch.setattr(state_module, "write_private", injected(write_private))
+    monkeypatch.setattr(state_module, "replace_private", injected(state_module.replace_private))
+    with pytest.raises(reuse_admission.AdmissionUncertainError) as rejected, candidate.reporting():
+        observe()
+    assert rejected.value.attempt_id == attempt
+    assert isinstance(rejected.value.__cause__, interruption)
+    reservations = list(lease.directory.glob("admission-*.json"))
+    if boundary == "before":
+        assert not reservations
+    else:
+        assert len(reservations) == 1
+        assert read_private(reservations[0])["request"] == request
+        with pytest.raises((LifecycleError, OSError)):
+            reuse_admission.require_prior_reservations_released(lease)

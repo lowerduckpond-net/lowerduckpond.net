@@ -38,7 +38,7 @@ from scripts.m3_11_unattended.model import (
     digest,
     identity,
 )
-from scripts.m3_11_unattended.reuse_admission import AdmissionUncertainError
+from scripts.m3_11_unattended.reuse_admission import AdmissionCandidate, AdmissionUncertainError
 from scripts.production_qualification_inputs import current_candidate, fingerprint, revision
 from scripts.provider_preflight_diagnostics import StorageReadinessError
 
@@ -88,7 +88,8 @@ def start(  # noqa: PLR0912, PLR0913, PLR0915 - ordered approval and admission g
     ):
         raise LifecycleError("approved revision, targets, helper or Docker host changed")
     image = str(prepared["controller_image"])
-    with admission(docker, image=image):
+    candidate = AdmissionCandidate()
+    with candidate.reporting(), admission(docker, image=image):
         # One active attempt globally, including unresolved cleanup. Never silently
         # remove or replace another controller. The daemon reservation serializes starts.
         names = (
@@ -181,6 +182,7 @@ def start(  # noqa: PLR0912, PLR0913, PLR0915 - ordered approval and admission g
             if len(reuse_manifests) != 1:
                 raise LifecycleError("released prior controllers disagree on the retained manifest")
             reuse_manifest = reuse_manifests.pop()
+            candidate.attempt_id = run_id
             try:
                 readiness = utility(
                     docker,

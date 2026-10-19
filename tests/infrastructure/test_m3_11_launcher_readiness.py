@@ -33,6 +33,10 @@ from .test_m3_11_unattended_controller import DAEMON, configuration
         "successful",
         "lost-launch",
         "lost-admission",
+        "interrupt-admission-before",
+        "interrupt-admission-after",
+        "interrupt-launch-before",
+        "interrupt-launch-after",
     ],
 )
 def test_only_released_failed_same_lease_can_pass_launcher_admission(  # noqa: PLR0915 - full native launcher boundary
@@ -92,6 +96,11 @@ def test_only_released_failed_same_lease_can_pass_launcher_admission(  # noqa: P
         payload = cast(dict[str, object], kwargs["payload"])
         request = cast(dict[str, object], payload["request"])
         requests.append(request)
+        if fault == "interrupt-admission-before":
+            raise KeyboardInterrupt
+        if fault == "interrupt-admission-after":
+            (tmp_path / "durable-reservation.json").write_text(json.dumps(request))
+            raise KeyboardInterrupt
         if fault == "lost-admission":
             raise OSError("synthetic lost response after durable admission")
         return {
@@ -121,6 +130,11 @@ def test_only_released_failed_same_lease_can_pass_launcher_admission(  # noqa: P
     )
 
     def launch(*_args: object, **_kwargs: object) -> None:
+        if fault == "interrupt-launch-before":
+            raise KeyboardInterrupt
+        if fault == "interrupt-launch-after":
+            daemon.controllers.append(controller_name(str(_kwargs["run_id"])))
+            raise KeyboardInterrupt
         if fault == "lost-launch":
             raise OSError("synthetic lost launch reply")
 
@@ -132,7 +146,7 @@ def test_only_released_failed_same_lease_can_pass_launcher_admission(  # noqa: P
         "mode": "rehearsal",
         "daemon_socket": SOCKET,
     }
-    if fault in {"lost-launch", "lost-admission"}:
+    if fault in {"lost-launch", "lost-admission"} or fault.startswith("interrupt-"):
         with pytest.raises(AdmissionUncertainError) as rejected:
             cli.start(cast(Docker, daemon), **arguments)  # type: ignore[arg-type]
         assert len(requests) == 1
@@ -148,3 +162,11 @@ def test_only_released_failed_same_lease_can_pass_launcher_admission(  # noqa: P
         with pytest.raises(LifecycleError, match="unresolved revocation"):
             cli.start(cast(Docker, daemon), **arguments)  # type: ignore[arg-type]
         assert requests == []
+
+    assert not daemon.reserved
+    if fault == "interrupt-admission-after":
+        assert json.loads((tmp_path / "durable-reservation.json").read_text()) == requests[0]
+    if fault == "interrupt-launch-after":
+        assert daemon.controllers[-1] == controller_name(
+            str(cast(dict[str, object], requests[0]["binding"])["managed_run_id"])
+        )

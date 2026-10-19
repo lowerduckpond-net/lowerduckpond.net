@@ -236,7 +236,12 @@ def test_launch_blocks_nonempty_reuse_before_allocating_attempt(
         ).encode(),
     )
 
+    candidates: list[str] = []
+
     def readiness(*_args: object, **kwargs: object) -> dict[str, object]:
+        payload = cast(dict[str, object], kwargs["payload"])
+        request = cast(dict[str, object], payload["request"])
+        candidates.append(str(cast(dict[str, object], request["binding"])["managed_run_id"]))
         assert daemon.reserved
         assert kwargs["operation"] == "reuse-admission"
         failure = diagnostics.document(
@@ -287,7 +292,10 @@ def test_launch_blocks_nonempty_reuse_before_allocating_attempt(
     error = capsys.readouterr().err
     assert "private-sentinel" not in error
     if malformed:
-        assert "Operation incomplete" in error
+        assert len(candidates) == 1
+        assert "Retained admission candidate " + candidates[0] in error
+        assert "read-only reconciliation" in error
+        assert "no attempt allocated" not in error
     else:
         assert diagnostics.verified(json.loads(error.splitlines()[0]))["phase"] == "storage"
         assert "no attempt allocated" in error

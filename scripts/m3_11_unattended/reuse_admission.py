@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -22,6 +24,7 @@ from scripts.m3_11_unattended.model import (
     stamp,
 )
 from scripts.m3_11_unattended.state import LeaseState, RunState, private_directory, replace_private
+from scripts.provider_preflight_diagnostics import StorageReadinessError
 
 FORMAT = "lowerduckpond-m3-11-reuse-admission-v1"
 
@@ -30,6 +33,27 @@ class AdmissionUncertainError(RuntimeError):
     def __init__(self, attempt_id: str) -> None:
         self.attempt_id = identity(attempt_id)
         super().__init__("retained admission requires reconciliation")
+
+
+@dataclass
+class AdmissionCandidate:
+    """Keep one submitted identity through interrupts and reservation teardown."""
+
+    attempt_id: str | None = None
+
+    @contextmanager
+    def reporting(self) -> Iterator[None]:
+        try:
+            yield
+        except AdmissionUncertainError, StorageReadinessError:
+            # A fully validated negative storage response proves no allocation.
+            raise
+        except BaseException as error:
+            # KeyboardInterrupt/SystemExit do not prove the daemon was stopped
+            # before its first durable write, or before controller submission.
+            if self.attempt_id is None:
+                raise
+            raise AdmissionUncertainError(self.attempt_id) from error
 
 
 def request_binding(request: object, approved: object, *, now: datetime) -> dict[str, object]:
