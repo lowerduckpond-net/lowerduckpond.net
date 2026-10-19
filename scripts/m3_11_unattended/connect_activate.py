@@ -289,6 +289,17 @@ def daemon_utility(
     evidence_root: Path = Path("/evidence"),
     import_root: Path = Path("/cleanup/legacy-import"),
 ) -> dict[str, object]:
+    if isinstance(envelope, dict) and envelope.get("operation") == "storage-admission":
+        from scripts.m3_11_unattended.storage_admission import bounded_helper  # noqa: PLC0415
+
+        with bounded_helper():
+            return _daemon_utility(envelope, evidence_root=evidence_root, import_root=import_root)
+    return _daemon_utility(envelope, evidence_root=evidence_root, import_root=import_root)
+
+
+def _daemon_utility(
+    envelope: object, *, evidence_root: Path, import_root: Path
+) -> dict[str, object]:
     """Private-stdin entry on the exact prepared daemon helper."""
     from scripts.m3_11_unattended import approval  # noqa: PLC0415
     from scripts.m3_11_unattended.connect_configuration import reader  # noqa: PLC0415
@@ -298,7 +309,12 @@ def daemon_utility(
     value = fields(envelope, {"format", "operation", "prepared", "payload"})
     prepared = fields(value["prepared"], approval.PREPARED)
     source = revision(prepared["source_revision"])
-    docker = Docker()
+    if value["operation"] == "storage-admission":
+        from scripts.m3_11_unattended.storage_admission import ReadOnlyDocker  # noqa: PLC0415
+
+        docker: Docker = ReadOnlyDocker()
+    else:
+        docker = Docker()
     current_candidate(ROOT, source)
     artifact = evidence_root / "prepared" / source / "static-host-agent.tar"
     with artifact.open("rb") as stream:
@@ -311,6 +327,20 @@ def daemon_utility(
     ):
         raise LifecycleError("daemon utility differs from the exact prepared inputs")
     operation = value["operation"]
+    if operation == "storage-admission":
+        from scripts.m3_11_unattended.storage_admission import observe  # noqa: PLC0415
+
+        payload = fields(value["payload"], {"configuration", "lease_id", "manifest_sha256"})
+        config = LeaseConfiguration.parse(payload["configuration"])
+        if config.mode != "cleanup-only" or config.helper_revision != source:
+            raise LifecycleError("storage admission differs from the prepared helper")
+        return observe(
+            config,
+            lease_id=identity(payload["lease_id"]),
+            manifest_sha256=str(payload["manifest_sha256"]),
+            evidence_root=evidence_root,
+            docker=docker,
+        )
     if operation in {"discover-import", "inspect-import"}:
         payload = fields(value["payload"], {"historical_reader", "journal_vault", "declarations"})
         from scripts.m3_11_unattended.legacy_discovery import collect  # noqa: PLC0415

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,9 +39,10 @@ from scripts.m3_11_unattended.model import (
     identity,
 )
 from scripts.production_qualification_inputs import current_candidate, fingerprint, revision
+from scripts.provider_preflight_diagnostics import StorageReadinessError
 
 
-def start(  # noqa: PLR0913 - all approval and host bindings are explicit
+def start(  # noqa: PLR0912, PLR0913 - all approval and host bindings are explicit
     docker: Docker, *, approved: object, config: Path, source: str, mode: str, daemon_socket: str
 ) -> str:
     revision(source)
@@ -102,6 +104,7 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
             .decode()
             .splitlines()
         )
+        reuse_manifests: set[str] = set()
         for name in names:
             previous = identity(str(uuid.UUID(name.removeprefix("ldp-m311-controller-"))))
             status = json.loads(operate(docker, previous, "status"))
@@ -116,6 +119,9 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
                 and progress.get("phase") == "finished"
                 and progress.get("qualification") in {"failed", "interrupted"}
             ):
+                if not isinstance(retained.get("manifest_sha256"), str):
+                    raise LifecycleError("released lease manifest binding is unavailable")
+                reuse_manifests.add(retained["manifest_sha256"])
                 continue
             if (
                 progress.get("credential_cleanup") != "verified"
@@ -150,6 +156,39 @@ def start(  # noqa: PLR0913 - all approval and host bindings are explicit
                         "legacy admission projection differs from the original controller"
                     )
         require_current_watchdogs(docker, source=source, image=image)
+        if value["lease_id"] is not None:
+            # Released runtime ownership preserves archive data. It is not an
+            # empty-bucket proof. Reject retained output before consuming a new
+            # attempt; worker preflight/acceptance still provide actual proof.
+            if len(reuse_manifests) != 1:
+                raise LifecycleError("released prior controllers disagree on the retained manifest")
+            reuse_manifest = reuse_manifests.pop()
+            readiness = utility(
+                docker,
+                prepared=prepared,
+                operation="storage-admission",
+                daemon_socket=daemon_socket,
+                payload={
+                    "configuration": configuration.document(cleanup_only=True),
+                    "lease_id": value["lease_id"],
+                    "manifest_sha256": reuse_manifest,
+                },
+            )
+            if (
+                readiness.get("format") != "lowerduckpond-m3-11-storage-admission-v1"
+                or readiness.get("lease_id") != value["lease_id"]
+                or readiness.get("manifest_sha256") != reuse_manifest
+                or readiness.get("policy_sha256") != configuration.approved_policy_sha256
+                or readiness.get("storage_target_sha256") != configuration.targets.storage_digest
+                or readiness.get("helper_revision") != source
+            ):
+                raise LifecycleError("reused lease lacks current whole-bucket storage readiness")
+            if readiness.get("whole_bucket_empty") is not True:
+                raise StorageReadinessError(readiness.get("failure"))
+            if readiness.get("failure") is not None:
+                raise LifecycleError("storage readiness contradicts its provider diagnostic")
+            # Execution-time observation does not renew the approval's own expiry.
+            approval.validate(approved, mode=mode, now=datetime.now(UTC))
         run_id = str(uuid.uuid7())
         request = {
             "format": "lowerduckpond-m3-11-unattended-request-v2",
@@ -315,6 +354,9 @@ def main() -> int:
             )
         else:
             print(operate(Docker(), args.run_id, args.action).decode(), end="")
+    except StorageReadinessError as error:
+        print(json.dumps(error.diagnostic, sort_keys=True), file=sys.stderr)
+        parser.exit(1, "Reused lease storage is not ready; no attempt allocated.\n")
     except RuntimeError, OSError, ValueError, TypeError, KeyError:
         parser.exit(
             1,

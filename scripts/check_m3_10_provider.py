@@ -10,6 +10,7 @@ import re
 import stat
 import sys
 import tempfile
+import time
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
@@ -44,6 +45,7 @@ from scripts.check_m3_7_production_edge import (
 )
 from scripts.m3_10_page_rules import PageRulesClient
 from scripts.m3_10_policy_client import make_policy_client
+from scripts.qualification_failure import record_provider_preflight_failure
 
 _MAXIMUM_TRUST_ANCHORS: Final = 2
 _MAXIMUM_AUTHORITY_BYTES: Final = 128 * 1024
@@ -497,6 +499,8 @@ def main() -> int:
     parser.add_argument("--artifact")
     parser.add_argument("--source")
     arguments = parser.parse_args()
+    started = time.monotonic()
+    phase = "inputs"
     try:
         configuration = ArchiveConfiguration(
             required(os.environ, "SPACES_REGION"),
@@ -519,6 +523,7 @@ def main() -> int:
         elif arguments.archive_authority or arguments.artifact or arguments.source:
             raise GateError("host authority is only valid for completed storage checks")
         client = cast(PolicyClient, make_policy_client(configuration))
+        phase = "storage"
         check_storage(
             client,
             bucket=configuration.bucket,
@@ -533,6 +538,7 @@ def main() -> int:
         if arguments.storage_only:
             print(f"M3.10 {storage_proof} passed.")
             return 0
+        phase = "edge"
         edge = CloudflareClient(required(os.environ, "CLOUDFLARE_API_TOKEN"))
         now = datetime.now(UTC)
         page_rules = page_rules_client(os.environ, now=now)
@@ -557,6 +563,9 @@ def main() -> int:
             raise GateError("production edge zones belong to different accounts")
         check_caddy_token(os.environ, account_id=account_ids.pop(), now=now)
     except (BotoCoreError, ClientError, RuntimeError, ValueError, OSError) as error:
+        # Keep closed diagnostic fields before the generic CLI message discards
+        # the exception. Failure recording must not change this failure's exit.
+        record_provider_preflight_failure(error, phase=phase, started=started)
         # Provider exceptions can include request URLs, headers, and credentials.
         message = (
             str(error)

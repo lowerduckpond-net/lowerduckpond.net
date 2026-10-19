@@ -10,6 +10,12 @@ and credential-cleanup status are independent. Sanitized export never traverses
 raw controller/production logs, fixture inputs or cleanup secret spools. Existing
 failed-fixture retirement authority is unchanged.
 
+For retained-lease provider failures, see the
+[storage readiness and timing audit](m3-11-storage-readiness.md). The native
+launcher now rejects a nonempty archive bucket before allocating another attempt,
+and provider preflight retains a closed diagnostic alongside the private failure
+evidence. The original full storage acceptance remains mandatory.
+
 Independent Connect cleanup retains an unresolved receipt with its fixed phase
 and failure category. Where available, the origin contains only an allowlisted
 pinned source path, a function name read from that source and a bounded line

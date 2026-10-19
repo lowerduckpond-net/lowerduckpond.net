@@ -229,6 +229,22 @@ def record_phase(phase: str) -> None:
             print("Qualification diagnostic context unavailable.", file=sys.stderr)
 
 
+def record_provider_preflight_failure(error: BaseException, *, phase: str, started: float) -> None:
+    """Retain the constructed, secret-free provider facts, preserving the first failure."""
+    try:
+        from scripts import provider_preflight_diagnostics as diagnostics  # noqa: PLC0415
+
+        payload = diagnostics.document(error, phase=phase, started=started)
+        # This is also useful outside the qualification timing directory. The
+        # producer copies only closed labels/numeric metadata, never messages.
+        print(json.dumps(payload, sort_keys=True), file=sys.stderr)
+        directory = _directory()
+        if directory is not None:
+            _write(directory / "failure-provider-preflight.json", payload, first=True)
+    except Exception:
+        print("Provider preflight diagnostic unavailable.", file=sys.stderr)
+
+
 def record_controller_stage(stage: str) -> None:
     """Retain only the fixed pre-fixture operation, never its arguments or environment."""
     directory = _directory()
