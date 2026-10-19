@@ -7,14 +7,15 @@ must bind exact source, existing consumer/producer, lease/manifest, stopped acto
 original evidence, preserved bytes, bucket/key/VersionId/size/hash and reviewed
 caller/program files. No private production identities belong in this document.
 
-**Current status: staged implementation under final validation, not execution-ready.**
-The source hard gate remains. The driver rejects execution before
-creating its output directory, reserving an exec or gathering proofs. The native
-entry and native owner's pre-marker check independently reject it as well. There
-is no approval field, CLI option or environment flag that enables execution.
-Read-only reconciliation remains distinct and cannot submit DELETE. Historical
-seals that promised permanent disposal exclusion are superseded; they must not
-be relabeled as approval for this narrower contract.
+**Current status: staged source independently reviewed; execution requires a sealed proposal.**
+Combined source tests and independent requirement/implementation reviews permit
+replacing the temporary review-only block. Runtime authorization, ownership,
+source/program binding, proof freshness, credential validity and no-replay checks
+remain mandatory. Required exact-head CI, final private caller review and separate
+owner execution approval remain prerequisites; source publication grants none of
+those facts. Read-only reconciliation cannot submit DELETE or recreate resources.
+Historical seals that promised permanent disposal exclusion are superseded; they
+must not be relabeled as approval for this narrower contract.
 
 ## Irreversible effects and recovery
 
@@ -92,7 +93,7 @@ completion must not permanently prevent independently verified resource cleanup,
 and cleanup must not manufacture retirement success.
 
 Final combined validation and independent review remain prerequisites **before
-any live retirement**. The source gate cannot be overridden by an approval flag.
+any live retirement**. No approval flag replaces runtime proof or ownership checks.
 Later execution needs separate exact remote and local disposal scope; neither is
 included in the one-VersionId plan. Read-only inspection and independent
 credential cleanup remain available.

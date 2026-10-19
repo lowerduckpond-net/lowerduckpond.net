@@ -194,7 +194,6 @@ def case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     # terminal-fact/native ZIP and full remote-proof validators.
     monkeypatch.setattr(local, "terminal_proof", lambda *_args: {"synthetic": "closed"})
     monkeypatch.setattr(local, "install_terminal", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(local, "require_supported_closeout", lambda: None)
 
     class IsolatedLocal(local.NativeLocal):
         def prerequisites(self) -> None:

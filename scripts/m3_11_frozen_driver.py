@@ -30,7 +30,6 @@ from scripts.m3_11_frozen_retirement import (
     OBSERVATION,
     RETAINED,
     fingerprint,
-    require_supported_closeout,
     reserve,
 )
 from scripts.m3_11_frozen_transport import (
@@ -273,8 +272,6 @@ def execute(  # noqa: PLR0912,PLR0913,PLR0915 - one bounded submission and proto
         operation=operation,
         plan_sha256=authorization.get("plan_sha256"),
     )
-    if not observing:
-        require_supported_closeout()
     if re.fullmatch(r"[0-9a-f]{64}", controller) is None:
         raise RetirementError("retirement controller identity is invalid")
     if not environment.get("DOCKER_HOST", "").startswith("unix:///") or environment.get(

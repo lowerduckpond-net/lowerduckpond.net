@@ -23,7 +23,6 @@ from scripts.m3_11_frozen_budget import MAX_REMOTE_BYTES, REMOTE_SECONDS
 from scripts.m3_11_frozen_client import make_client
 from scripts.m3_11_frozen_context import NativeFixture, require
 from scripts.m3_11_frozen_retirement import plan as retirement_plan
-from scripts.m3_11_frozen_retirement import require_supported_closeout
 from scripts.m3_11_frozen_stage import Effects, authorization, initialize, read_plan
 from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_qualification_evidence import fields, uuid7
@@ -268,7 +267,6 @@ class NativeRemote(NativeFixture):
         self.preserved_evidence(plan)
 
     def execute(self, raw: object, approved: object) -> dict[str, object]:
-        require_supported_closeout()
         selected = self.selected(raw)
         approval = authorization(approved, self.stage, stage="remote-cleanup")
         self.normalize_fence = True
@@ -351,7 +349,6 @@ class NativeRemote(NativeFixture):
 
     def continue_unsubmitted(self, raw: object, approved: object) -> dict[str, object]:
         """Explicit next submission for only never-submitted remaining identities."""
-        require_supported_closeout()
         selected = self.selected(raw)
         approval = authorization(approved, self.stage, stage="remote-cleanup")
         self.normalize_fence = True

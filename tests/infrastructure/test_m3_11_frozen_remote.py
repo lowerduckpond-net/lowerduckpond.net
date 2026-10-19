@@ -74,7 +74,6 @@ def test_remote_stage_preserves_real_journal_and_exact_uncertainty(
             return item
 
     native = IsolatedRemote()
-    monkeypatch.setattr(remote, "require_supported_closeout", lambda: None)
     monkeypatch.setattr(remote, "dns_absent", lambda *_args: None)
     plan = {
         "format": remote.FORMAT,

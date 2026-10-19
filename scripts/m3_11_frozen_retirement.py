@@ -43,19 +43,6 @@ PLAN_FIELDS = {
 }
 
 
-def require_supported_closeout() -> None:
-    """Keep native execution disabled until the narrower exit path is reviewed.
-
-    Transaction primitives remain testable against synthetic stores. Neither
-    approval nor a runtime flag may replace independent review of the integrated
-    staged closeout adapter. Removing this blocker requires its race/crash regressions and
-    a newly reviewed source/program binding, not merely a new approval document.
-    """
-    raise RetirementError(
-        "live retirement unavailable: integrated staged closeout review is incomplete"
-    )
-
-
 def reserve(path: Path, value: dict[str, object]) -> None:
     """Exclusive, durable reservation. A torn final file still consumes the call.
 

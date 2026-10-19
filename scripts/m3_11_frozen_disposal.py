@@ -27,7 +27,6 @@ from scripts import m3_11_frozen_remote_proof as remote_proof
 from scripts.m3_11_frozen_budget import EXPORT_SECONDS, MAX_ENTRIES, MAX_LOCAL_BYTES
 from scripts.m3_11_frozen_context import actor, require
 from scripts.m3_11_frozen_residual import Residual
-from scripts.m3_11_frozen_retirement import require_supported_closeout
 from scripts.m3_11_frozen_stage import Effects, authorization, initialize, read_plan
 from scripts.m3_11_frozen_terminal_bundle import install as install_terminal
 from scripts.m3_11_frozen_terminal_bundle import verify as terminal_proof
@@ -556,7 +555,6 @@ class NativeLocal:
                         )
 
     def execute(self, raw: object, approved: object) -> dict[str, object]:
-        require_supported_closeout()
         self.selected(raw)
         self.prepare_capture = True
         approval = authorization(approved, self.plan, stage="local-disposal")
@@ -781,8 +779,6 @@ class NativeLocal:
     def reconcile(
         self, raw: object, approved: object, *, continue_unsubmitted: bool = False
     ) -> dict[str, object]:
-        if continue_unsubmitted:
-            require_supported_closeout()
         self.selected(raw)
         self.prepare_capture = continue_unsubmitted
         approval = authorization(approved, self.plan, stage="local-disposal")

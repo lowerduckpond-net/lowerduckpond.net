@@ -1,6 +1,6 @@
 # 0031: Retain frozen fixtures after exact archive retirement
 
-- Status: staged implementation under final validation; native execution blocked
+- Status: accepted source design; separately approved execution required
 - Date: 2026-10-19
 
 ## Context
@@ -47,7 +47,7 @@ independent of resource disposal.
 Retained canonical records cease to be runnable recovery authority after this
 retirement. Reupload cannot restore the original VersionId. Preserved bytes allow
 inspection; this establishes no automatic tested recovery into a new fixture.
-The source hard gate remains until final combined tests and independent review
-are complete. An exact execution proposal and separate owner authorization are
-still required afterward. Read-only evidence and credential cleanup continue.
+Combined source tests and independent requirement/implementation review cover
+the narrower exit path. Exact source/program/caller binding, required CI and
+separate owner authorization remain mandatory before execution. Read-only evidence and credential cleanup continue.
 Failed qualifications remain failed and whole-bucket acceptance stays unchanged.

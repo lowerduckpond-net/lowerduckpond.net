@@ -45,13 +45,6 @@ Case = tuple[FrozenRetirement, Fixture, dict[str, object]]
 
 
 @pytest.fixture
-def synthetic_closeout_support(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Exercise transaction primitives with fake providers, never native readiness."""
-    for module in (driver, entry, context):
-        monkeypatch.setattr(module, "require_supported_closeout", lambda: None)
-
-
-@pytest.fixture
 def locked_owner(
     owner: context.NativeFixture, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[context.NativeFixture, dict[str, object], list[Path]]:
@@ -176,7 +169,6 @@ def driver_program(case: Case, operation: str = "execute") -> tuple[str, str]:
 
 
 @pytest.mark.parametrize("operation", ["execute", "reconcile"])
-@pytest.mark.usefixtures("synthetic_closeout_support")
 def test_real_bootstrap_entry_driver_protocol_and_no_replay(  # noqa: PLR0915 - one real protocol exchange
     case: Case, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
@@ -327,7 +319,6 @@ def test_proof_exchange_leaves_room_for_full_local_child_and_response() -> None:
 
 
 @pytest.mark.parametrize("remaining", [2459, 2460])
-@pytest.mark.usefixtures("synthetic_closeout_support")
 def test_native_permanent_marker_admission_requires_post_effect_and_report_reserve(
     owner: context.NativeFixture, monkeypatch: pytest.MonkeyPatch, remaining: int
 ) -> None:
@@ -368,7 +359,6 @@ def test_observation_cannot_hide_a_provider_mutation_or_claim_completion(case: C
 
 
 @pytest.mark.parametrize("where", ["before-reservation", "after-reservation"])
-@pytest.mark.usefixtures("synthetic_closeout_support")
 def test_driver_never_submits_after_enclosing_allowance_consumed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, where: str, case: Case
 ) -> None:
@@ -405,7 +395,6 @@ def test_driver_never_submits_after_enclosing_allowance_consumed(
 
 
 @pytest.mark.parametrize("prelude_seconds", [2500.0, 6001.0])
-@pytest.mark.usefixtures("synthetic_closeout_support")
 def test_original_caller_origin_includes_preimport_and_review_work(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, prelude_seconds: float, case: Case
 ) -> None:
@@ -428,7 +417,6 @@ def test_original_caller_origin_includes_preimport_and_review_work(
     assert not sent and not (output / "exec-submitted.json").exists()
 
 
-@pytest.mark.usefixtures("synthetic_closeout_support")
 def test_driver_cannot_promote_malformed_verified_frame(
     case: Case, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -661,7 +649,6 @@ def test_partial_initial_frame_cannot_renew_startup_deadline(
 
 
 @pytest.mark.parametrize("error", [KeyboardInterrupt, SystemExit])
-@pytest.mark.usefixtures("synthetic_closeout_support")
 def test_driver_interrupt_preserves_uncertain_identity_and_never_reexecutes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, error: type[BaseException], case: Case
 ) -> None:
@@ -706,7 +693,6 @@ def test_driver_interrupt_preserves_uncertain_identity_and_never_reexecutes(
 
 
 @pytest.mark.parametrize("error", [KeyboardInterrupt, SystemExit])
-@pytest.mark.usefixtures("synthetic_closeout_support")
 def test_entry_interrupt_reports_unresolved_without_claiming_retirement(
     monkeypatch: pytest.MonkeyPatch, error: type[BaseException]
 ) -> None:
@@ -822,7 +808,7 @@ def test_execution_terminal_requires_exactly_one_integer_delete(case: Case, coun
 
 
 @pytest.mark.parametrize("boundary", ["driver", "entry", "native-owner"])
-def test_missing_supported_closeout_blocks_native_execution_before_effects(
+def test_rejected_prerequisite_blocks_native_execution_before_effects(
     case: Case,
     owner: context.NativeFixture,
     tmp_path: Path,
@@ -832,18 +818,23 @@ def test_missing_supported_closeout_blocks_native_execution_before_effects(
     transaction, fixture, approval = case
     output = tmp_path / "must-not-reserve"
     effects: list[str] = []
+    rejections: list[str] = []
 
-    def unexpected(*args: object, **kwargs: object) -> Any:  # noqa: ANN401 - forbidden boundary
+    def rejected(*args: object, **kwargs: object) -> Any:  # noqa: ANN401 - proof boundary
+        rejections.append(boundary)
+        raise ValueError("synthetic prerequisite rejected")
+
+    def unexpected(*args: object, **kwargs: object) -> Any:  # noqa: ANN401 - effect boundary
         effects.append("unexpected-effect")
-        pytest.fail("unimplemented closeout must stop before native work")
+        pytest.fail("failed prerequisites must stop before native submission")
 
-    monkeypatch.setattr(source, "current_candidate", unexpected)
+    monkeypatch.setattr(source, "current_candidate", rejected)
     monkeypatch.setattr(entry, "LocalProof", unexpected)
     monkeypatch.setattr(subprocess, "Popen", unexpected)
-    monkeypatch.setattr(owner, "owner", unexpected)
+    monkeypatch.setattr(owner, "owner", rejected)
     if boundary == "driver":
         program, bundle = driver_program(case)
-        with pytest.raises(ValueError, match="staged closeout review is incomplete"):
+        with pytest.raises(ValueError, match="synthetic prerequisite rejected"):
             driver.execute(
                 program=program,
                 bundle=bundle,
@@ -851,10 +842,14 @@ def test_missing_supported_closeout_blocks_native_execution_before_effects(
                 controller="a" * 64,
                 environment={"DOCKER_HOST": "unix:///synthetic"},
                 output=output,
-                verify=unexpected,
+                verify=rejected,
             )
     elif boundary == "entry":
         emitted: list[dict[str, object]] = []
+        # The owner fixture already installs its own synthetic deadline. Exercise
+        # the source-proof rejection here; real process clock admission has its
+        # own subprocess regressions.
+        monkeypatch.setattr(entry, "bounded_helper", nullcontext)
         monkeypatch.setattr(entry, "emit", emitted.append)
         assert (
             entry.run(
@@ -871,9 +866,10 @@ def test_missing_supported_closeout_blocks_native_execution_before_effects(
         assert len(emitted) == 1 and emitted[0]["status"] == "unresolved"
         assert emitted[0]["no_replay"] is True
     else:
-        with pytest.raises(ValueError, match="staged closeout review is incomplete"):
+        with pytest.raises(ValueError, match="synthetic prerequisite rejected"):
             owner.before_disposition()
-    assert not effects and not output.exists() and not transaction.root.exists()
+    assert rejections == [boundary] and not effects
+    assert not (output / "exec-submitted.json").exists() and not transaction.root.exists()
     assert not fixture.store.deletes
 
 

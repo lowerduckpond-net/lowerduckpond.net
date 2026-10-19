@@ -21,7 +21,6 @@ from scripts.m3_11_frozen_disposal import LocalDocker, NativeLocal
 from scripts.m3_11_frozen_entry import ACK_SECONDS, LocalProof, emit
 from scripts.m3_11_frozen_frames import frame
 from scripts.m3_11_frozen_remote import NativeRemote
-from scripts.m3_11_frozen_retirement import require_supported_closeout
 from scripts.m3_11_frozen_terminal import snapshot
 from scripts.m3_11_frozen_transport import STAGED_MUTATIONS, STAGED_OBSERVATIONS
 from scripts.m3_11_private_inputs import read_private
@@ -182,8 +181,6 @@ def terminal_snapshot(payload: object) -> None:
 def run(value: dict[str, object]) -> None:
     operation = str(value["operation"])
     require(operation in STAGED_MUTATIONS | STAGED_OBSERVATIONS, "staged operation is unknown")
-    if operation in STAGED_MUTATIONS:
-        require_supported_closeout()
     plan = cast(dict[str, object], value["plan"])
     retired = cast(dict[str, object], plan["retirement_plan"])
     require(value["fixture"] == plan["fixture"], "staged outer fixture binding differs")
