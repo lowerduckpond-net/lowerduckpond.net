@@ -8,9 +8,6 @@ import stat
 from collections.abc import Iterator
 from pathlib import Path
 
-from lowerduckpond_static_contracts import decode_json_object
-from lowerduckpond_static_host_agent.durable import _rename_noreplace
-
 from scripts.m3_11_private_inputs import read_private, read_private_bytes
 from scripts.m3_11_qualification_evidence import MAX_BYTES, canonical_bytes
 
@@ -24,6 +21,8 @@ class RetirementError(ValueError):
 
 def legacy(path: Path) -> dict[str, object]:
     """Original framework records have whitespace; preserve their exact bytes."""
+    from lowerduckpond_static_contracts import decode_json_object  # noqa: PLC0415
+
     directory(path.parent)
     return decode_json_object(read_private_bytes(path), maximum_bytes=MAX_BYTES)
 
@@ -97,6 +96,8 @@ def preserve(  # noqa: PLR0912 - one durable copy transaction
     path: Path, chunks: Iterator[bytes], size: int, digest: str | None = None
 ) -> dict[str, object]:
     """Only new transaction-owned partial files can be retried; final files are immutable."""
+    from lowerduckpond_static_host_agent.durable import _rename_noreplace  # noqa: PLC0415
+
     directory(path.parent)
     if path.exists() or path.is_symlink():
         found = fingerprint(path, size)

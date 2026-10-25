@@ -12,6 +12,7 @@ from typing import cast
 from scripts.m3_11_combined_inputs import _directory, _environment, environment_for
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, read_document
+from scripts.qualification_disposition import require_available
 
 FORMAT = "lowerduckpond-m3-11-debug-v1"
 MARKER = "diagnostic-origin.json"
@@ -87,6 +88,7 @@ def copy(source: Path, target: Path) -> None:
 
 def original(run: Path) -> tuple[dict[str, str], dict[str, str]]:
     _directory(run)
+    require_available(run)
     manifest = read_private(run / "fixture.json")
     environment = environment_for(run, cast("dict[str, str]", manifest["environment"]))
     _, failure = read_document(run / "failure-exit.json")
@@ -176,6 +178,7 @@ def replace_private(path: Path, value: dict[str, object]) -> None:
 
 
 def require_original_unchanged(root: Path) -> None:
+    require_available(root)
     marker = read_private(root / MARKER)
     if marker.get("format") != FORMAT or marker.get("qualification_authority") != "none":
         raise ValueError("diagnostic workspace lacks its original failed-run binding")

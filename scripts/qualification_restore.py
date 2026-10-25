@@ -15,6 +15,10 @@ from pathlib import Path
 
 from scripts.qualification_case import private_document
 from scripts.qualification_context import ARTIFACT_ENV, HOST_ENV, RUN_ENV, host_name
+from scripts.qualification_disposition import (
+    require_environment as require_environment,  # noqa: PLC0414 - public fixture guard
+)
+from scripts.qualification_mutation import environment_ownership
 from scripts.qualification_probe import bounded_command, document
 
 KINDS = ("destination", "acme")
@@ -79,7 +83,15 @@ def directory(environment: dict[str, str]) -> Path:
 def command(
     environment: dict[str, str], *args: str, timeout: int = 60, stdin: bytes = b""
 ) -> bytes:
-    result = bounded_command(list(args), environment=environment, timeout=timeout, stdin=stdin)
+    # Identity/status observation remains available; restored execution cannot
+    # revive a permanently retired fixture, including through direct helpers.
+    if args[:2] == ("docker", "inspect"):
+        result = bounded_command(list(args), environment=environment, timeout=timeout, stdin=stdin)
+    else:
+        with environment_ownership(environment):
+            result = bounded_command(
+                list(args), environment=environment, timeout=timeout, stdin=stdin
+            )
     if result is None:
         raise ValueError("owned reconstruction fixture command failed")
     return result

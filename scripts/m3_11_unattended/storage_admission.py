@@ -102,7 +102,7 @@ def bounded_git(repository: Path, *arguments: str) -> bytes:
 
 
 @contextmanager
-def bounded_helper() -> Iterator[None]:
+def bounded_helper(*, seconds: int = HELPER_SECONDS) -> Iterator[None]:
     global _deadline  # noqa: PLW0603 - single-use process, restored on exit
 
     def expired(_signum: int, _frame: object) -> None:
@@ -111,15 +111,17 @@ def bounded_helper() -> Iterator[None]:
         os._exit(124)
 
     if (
-        _deadline is not None
+        type(seconds) is not int
+        or not HELPER_SECONDS <= seconds <= 36000  # noqa: PLR2004 - existing job ceiling
+        or _deadline is not None
         or signal.getsignal(signal.SIGALRM) != signal.SIG_DFL
         or signal.getitimer(signal.ITIMER_REAL) != (0.0, 0.0)
         or signal.SIGALRM in signal.pthread_sigmask(signal.SIG_BLOCK, [])
     ):
         raise LifecycleError("storage admission cannot establish its nonrenewing bound")
     signal.signal(signal.SIGALRM, expired)
-    _deadline = time.monotonic() + HELPER_SECONDS
-    signal.setitimer(signal.ITIMER_REAL, HELPER_SECONDS)
+    _deadline = time.monotonic() + seconds
+    signal.setitimer(signal.ITIMER_REAL, seconds)
     original_git = production_qualification_inputs.git
     production_qualification_inputs.git = bounded_git
     try:

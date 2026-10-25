@@ -78,6 +78,37 @@ def receipt(directory: Path, case: str) -> Path:
     return destination
 
 
+@pytest.mark.parametrize("case", ["core", "full-size-archive"])
+def test_receipt_gate_runs_without_workspace_dependencies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    receipt(tmp_path, case)
+    monkeypatch.setenv("INSTALLED_SELECTION", json.dumps(selection((case,), "reviewed-map")))
+    monkeypatch.setenv("MATRIX_RESULT", "success")
+    monkeypatch.setenv("COMPLETE_RESULT", "skipped")
+    monkeypatch.setenv("STATIC_RESULT", "success")
+    result = subprocess.run(  # noqa: S603 - fixed local receipt CLI and private synthetic directory
+        [
+            sys.executable,
+            "-S",
+            "-m",
+            "scripts.qualification_ci",
+            "verify",
+            "--event",
+            "pull_request",
+            "--directory",
+            str(tmp_path),
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "Every required installed group" in result.stdout
+
+
 @pytest.mark.parametrize("case", [CASE, "core"])
 def test_retirement_retention_cannot_substitute_for_successful_cleanup(
     tmp_path: Path, case: str

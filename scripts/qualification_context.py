@@ -10,6 +10,9 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 
+from scripts.qualification_disposition import original_run, require_available
+from scripts.qualification_mutation import ownership
+
 RUN_ENV = "LDP_QUALIFICATION_RUN_ID"
 HOST_ENV = "LDP_QUALIFICATION_HOST"
 ARCHIVE_ENV = "LDP_QUALIFICATION_ARCHIVE"
@@ -62,6 +65,19 @@ def reapply_environment(environment: Mapping[str, str]) -> dict[str, str]:
 
 @contextmanager
 def run_lease(directory: Path, *, create: bool = False) -> Iterator[None]:
+    origin = original_run(directory)
+    if origin != directory:
+        # A copied diagnostics tree must serialize with its original fixture,
+        # including a disposition published after that workspace was created.
+        with run_lease(origin), _run_lease(directory, create=create):
+            yield
+        return
+    with _run_lease(directory, create=create):
+        yield
+
+
+@contextmanager
+def _run_lease(directory: Path, *, create: bool) -> Iterator[None]:
     flags = os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK
     if create:
         flags |= os.O_CREAT | os.O_EXCL
@@ -71,6 +87,8 @@ def run_lease(directory: Path, *, create: bool = False) -> Iterator[None]:
         if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.geteuid():
             raise ValueError("invalid local run lease")
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        yield
+        with ownership(directory):
+            require_available(directory)
+            yield
     finally:
         os.close(descriptor)

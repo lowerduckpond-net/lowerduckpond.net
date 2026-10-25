@@ -15,6 +15,7 @@ from scripts.m3_11_backup_fixture import Target
 from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import BINDING_FIELDS, fields, uuid7
 from scripts.qualification_context import ARTIFACT_ENV, RUN_ENV, host_name
+from scripts.qualification_disposition import require_environment
 from scripts.qualification_retirement import artifact_digest
 
 FORMAT = "lowerduckpond-m3-11-private-live-storage-v1"
@@ -53,6 +54,7 @@ class LiveStorage:
     @classmethod
     def load(cls, environment: Mapping[str, str]) -> LiveStorage:
         """Read only the original private record in this fixture's owned run root."""
+        require_environment(environment)
         result = cls._retained(environment)
         result.require_owner()
         return result
@@ -112,6 +114,7 @@ class LiveStorage:
 
     def require_source(self, environment: Mapping[str, str]) -> None:
         """Reject ambient/local overrides before attaching any live credentials."""
+        require_environment(environment)
         self._require_inputs(environment)
         self.require_owner()
 
