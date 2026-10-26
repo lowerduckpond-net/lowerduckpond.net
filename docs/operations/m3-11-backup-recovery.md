@@ -683,8 +683,11 @@ is at most one day; it does not renew a lease deadline.
 
 Use the actual attempt writer before launch; supply `--reuse-status` only for a
 retry, using the exported status of the released prior attempt. It carries the
-validated original manifest and deadline. Obtain fresh attempt consent, without
-changing its policy or extending the lease:
+validated original manifest and deadline. For the exact v2 path below, record
+actual attempt consent without changing its policy or extending the lease. When
+authentic standing reuse authority already applies, use the separate
+[standing authorization and execution readiness](m3-11-standing-authorization.md)
+path instead; do not invent new consent timestamps:
 
 ```console
 uv run --frozen python -m scripts.m3_11_unattended.operator_records attempt-proposal \
@@ -722,8 +725,9 @@ mise exec -- just m3-11-unattended cancel RUN_UUID
 mise exec -- just m3-11-unattended quiesce RUN_UUID
 ```
 
-Reuse requires a fresh approval and attempt, fresh provider/production receipts and
-exclusive runtime ownership before the first child probe. Diagnostic attachment
+Reuse requires applicable authorization and fresh exact execution readiness,
+fresh provider/production receipts and exclusive runtime ownership before the
+first child probe. Standing consent is distinct from those execution checks. Diagnostic attachment
 holds that ownership. Quiescence verifies the original daemon and complete original
 host/archive/restore/ACME container graph, requires proof that the host process group was drained, disables
 restart, stops and rereads the exact containers. It preserves containers and data.

@@ -36,6 +36,7 @@ from scripts.m3_11_live_storage import FORMAT as STORAGE_FORMAT
 from scripts.m3_11_private_inputs import read_private, read_private_bytes
 from scripts.qualification_case import remove_owned_image
 from scripts.qualification_context import IMAGE_ENV, RUN_ENV, run_lease
+from scripts.qualification_mutation import protected_run
 from scripts.qualification_storage_lease import storage_lease
 
 LABEL = "lowerduckpond.qualification.run"
@@ -52,8 +53,12 @@ def disposal_receipt(run: Path) -> Path:
     return run.with_name(run.name + ".debug-closeout.json")
 
 
+@protected_run
 def finish_directory(run: Path, *, apply: bool) -> None:
     """Resume local deletion after cloud and Docker absence were already proved."""
+    from scripts.qualification_disposition import require_available  # noqa: PLC0415
+
+    require_available(run)
     _directory(run.parent)
     receipt = disposal_receipt(run)
     descriptor = os.open(receipt, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)

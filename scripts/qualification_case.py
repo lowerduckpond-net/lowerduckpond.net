@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 from scripts.qualification_context import ARCHIVE_ENV, HOST_ENV, IMAGE_ENV, RUN_ENV, host_name
+from scripts.qualification_mutation import protected_run
 from scripts.qualification_probe import bounded_command, document
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -195,7 +196,11 @@ def validate_installed_receipt(receipt: dict[str, object], run_id: str) -> dict[
     return receipt
 
 
+@protected_run
 def phase(directory: Path, environment: dict[str, str], uv: str, name: str) -> int:
+    from scripts.qualification_disposition import require_available  # noqa: PLC0415
+
+    require_available(directory)
     print(f"Owned installed fixture: {name}", flush=True)
     with (directory / f"{name}.log").open("xb") as stream:
         result = subprocess.run(  # noqa: S603 - fixed phase command and owned private context

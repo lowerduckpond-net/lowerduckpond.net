@@ -45,6 +45,7 @@ from scripts.m3_11_unattended.model import (
 )
 from scripts.m3_11_unattended.state import LeaseState, RunState, replace_private
 
+from .standing_authority_support import execution
 from .test_m3_11_lease_inventory import NOW, manifest
 from .test_m3_11_lease_runtime import RuntimeDocker
 from .test_m3_11_storage_admission import prepared
@@ -228,6 +229,8 @@ def admission_case(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     clock: Callable[[], datetime] | None = None,
+    *,
+    standing: bool = False,
 ) -> tuple[LeaseState, dict[str, object], Observer, Allocator, RuntimeDocker]:
     old, lease, daemon, config, _inventory = prepared(tmp_path, monkeypatch)
     root = old.parent.parent
@@ -238,6 +241,9 @@ def admission_case(
     request, allowed = request_for(lease, config)
     now = instant(lease.manifest().created_at) + timedelta(minutes=1)
     selected_clock = clock or (lambda: now)
+    if standing:
+        allowed = execution(allowed, selected_clock())
+        request["approval_sha256"] = digest(allowed)
 
     def allocate(selected: LeaseState, guard: Callable[[], None]) -> dict[str, object]:
         return reuse_admission.commit(
@@ -306,12 +312,16 @@ def test_ownership_is_held_through_allocation_and_pending_blocks_replay(
 @pytest.mark.parametrize(
     "boundary", ["admission", "request", "status", "controller", "cleanup", "use"]
 )
+@pytest.mark.parametrize("standing", [False, True])
 def test_interrupted_commit_preserves_exact_identity_and_cannot_replay(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     boundary: str,
+    standing: bool,
 ) -> None:
-    lease, request, observe, _allocate, _daemon = admission_case(tmp_path, monkeypatch)
+    lease, request, observe, _allocate, _daemon = admission_case(
+        tmp_path, monkeypatch, standing=standing
+    )
     attempt = cast(dict[str, str], request["binding"])["managed_run_id"]
 
     def injected(original: Writer) -> Writer:
@@ -388,12 +398,16 @@ def test_parent_directory_sync_failure_remains_a_nonreplayable_reservation(
 
 
 @pytest.mark.parametrize("trigger", ["pending", "cancel", "expiry"])
+@pytest.mark.parametrize("standing", [False, True])
 def test_watchdog_preserves_pending_reservation_but_honors_cancel_and_expiry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     trigger: str,
+    standing: bool,
 ) -> None:
-    lease, request, observe, _allocate, daemon = admission_case(tmp_path, monkeypatch)
+    lease, request, observe, _allocate, daemon = admission_case(
+        tmp_path, monkeypatch, standing=standing
+    )
     observe()
     attempt = cast(dict[str, str], request["binding"])["managed_run_id"]
     directory = lease.directory.parent.parent / "runs" / attempt
