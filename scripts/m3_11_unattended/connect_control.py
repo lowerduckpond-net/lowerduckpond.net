@@ -6,7 +6,9 @@ import argparse
 import json
 import shutil
 import subprocess
+from pathlib import Path
 
+from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_qualification_evidence import canonical_bytes
 from scripts.m3_11_unattended.connect_action import REPOSITORY, WORKFLOW
 from scripts.m3_11_unattended.model import LifecycleError
@@ -64,23 +66,33 @@ class GitHub:
                 "cleanup requires its main-only environment without approval waits"
             )
 
-    def dispatch(self, operation: str) -> None:
-        if operation not in {"confirm", "cleanup"}:
+    def dispatch(self, operation: str, *, profile: object = None) -> None:
+        if operation not in {"confirm", "cleanup", "validate-profile"}:
             raise LifecycleError("independent operation is invalid")
+        inputs = {"operation": operation}
+        if operation == "validate-profile":
+            from scripts.m3_11_unattended.connect_profile import parse  # noqa: PLC0415
+
+            inputs["profile"] = canonical_bytes(parse(profile)).decode()
+        elif profile is not None:
+            raise LifecycleError("profile candidate is only valid for GET-only validation")
         self.protection()
         self.api(
             f"{PREFIX}/actions/workflows/{WORKFLOW}/dispatches",
             method="POST",
-            body={"ref": "main", "inputs": {"operation": operation}},
+            body={"ref": "main", "inputs": inputs},
         )
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("confirm", "cleanup"))
+    parser.add_argument("operation", choices=("confirm", "cleanup", "validate-profile"))
+    parser.add_argument("--profile", type=Path)
     args = parser.parse_args()
     try:
-        GitHub().dispatch(args.operation)
+        GitHub().dispatch(
+            args.operation, profile=read_private(args.profile) if args.profile else None
+        )
     except RuntimeError, OSError, ValueError, KeyError, TypeError:
         parser.exit(
             1, "Independent dispatch is unresolved; no issuance is authorized by dispatch.\n"

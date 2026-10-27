@@ -65,10 +65,19 @@ def execute(
     helper: str,
     progress: Callable[[str], None] = lambda _stage: None,
 ) -> dict[str, object]:
-    selected = fields(raw, {"bootstrap", "operation"})
-    if selected["operation"] not in {"confirm", "cleanup"}:
+    has_profile = isinstance(raw, dict) and "profile" in raw
+    selected = fields(raw, {"bootstrap", "operation"} | ({"profile"} if has_profile else set()))
+    if selected["operation"] not in {"confirm", "cleanup", "validate-profile"}:
         raise LifecycleError("independent cleanup operation is unsupported")
-    config, credentials = bootstrap(selected["bootstrap"], helper=helper)
+    requested = selected["bootstrap"]
+    profile = None
+    if has_profile:
+        from scripts.m3_11_unattended.connect_profile import apply  # noqa: PLC0415
+
+        requested, profile = apply(requested, selected["profile"], helper=helper)
+    if selected["operation"] == "validate-profile" and profile is None:
+        raise LifecycleError("profile validation needs an explicit public candidate")
+    config, credentials = bootstrap(requested, helper=helper)
     active = config.generations[config.active_generation]["cleanup"]
     reader, access = reader_access(active.reader_settings)
     vaults = strings(reader["vaults"])
@@ -93,38 +102,46 @@ def execute(
             directory / "authentication.json",
             {**authentication, "status": "verified", "observed_at": stamp(datetime.now(UTC))},
         )
-        inventory = ConnectInventory(client, config.journal_vault, spool=directory / "pending")
-        confirmation = None
-        if selected["operation"] == "confirm":
-            run_id, attempt = (
-                os.environ.get("GITHUB_RUN_ID", ""),
-                os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+        if selected["operation"] == "validate-profile":
+            from scripts.m3_11_unattended.connect_profile import validate  # noqa: PLC0415
+
+            progress("read-only-profile-validation")
+            receipt = validate(config, client, profile, directory=directory)
+        else:
+            inventory = ConnectInventory(client, config.journal_vault, spool=directory / "pending")
+            confirmation = None
+            if selected["operation"] == "confirm":
+                run_id, attempt = (
+                    os.environ.get("GITHUB_RUN_ID", ""),
+                    os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+                )
+                if (
+                    not run_id.isdecimal()
+                    or not attempt.isdecimal()
+                    or min(int(run_id), int(attempt)) < 1
+                ):
+                    raise LifecycleError("independent execution identity is unavailable")
+                confirmation = {
+                    "helper_revision": helper,
+                    "independent_server_id": access.server_id,
+                    "cleanup_access_expires_at": stamp(access.expires_at),
+                    "observed_at": stamp(datetime.now(UTC)),
+                    "github_run_id": int(run_id),
+                    "github_run_attempt": int(attempt),
+                }
+            progress("credential-cleanup")
+            receipt = cleanup.sweep_leases(
+                config,
+                inventory,
+                root=directory / "leases",
+                actor="github",
+                confirmation=confirmation,
+                connect_client=client,
             )
-            if (
-                not run_id.isdecimal()
-                or not attempt.isdecimal()
-                or min(int(run_id), int(attempt)) < 1
-            ):
-                raise LifecycleError("independent execution identity is unavailable")
-            confirmation = {
-                "helper_revision": helper,
-                "independent_server_id": access.server_id,
-                "cleanup_access_expires_at": stamp(access.expires_at),
-                "observed_at": stamp(datetime.now(UTC)),
-                "github_run_id": int(run_id),
-                "github_run_attempt": int(attempt),
-            }
-        progress("credential-cleanup")
-        receipt = cleanup.sweep_leases(
-            config,
-            inventory,
-            root=directory / "leases",
-            actor="github",
-            confirmation=confirmation,
-            connect_client=client,
-        )
-        # Teardown may fail after cleanup; retain the actual cleanup result first.
-        replace_private(directory / "cleanup.json", receipt)
+            # Teardown may fail after cleanup; retain the actual cleanup result first.
+            replace_private(directory / "cleanup.json", receipt)
+    if selected["operation"] == "validate-profile":
+        replace_private(directory / "profile-validation.json", receipt)
     return {**receipt, "format": RECEIPT_FORMAT}
 
 

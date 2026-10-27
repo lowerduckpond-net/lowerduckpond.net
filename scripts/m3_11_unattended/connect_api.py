@@ -22,7 +22,7 @@ from typing import cast
 from urllib.parse import urlsplit
 
 from scripts.m3_11_qualification_evidence import fields
-from scripts.m3_11_unattended.http import NoRedirect
+from scripts.m3_11_unattended.http import NoRedirect, require_request
 from scripts.m3_11_unattended.journal import _note_content
 from scripts.m3_11_unattended.model import LifecycleError
 
@@ -266,6 +266,7 @@ class Connect:
             self._timeout.reset(previous)
 
     def request(self, method: str, path: str, body: dict[str, object] | None = None) -> Response:
+        require_request(method, body)
         if (
             re.fullmatch(r"/v1/vaults(?:/[a-z0-9]{26}(?:/items(?:/[a-z0-9]{26})?)?)?", path) is None
             or method not in {"GET", "POST"}

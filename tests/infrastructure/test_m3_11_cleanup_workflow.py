@@ -95,6 +95,7 @@ def select(
         "BOOTSTRAP": json.dumps(bundle),
         "LEGACY_HELPER": LEGACY,
         "GITHUB_OUTPUT": str(output),
+        "GITHUB_SHA": "a" * 40,
         **overrides,
     }
     selector = step(job, "selection" if job == "connect" else "backend")
@@ -115,7 +116,9 @@ def select(
     return result, values
 
 
-def deliver(tmp_path: Path, selected: dict[str, str], bundle: Row) -> Row:
+def deliver(
+    tmp_path: Path, selected: dict[str, str], bundle: Row, *, profile: Row | None = None
+) -> Row:
     action_step = step("connect", "./.github/actions/m3-11-connect")
     environment = {
         "PATH": os.environ["PATH"],
@@ -127,6 +130,8 @@ def deliver(tmp_path: Path, selected: dict[str, str], bundle: Row) -> Row:
             environment[key] = selected[match[1]]
         elif expression == "${{ secrets.M3_11_CONNECT_BOOTSTRAP }}":
             environment[key] = json.dumps(bundle)
+        elif key == "M3_11_CONNECT_PROFILE":
+            environment[key] = json.dumps(profile) if profile is not None else ""
         else:
             assert key == "GH_TOKEN"
             assert (
@@ -311,7 +316,7 @@ def test_workflow_keeps_cleanup_only_dispatch_and_private_pinned_transport() -> 
     value = workflow()
     operations = value["on"]["workflow_dispatch"]["inputs"]["operation"]
     assert operations["default"] == "reconcile"
-    assert operations["options"] == ["reconcile", "confirm", "cleanup"]
+    assert operations["options"] == ["reconcile", "confirm", "cleanup", "validate-profile"]
     assert value["on"]["schedule"] == [{"cron": "7 * * * *"}]
     assert value["concurrency"]["cancel-in-progress"] == "false"
     for job, selector in (("reconcile", "backend"), ("connect", "selection")):
@@ -334,6 +339,8 @@ def test_workflow_keeps_cleanup_only_dispatch_and_private_pinned_transport() -> 
         "CONFIGURATION": "${{ vars.M3_11_CONNECT_CONFIGURATION }}",
         "BOOTSTRAP": "${{ secrets.M3_11_CONNECT_BOOTSTRAP }}",
         "IMPORT_BRIDGE": "${{ vars.M3_11_LEGACY_IMPORT_BRIDGE }}",
+        "REQUESTED_PROFILE": "${{ inputs.profile || '' }}",
+        "ACTIVE_PROFILE": "${{ vars.M3_11_CONNECT_PROFILE }}",
     }
     legacy_command = step("reconcile", "Reconcile and verify outstanding credentials")["run"]
     assert "--actor github" in legacy_command and "--quiet-empty" in legacy_command

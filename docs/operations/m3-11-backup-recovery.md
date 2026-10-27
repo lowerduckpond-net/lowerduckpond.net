@@ -96,6 +96,95 @@ files. Only the second contains the independent native server credentials; it ha
 no provisioning or production reader. Retrying identical staging preserves bytes;
 changed inputs require a new private staging directory.
 
+### Rebind an existing independent secret without exporting it
+
+An installed lease bundle can keep its independent reader and server credentials
+inside GitHub. This path neither replaces `M3_11_CONNECT_BOOTSTRAP` nor requires
+an operator-local copy of its server JSON. A JSON file from another Connect
+server is not interchangeable. Preserve the current scheduled cleaner and all
+historical evidence while preparing the public profile.
+
+The versioned `lowerduckpond-m3-11-existing-connect-profile-v1` profile binds the
+installed configuration and independent client identities by
+`base_configuration_sha256`. Its domain is
+`connect_profile.projection(installed_config, identities=True)`: the native
+cleanup-only configuration with each private reader replaced by its public
+`Access.receipt()`. The target domain, `effective_configuration_sha256`, is the
+same native cleanup-only projection with readers removed, as in the existing
+joint delivery comparison. Both include exact targets, complete authority
+generations/references, migration, helper and approved policy. These are not
+hashes of a credentials file or token. Obtain the base binding from reviewed
+nonsecret configuration/identity evidence; a proposed value is rechecked against
+the actual secret in GitHub before it can be used. A changed or unknown base
+fails closed rather than adopting new authority.
+
+Generate the public candidate from the controller's three shared readers and
+the explicitly approved policy; do not construct an authentication receipt:
+
+```console
+uv run --frozen python -m scripts.m3_11_unattended.connect_profile \
+  --configuration /private/controller.json \
+  --base-configuration-sha256 REVIEWED_BASE_CONFIGURATION_SHA256 \
+  --output /private/profile.json
+```
+
+After separate execution approval, the existing protected main workflow can
+validate the candidate without activating it:
+
+```console
+uv run --frozen python -m scripts.m3_11_unattended.connect_control \
+  validate-profile --profile /private/profile.json
+```
+
+This explicitly dispatched operation supplies the public candidate only in the
+dispatch input. It derives the candidate in runner memory from the unchanged
+secret, validates the actual independent client and forbidden-vault isolation,
+reads existing cleanup authority and native migration/lease inventory, and
+retains only allowlisted authentication/profile receipts. The provider and
+Connect boundaries reject HTTP mutations before transport. It calls no cleanup
+reconciliation, revocation or inventory publication and cannot confirm a new
+manifest. Owned ephemeral Connect teardown must succeed before the validation
+receipt is ready. `confirm` and scheduled `reconcile` still perform cleanup and
+must never be used as a GET-only probe.
+
+Scheduled cleanup keeps the original bundle selection until an operator,
+after reviewing the exact successful validation run and profile digest,
+separately activates that same JSON in environment variable
+`M3_11_CONNECT_PROFILE`. This changes only helper/policy binding in memory;
+every run rechecks the actual base and native configuration. Unknown fields,
+mismatched base/target digests and an unapproved policy reject. Never edit an
+active profile to stage a candidate; use the explicit validation dispatch.
+
+Stage and validate the controller separately, preserving the same native
+provider, legacy inventory and open-obligation activation checks:
+
+```console
+uv run --frozen python -m scripts.m3_11_unattended.connect_setup \
+  --configuration /private/controller.json --existing-profile /private/profile.json \
+  --output /private/controller-staged
+uv run --frozen python -m scripts.m3_11_unattended.connect_activate \
+  preflight-controller --output /private/controller-staged
+uv run --frozen python -m scripts.m3_11_unattended.connect_delivery \
+  --operation deliver-controller --output /private/controller-staged \
+  --transport coder --coder-workspace OWNER/WORKSPACE \
+  --workspace-id APPROVED_WORKSPACE_UUID --daemon-id APPROVED_DAEMON_UUID --apply
+```
+
+Controller-only delivery rejects an independent bundle, checks the exact native
+activation/controller/profile bindings, retains existing destination and
+main-only environment protections, and transfers only the immutable private
+controller configuration. It never invokes a GitHub secret write. Its receipt
+explicitly leaves independent confirmation pending: the original pre-CREATE
+gate still requires GitHub's observation of the exact complete fresh manifest,
+helper, policy and cleanup coverage. Validation and delivery grant no issuance
+or qualification authority.
+
+Keep the active profile until every new or uncertain lease obligation is
+verified closed. A cutoff alone is not permission to restore the old policy.
+Only then may separately authorized removal of the public profile restore the
+untouched original secret's selection. Publishing this code installs no profile,
+dispatches no workflow and changes no existing secret or access.
+
 ### Initial operator assembly from receipts
 
 For the initial migration, use the [operator input example](m3-11-operator-inputs.example.json)

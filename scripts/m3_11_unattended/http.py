@@ -8,6 +8,9 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from http import HTTPStatus
 from pathlib import Path
@@ -18,6 +21,22 @@ from scripts.m3_11_unattended.model import LifecycleError, Targets
 ORIGINS: Final = frozenset({"https://api.digitalocean.com", "https://api.cloudflare.com/client/v4"})
 MAX_BYTES: Final = 2 * 1024 * 1024
 TIMEOUT: Final = 30
+_read_only: ContextVar[bool] = ContextVar("m3_11_read_only_requests", default=False)
+
+
+@contextmanager
+def read_only_requests() -> Iterator[None]:
+    """Validation may read existing authority; it cannot reconcile or publish."""
+    token = _read_only.set(True)
+    try:
+        yield
+    finally:
+        _read_only.reset(token)
+
+
+def require_request(method: str, body: object) -> None:
+    if _read_only.get() and (method != "GET" or body is not None):
+        raise LifecycleError("read-only validation forbids HTTP mutation")
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -82,6 +101,7 @@ class Api:
         raise LifecycleError("obsolete cleanup expiry updates are permanently disabled")
 
     def _request(self, method: str, path: str, body: dict[str, object] | None) -> Response:
+        require_request(method, body)
         try:
             result = subprocess.run(  # noqa: S603 - fixed helper; bearer/body only in private pipes
                 [sys.executable, "-m", __name__, "--exchange"],

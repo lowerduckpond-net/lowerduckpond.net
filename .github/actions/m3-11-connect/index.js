@@ -9,6 +9,8 @@ function main() {
     input = JSON.stringify({
       bootstrap: JSON.parse(process.env.M3_11_CONNECT_BOOTSTRAP),
       operation: process.env.M3_11_CONNECT_OPERATION,
+      ...(process.env.M3_11_CONNECT_PROFILE
+        ? { profile: JSON.parse(process.env.M3_11_CONNECT_PROFILE) } : {}),
     });
     if (Buffer.byteLength(input) > 128 * 1024) throw new Error();
   } catch {
@@ -17,7 +19,7 @@ function main() {
     return;
   }
   const environment = { ...process.env };
-  for (const name of ["M3_11_CONNECT_BOOTSTRAP", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]) {
+  for (const name of ["M3_11_CONNECT_BOOTSTRAP", "M3_11_CONNECT_PROFILE", "ACTIONS_RUNTIME_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"]) {
     delete environment[name];
     delete process.env[name];
   }
