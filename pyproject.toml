@@ -90,6 +90,21 @@ python_version = "3.14"
 strict = true
 warn_unreachable = true
 files = [
+  "scripts/m3_11_custody_admission.py",
+  "scripts/m3_11_custody_context.py",
+  "scripts/m3_11_custody_domain.py",
+  "scripts/m3_11_custody_entry.py",
+  "scripts/m3_11_custody_local.py",
+  "scripts/m3_11_custody_plan.py",
+  "scripts/m3_11_custody_registry.py",
+  "scripts/m3_11_custody_retirement.py",
+  "tests/infrastructure/test_m3_11_custody_admission.py",
+  "tests/infrastructure/test_m3_11_custody_domain.py",
+  "tests/infrastructure/test_m3_11_custody_native.py",
+  "tests/infrastructure/test_m3_11_custody_local.py",
+  "tests/infrastructure/test_m3_11_custody_registry.py",
+  "tests/infrastructure/test_m3_11_custody_retirement.py",
+  "tests/infrastructure/test_m3_11_custody_start.py",
   "scripts/cloudflare_read_transport.py",
   "tests/infrastructure/cloudflare_transport_support.py",
   "tests/infrastructure/test_cloudflare_read_transport.py",

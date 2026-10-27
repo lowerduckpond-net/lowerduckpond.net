@@ -25,7 +25,7 @@ from scripts.m3_11_private_inputs import read_private
 from scripts.m3_11_qualification_evidence import canonical_bytes
 from scripts.m3_11_unattended import readiness_credentials, reuse_admission
 from scripts.m3_11_unattended.config import LeaseConfiguration
-from scripts.m3_11_unattended.docker import LEASE_DIRECTORY, Docker
+from scripts.m3_11_unattended.docker import EVIDENCE_VOLUME, LEASE_DIRECTORY, Docker
 from scripts.m3_11_unattended.model import (
     Credential,
     LifecycleError,
@@ -61,7 +61,10 @@ class ReadOnlyDocker(Docker):
     def command(self, *arguments: str, stdin: bytes | None = None, timeout: int = 1200) -> bytes:
         if (
             not arguments
-            or arguments[0] not in {"info", "inspect", "ps", "context"}
+            or (
+                arguments[0] not in {"info", "inspect", "ps", "context"}
+                and arguments != ("volume", "inspect", EVIDENCE_VOLUME)
+            )
             or (arguments[0] == "context" and arguments[1:2] != ("inspect",))
             or stdin is not None
         ):
@@ -164,6 +167,7 @@ def observe(  # noqa: PLR0913, PLR0915 - locked validation through allocation
     docker: Docker,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     allocate: Callable[[LeaseState, Callable[[], None]], dict[str, object]] | None = None,
+    require_unused_custody: bool = False,
 ) -> dict[str, object]:
     started = time.monotonic()
     lease = LeaseState(evidence_root / "leases" / identity(lease_id))
@@ -180,7 +184,12 @@ def observe(  # noqa: PLR0913, PLR0915 - locked validation through allocation
             raise LifecycleError("storage readiness differs from the approved retained lease")
         operator = next(intent for intent in manifest.intents if intent.role == "operator")
         original_uses = sorted(lease.directory.glob("use-*.json"))
-        if not original_uses:
+        custody_first_use = (
+            not original_uses and (lease.directory / "custody-retirement.json").exists()
+        )
+        if require_unused_custody and not custody_first_use:
+            raise LifecycleError("custody first use requires an unused completed retirement lease")
+        if not original_uses and not custody_first_use:
             raise LifecycleError("storage readiness lacks an original released consumer")
         use_digest = digest([read_private(path) for path in original_uses])
         deliveries = {intent.role: lease.credential(intent) for intent in manifest.intents}
@@ -260,6 +269,12 @@ def observe(  # noqa: PLR0913, PLR0915 - locked validation through allocation
             admitted = None
             with readiness_credentials.read_only_requests(unchanged) as credential_reads:
                 try:
+                    if custody_first_use:
+                        from scripts import m3_11_custody_admission as custody  # noqa: PLC0415
+
+                        custody.require_completed(
+                            config, lease, evidence_root=evidence_root, docker=docker
+                        )
                     final_roles = readiness_credentials.validate_all_roles(
                         config, manifest, lease, clock=clock, guard=unchanged
                     )
