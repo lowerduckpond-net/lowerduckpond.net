@@ -255,9 +255,11 @@ def _collect(records: list[dict[str, object]]) -> list[dict[str, object]]:
     return [selected[key] for key in sorted(selected)]
 
 
-class Inventory(Protocol):
+class InventoryReader(Protocol):
     def records(self) -> list[dict[str, object]]: ...
 
+
+class Inventory(InventoryReader, Protocol):
     def publish(self, record: dict[str, object]) -> None: ...
 
 
@@ -397,7 +399,7 @@ class ConnectInventory(ConnectInventoryReader):
 
 
 def require_confirmation(
-    inventory: Inventory, manifest: LeaseManifest, *, independent_server_id: str
+    inventory: InventoryReader, manifest: LeaseManifest, *, independent_server_id: str
 ) -> None:
     records = inventory.records()
     expected = fact(manifest, "manifest", manifest.document())
@@ -417,7 +419,7 @@ def require_confirmation(
         raise LifecycleError("independent manifest confirmation has the wrong binding")
 
 
-def require_clear(inventory: Inventory, *, current_lease: str | None = None) -> None:
+def require_clear(inventory: InventoryReader, *, current_lease: str | None = None) -> None:
     """An ambiguous or active earlier set blocks a competing manifest."""
     records = inventory.records()
     manifests = [

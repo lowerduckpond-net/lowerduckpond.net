@@ -355,10 +355,16 @@ def _daemon_utility(  # noqa: PLR0915 - explicit separate operation authority
         from scripts.m3_11_unattended import reuse_admission  # noqa: PLC0415
         from scripts.m3_11_unattended.storage_admission import observe  # noqa: PLC0415
 
+        custody_first_use = (
+            operation == "reuse-admission"
+            and isinstance(value["payload"], dict)
+            and value["payload"].get("custody_first_use") is True
+        )
         payload = fields(
             value["payload"],
             {"configuration", "lease_id", "manifest_sha256"}
-            | ({"request", "approved"} if operation == "reuse-admission" else set()),
+            | ({"request", "approved"} if operation == "reuse-admission" else set())
+            | ({"custody_first_use"} if custody_first_use else set()),
         )
         config = LeaseConfiguration.parse(payload["configuration"])
         expected_mode = "controller" if operation == "reuse-admission" else "cleanup-only"
@@ -400,6 +406,7 @@ def _daemon_utility(  # noqa: PLR0915 - explicit separate operation authority
             evidence_root=evidence_root,
             docker=docker,
             allocate=allocation,
+            require_unused_custody=custody_first_use,
         )
     if operation in {"discover-import", "inspect-import"}:
         payload = fields(value["payload"], {"historical_reader", "journal_vault", "declarations"})

@@ -40,3 +40,4 @@ Accepted decisions:
 Proposed decisions:
 
 - [0031: Retain frozen fixtures after exact archive retirement](0031-retain-frozen-fixtures-after-exact-archive-retirement.md)
+- [0032: Retire migrated custody after terminal lease cleanup](0032-retire-migrated-custody.md)

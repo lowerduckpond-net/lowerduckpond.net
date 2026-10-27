@@ -38,6 +38,7 @@ from scripts.m3_11_unattended.model import (
     digest,
     identity,
 )
+from scripts.m3_11_unattended.model import fingerprint as manifest_fingerprint
 from scripts.m3_11_unattended.reuse_admission import AdmissionCandidate, AdmissionUncertainError
 from scripts.production_qualification_inputs import current_candidate, fingerprint, revision
 from scripts.provider_preflight_diagnostics import StorageReadinessError
@@ -52,9 +53,14 @@ def start(  # noqa: PLR0912, PLR0913, PLR0915 - ordered approval and admission g
     mode: str,
     daemon_socket: str,
     authority_assessment: Path | None = None,
+    custody_manifest_sha256: str | None = None,
 ) -> str:
     revision(source)
     value = approval.validate(approved, mode=mode, now=datetime.now(UTC))
+    if custody_manifest_sha256 is not None:
+        manifest_fingerprint(custody_manifest_sha256)
+        if value["lease_id"] is None or mode != "qualification":
+            raise LifecycleError("custody first use requires an approved qualification lease")
     standing_authority.require_current(value, authority_assessment, now=datetime.now(UTC))
     prepared = fields(value["prepared"], approval.PREPARED)
     current_candidate(ROOT, source)
@@ -192,9 +198,16 @@ def start(  # noqa: PLR0912, PLR0913, PLR0915 - ordered approval and admission g
             # Released runtime ownership preserves archive data. It is not an
             # empty-bucket proof. Reject retained output before consuming a new
             # attempt; worker preflight/acceptance still provide actual proof.
-            if len(reuse_manifests) != 1:
-                raise LifecycleError("released prior controllers disagree on the retained manifest")
-            reuse_manifest = reuse_manifests.pop()
+            if custody_manifest_sha256 is not None:
+                if reuse_manifests:
+                    raise LifecycleError("custody first use cannot adopt a prior runtime consumer")
+                reuse_manifest = custody_manifest_sha256
+            else:
+                if len(reuse_manifests) != 1:
+                    raise LifecycleError(
+                        "released prior controllers disagree on the retained manifest"
+                    )
+                reuse_manifest = reuse_manifests.pop()
             candidate.attempt_id = run_id
             try:
                 readiness = utility(
@@ -208,6 +221,11 @@ def start(  # noqa: PLR0912, PLR0913, PLR0915 - ordered approval and admission g
                         "manifest_sha256": reuse_manifest,
                         "request": request,
                         "approved": approved,
+                        **(
+                            {"custody_first_use": True}
+                            if custody_manifest_sha256 is not None
+                            else {}
+                        ),
                     },
                 )
             except Exception as error:
@@ -354,6 +372,7 @@ def argument_parser() -> argparse.ArgumentParser:
     run.add_argument("revision")
     run.add_argument("--approval", type=Path, required=True)
     run.add_argument("--authority-assessment", type=Path)
+    run.add_argument("--custody-manifest-sha256")
     run.add_argument("--config", type=Path, required=True)
     run.add_argument("--mode", choices=("rehearsal", "qualification"), required=True)
     run.add_argument("--daemon-socket", required=True)
@@ -397,6 +416,7 @@ def main() -> int:
                     mode=args.mode,
                     daemon_socket=args.daemon_socket,
                     authority_assessment=args.authority_assessment,
+                    custody_manifest_sha256=args.custody_manifest_sha256,
                 )
             )
         else:
