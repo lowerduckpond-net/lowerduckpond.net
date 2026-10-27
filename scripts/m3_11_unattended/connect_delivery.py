@@ -8,6 +8,7 @@ import re
 import shlex
 import shutil
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 
 from scripts.m3_11_private_inputs import read_private, write_private
@@ -15,7 +16,7 @@ from scripts.m3_11_qualification_evidence import canonical_bytes
 from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.connect_action import bootstrap
 from scripts.m3_11_unattended.journal import MAX_OUTPUT
-from scripts.m3_11_unattended.model import LifecycleError
+from scripts.m3_11_unattended.model import LifecycleError, digest
 
 REPOSITORY = "lowerduckpond-net/lowerduckpond.net"
 ENVIRONMENT = "m3-11-credential-cleanup"
@@ -294,6 +295,38 @@ class Delivery:
         # Delivery is an explicit operational action after migration and approval;
         # scheduled cleanup reads this single versioned bundle on its next execution.
 
+    def install_controller(self, output: Path) -> None:
+        """Deliver only shared readers; this path has no GitHub secret write."""
+        from scripts.m3_11_unattended.connect_profile import require_controller  # noqa: PLC0415
+
+        config = LeaseConfiguration.load(output / "controller-connect.json")
+        profile = require_controller(config, read_private(output / "profile.json"))
+        config.require_issuance(now=datetime.now(UTC))
+        if (output / "github-connect.json").exists() or (
+            output / "github-connect.json"
+        ).is_symlink():
+            raise LifecycleError("controller-only delivery excludes independent material")
+        controller = canonical_bytes(config.document())
+        activation = read_private(output / "controller-activation.json")
+        if (
+            activation.get("format") != "lowerduckpond-m3-11-controller-activation-v1"
+            or activation.get("status") != "ready"
+            or activation.get("controller_sha256") != hashlib.sha256(controller).hexdigest()
+            or activation.get("profile_sha256") != digest(profile)
+            or activation.get("migration_sha256") != config.migration_sha256
+            or activation.get("independent_confirmation") != "pending-exact-manifest"
+        ):
+            raise LifecycleError("controller-only delivery has no matching native activation")
+        destination = DESTINATION.removesuffix("connect-bootstrap.json") + (
+            "lease-" + hashlib.sha256(controller).hexdigest() + ".json"
+        )
+        identity = self.workspace_identity()
+        self.github_protection()
+        expected = hashlib.sha256(controller).hexdigest()
+        response = self.receive(identity, destination, expected, controller)
+        if response.decode().strip() != expected or self.workspace_identity() != identity:
+            raise LifecycleError("controller-only delivery has no matching readback receipt")
+
 
 def main() -> int:  # noqa: PLR0912, PLR0915 - explicit transport and operation CLI boundaries
     import argparse  # noqa: PLC0415 - operator-only entry point
@@ -309,7 +342,7 @@ def main() -> int:  # noqa: PLR0912, PLR0915 - explicit transport and operation 
     parser.add_argument("--apply", action="store_true")
     parser.add_argument(
         "--operation",
-        choices=("deliver", "discover-import", "inspect-import", "import"),
+        choices=("deliver", "deliver-controller", "discover-import", "inspect-import", "import"),
         default="deliver",
     )
     parser.add_argument("--prepared", type=Path)
@@ -334,6 +367,20 @@ def main() -> int:  # noqa: PLR0912, PLR0915 - explicit transport and operation 
             if not args.destination or not args.workspace or args.coder_workspace or args.daemon_id:
                 parser.error("SSH delivery needs --destination and --workspace")
             delivery = Delivery(args.destination, args.workspace, args.workspace_id)
+        if args.operation == "deliver-controller":
+            config = LeaseConfiguration.load(args.output / "controller-connect.json")
+            from scripts.m3_11_unattended.connect_profile import require_controller  # noqa: PLC0415
+
+            require_controller(config, read_private(args.output / "profile.json"))
+            delivery.preflight()
+            if args.apply:
+                delivery.install_controller(args.output)
+            print(
+                "Controller delivered; exact independent manifest confirmation remains required."
+                if args.apply
+                else "Controller profile checked; no bundle delivered."
+            )
+            return 0
         if args.operation != "deliver":
             if args.prepared is None or args.daemon_socket is None:
                 parser.error(

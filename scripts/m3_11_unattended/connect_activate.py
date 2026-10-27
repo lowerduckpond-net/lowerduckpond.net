@@ -683,9 +683,8 @@ def publish_import(
     return expected
 
 
-def activate(output: Path) -> dict[str, object]:
-    controller, independent = bundles(output)
-    config = LeaseConfiguration.load(output / "controller-connect.json")
+def activation_observations(config: LeaseConfiguration, *, output: Path) -> dict[str, object]:
+    """Shared native authority, legacy and open-obligation checks for both deliveries."""
     validate(config, now=datetime.now(UTC), active_only=True)
     client = config.generations[config.active_generation]["cleanup"].reader()
     legacy = sweep_legacy(config, client, root=output)
@@ -716,6 +715,13 @@ def activate(output: Path) -> dict[str, object]:
             if generation.generation_id not in checked:
                 available.providers(targets=config.targets, now=datetime.now(UTC), reader=client)
                 checked.add(generation.generation_id)
+    return legacy
+
+
+def activate(output: Path) -> dict[str, object]:
+    controller, independent = bundles(output)
+    config = LeaseConfiguration.load(output / "controller-connect.json")
+    legacy = activation_observations(config, output=output)
     receipt: dict[str, object] = {
         "format": FORMAT,
         "controller_sha256": hashlib.sha256(controller).hexdigest(),
@@ -726,6 +732,30 @@ def activate(output: Path) -> dict[str, object]:
         "status": "ready",
     }
     path = output / "activation.json"
+    if path.exists():
+        receipt["observed_at"] = read_private(path)["observed_at"]
+    return retain(path, receipt)
+
+
+def activate_controller(output: Path) -> dict[str, object]:
+    from scripts.m3_11_unattended.connect_profile import require_controller  # noqa: PLC0415
+
+    config = LeaseConfiguration.load(output / "controller-connect.json")
+    profile = require_controller(config, read_private(output / "profile.json"))
+    if (output / "github-connect.json").exists() or (output / "github-connect.json").is_symlink():
+        raise LifecycleError("controller-only activation excludes an independent bundle")
+    legacy = activation_observations(config, output=output)
+    receipt: dict[str, object] = {
+        "format": "lowerduckpond-m3-11-controller-activation-v1",
+        "status": "ready",
+        "controller_sha256": digest(config.document()),
+        "profile_sha256": digest(profile),
+        "migration_sha256": config.migration_sha256,
+        "legacy": legacy,
+        "independent_confirmation": "pending-exact-manifest",
+        "observed_at": stamp(datetime.now(UTC)),
+    }
+    path = output / "controller-activation.json"
     if path.exists():
         receipt["observed_at"] = read_private(path)["observed_at"]
     return retain(path, receipt)
@@ -756,6 +786,8 @@ def main() -> int:
     sub = parser.add_subparsers(dest="operation", required=True)
     check = sub.add_parser("preflight")
     check.add_argument("--output", type=Path, required=True)
+    controller = sub.add_parser("preflight-controller")
+    controller.add_argument("--output", type=Path, required=True)
     imported = sub.add_parser("import")
     imported.add_argument("--configuration", type=Path, required=True)
     imported.add_argument("--approved-import", type=Path, required=True)
@@ -764,6 +796,8 @@ def main() -> int:
     try:
         if args.operation == "preflight":
             activate(args.output)
+        elif args.operation == "preflight-controller":
+            activate_controller(args.output)
         else:
             config = LeaseConfiguration.load(args.configuration)
             mapping = read_private(args.approved_import, maximum=MAX_OUTPUT)

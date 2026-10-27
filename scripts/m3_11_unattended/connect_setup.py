@@ -172,20 +172,58 @@ def prepare(
     return {"controller_sha256": digest(controller), "independent_sha256": digest(independent)}
 
 
+def prepare_controller(
+    configuration: object, profile: object, *, output: Path
+) -> dict[str, object]:
+    """Stage shared readers only; independent secrets remain in GitHub."""
+    from scripts.m3_11_unattended.connect_profile import require_controller  # noqa: PLC0415
+
+    config = LeaseConfiguration.parse(configuration)
+    selected = require_controller(config, profile)
+    config.require_issuance(now=datetime.now(UTC))
+    directory(output)
+    for name in ("github-connect.json", "activation.json"):
+        if (output / name).exists() or (output / name).is_symlink():
+            raise LifecycleError("controller-only setup cannot replace a staged joint bundle")
+    for name, value in (("controller-connect.json", config.document()), ("profile.json", selected)):
+        path = output / name
+        if not path.exists():
+            write_private(path, value)
+        if read_private(path) != value:
+            raise LifecycleError("controller-only staging differs; preserve original inputs")
+    return {
+        "controller_sha256": digest(config.document()),
+        "profile_sha256": digest(selected),
+        "independent_confirmation": "pending-exact-manifest",
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--configuration", type=Path, required=True)
-    parser.add_argument("--independent-reader", type=Path, required=True)
-    parser.add_argument("--server-credentials", type=Path, required=True)
+    parser.add_argument("--independent-reader", type=Path)
+    parser.add_argument("--server-credentials", type=Path)
+    parser.add_argument("--existing-profile", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     try:
-        prepare(
-            read_private(args.configuration),
-            read_private(args.independent_reader),
-            read_private(args.server_credentials),
-            output=args.output,
-        )
+        if args.existing_profile is not None:
+            if args.independent_reader is not None or args.server_credentials is not None:
+                raise LifecycleError("controller-only setup excludes independent material")
+            prepare_controller(
+                read_private(args.configuration),
+                read_private(args.existing_profile),
+                output=args.output,
+            )
+        else:
+            if args.independent_reader is None or args.server_credentials is None:
+                raise LifecycleError("joint setup needs complete independent material")
+            prepare(
+                read_private(args.configuration),
+                read_private(args.independent_reader),
+                read_private(args.server_credentials),
+                output=args.output,
+            )
     except RuntimeError, OSError, ValueError, KeyError, TypeError:
         parser.exit(1, "Lease setup is incomplete; retain private inputs.\n")
     print("Versioned private bundles staged; activation requires verified migration.")
