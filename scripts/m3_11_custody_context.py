@@ -268,8 +268,18 @@ class NativeCustody:
             operation = getattr(model, "name", None)
             allowed = {
                 "GetBucketVersioning": {"Bucket": selected["bucket"]},
-                "ListObjectsV2": {"Bucket": selected["bucket"], "MaxKeys": MAX_VERSIONS + 1},
-                "ListObjectVersions": {"Bucket": selected["bucket"], "MaxKeys": MAX_VERSIONS + 1},
+                # Botocore injects this exact encoding before this hook and
+                # decodes returned keys; keep every request parameter bound.
+                "ListObjectsV2": {
+                    "Bucket": selected["bucket"],
+                    "MaxKeys": MAX_VERSIONS + 1,
+                    "EncodingType": "url",
+                },
+                "ListObjectVersions": {
+                    "Bucket": selected["bucket"],
+                    "MaxKeys": MAX_VERSIONS + 1,
+                    "EncodingType": "url",
+                },
                 "ListMultipartUploads": {"Bucket": selected["bucket"], "MaxUploads": 1},
             }
             if operation == "DeleteObject":
