@@ -11,6 +11,7 @@ from typing import cast
 
 import pytest
 
+from scripts import m3_11_custody_cleanup
 from scripts import m3_11_custody_local as local
 from scripts.m3_11_combined_inputs import FORMAT as FIXTURE
 from scripts.m3_11_combined_inputs import _environment
@@ -106,9 +107,9 @@ def test_original_native_bindings_are_not_replaced_by_current_cleanup(  # noqa: 
         "independent_helper": approved["implementation_revision"],
     }
     if fault == "scheduled":
-        contract["format"] = local.m3_11_custody_cleanup.SCHEDULED_FORMAT
+        contract["format"] = m3_11_custody_cleanup.SCHEDULED_FORMAT
         monkeypatch.setattr(
-            local.m3_11_custody_cleanup,
+            m3_11_custody_cleanup,
             "contract",
             lambda _raw: (
                 {"runtime": approved["runtime"]},
@@ -129,7 +130,7 @@ def test_original_native_bindings_are_not_replaced_by_current_cleanup(  # noqa: 
             calls.append("cleanup")
             return now + timedelta(hours=1)
 
-        monkeypatch.setattr(local.m3_11_custody_cleanup, "verify_scheduled", scheduled)
+        monkeypatch.setattr(m3_11_custody_cleanup, "verify_scheduled", scheduled)
     if fault == "archive":
         approved["archive"] = {
             **cast(dict[str, object], approved["archive"]),
