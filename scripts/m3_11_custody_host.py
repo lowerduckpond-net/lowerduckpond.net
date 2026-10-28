@@ -85,9 +85,7 @@ class HostDocker(Docker):
                     bool(select.select([stream], [], [], remaining)[0]),
                     "custody host log read timed out",
                 )
-                block = os.read(
-                    stream.fileno(), min(65536, MAX_LOG_BYTES + 1 - len(result))
-                )
+                block = os.read(stream.fileno(), min(65536, MAX_LOG_BYTES + 1 - len(result)))
                 if not block:
                     break
                 result.extend(block)
