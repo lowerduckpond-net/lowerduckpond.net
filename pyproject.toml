@@ -101,6 +101,7 @@ files = [
   "tests/infrastructure/test_m3_11_custody_admission.py",
   "tests/infrastructure/test_m3_11_custody_domain.py",
   "tests/infrastructure/test_m3_11_custody_native.py",
+  "tests/infrastructure/test_m3_11_custody_sdk.py",
   "tests/infrastructure/test_m3_11_custody_local.py",
   "tests/infrastructure/test_m3_11_custody_registry.py",
   "tests/infrastructure/test_m3_11_custody_retirement.py",
