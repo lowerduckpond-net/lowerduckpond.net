@@ -11,13 +11,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
+from scripts import m3_11_custody_cleanup
 from scripts.m3_11_combined_inputs import FORMAT as FIXTURE_FORMAT
 from scripts.m3_11_combined_inputs import _environment
 from scripts.m3_11_custody_plan import require
 from scripts.m3_11_frozen_local import bound_file, cleanup, verify_preserved
 from scripts.m3_11_frozen_retirement import plan as historical_plan
 from scripts.m3_11_qualification_evidence import fields
-from scripts.m3_11_retirement_files import digest
+from scripts.m3_11_retirement_files import digest, directory
 from scripts.m3_11_unattended.model import LeaseManifest, stamp
 
 FORMAT = "lowerduckpond-m3-11-migrated-custody-index-v1"
@@ -101,9 +102,35 @@ def verify(
         == approved["implementation_revision"],
         "current cleanup proof covers another lease or helper",
     )
-    cleanup(selection, cleanup_contract, now=datetime.now(UTC))
-    verify_preserved(evidence, scratch=scratch)
-    valid_until = cleanup(selection, cleanup_contract, now=datetime.now(UTC))
+    require(
+        cleanup_contract.get("format") != m3_11_custody_cleanup.MANUAL_PROPOSAL_FORMAT,
+        "manual confirmation is not enabled as custody retirement eligibility",
+    )
+    if cleanup_contract.get("format") == m3_11_custody_cleanup.SCHEDULED_FORMAT:
+        current_contract, current_manifest = m3_11_custody_cleanup.contract(cleanup_contract)
+        require(
+            current_manifest.lease_id == approved["current_lease_id"]
+            and current_manifest.sha256 == approved["current_manifest_sha256"]
+            and current_manifest.targets == manifest.targets
+            and current_contract["runtime"] == approved["runtime"],
+            "scheduled cleanup proof covers another current runtime or manifest",
+        )
+        directory(scratch.parent)
+        scratch.mkdir(mode=0o700)
+        m3_11_custody_cleanup.verify_scheduled(
+            selection, cleanup_contract, now=datetime.now(UTC), scratch=scratch / "cleanup-before"
+        )
+        preserved = scratch / "preserved"
+        preserved.mkdir(mode=0o700)
+        directory(preserved)
+        verify_preserved(evidence, scratch=preserved)
+        valid_until = m3_11_custody_cleanup.verify_scheduled(
+            selection, cleanup_contract, now=datetime.now(UTC), scratch=scratch / "cleanup-after"
+        )
+    else:
+        cleanup(selection, cleanup_contract, now=datetime.now(UTC))
+        verify_preserved(evidence, scratch=scratch)
+        valid_until = cleanup(selection, cleanup_contract, now=datetime.now(UTC))
     return {
         "status": "native-custody-and-cleanup-verified",
         "custody_sha256": digest(index),

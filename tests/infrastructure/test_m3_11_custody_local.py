@@ -6,6 +6,7 @@ import hashlib
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -15,7 +16,7 @@ from scripts.m3_11_combined_inputs import FORMAT as FIXTURE
 from scripts.m3_11_combined_inputs import _environment
 from scripts.m3_11_frozen_retirement import FORMAT as OLD_PLAN
 from scripts.m3_11_frozen_retirement import RETAINED
-from scripts.m3_11_retirement_files import digest, record
+from scripts.m3_11_retirement_files import digest, directory, record
 
 from .test_m3_11_custody_retirement import approved_plan
 from .test_m3_11_frozen_terminal import closed
@@ -25,6 +26,7 @@ from .test_m3_11_frozen_terminal import closed
     "fault",
     [
         "none",
+        "scheduled",
         "fixture",
         "archive",
         "manifest",
@@ -34,7 +36,7 @@ from .test_m3_11_frozen_terminal import closed
         "expired",
     ],
 )
-def test_original_native_bindings_are_not_replaced_by_current_cleanup(
+def test_original_native_bindings_are_not_replaced_by_current_cleanup(  # noqa: PLR0915 - original/current native boundaries
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     fault: str,
@@ -103,6 +105,31 @@ def test_original_native_bindings_are_not_replaced_by_current_cleanup(
         "host_helper": approved["implementation_revision"],
         "independent_helper": approved["implementation_revision"],
     }
+    if fault == "scheduled":
+        contract["format"] = local.m3_11_custody_cleanup.SCHEDULED_FORMAT
+        monkeypatch.setattr(
+            local.m3_11_custody_cleanup,
+            "contract",
+            lambda _raw: (
+                {"runtime": approved["runtime"]},
+                SimpleNamespace(
+                    lease_id=approved["current_lease_id"],
+                    sha256=approved["current_manifest_sha256"],
+                    targets=old.targets,
+                ),
+            ),
+        )
+
+        def scheduled(
+            _selection: object, selected: object, *, now: datetime, scratch: Path
+        ) -> datetime:
+            assert selected == contract
+            directory(scratch.parent)
+            scratch.mkdir(mode=0o700)
+            calls.append("cleanup")
+            return now + timedelta(hours=1)
+
+        monkeypatch.setattr(local.m3_11_custody_cleanup, "verify_scheduled", scheduled)
     if fault == "archive":
         approved["archive"] = {
             **cast(dict[str, object], approved["archive"]),
@@ -131,7 +158,12 @@ def test_original_native_bindings_are_not_replaced_by_current_cleanup(
         return now + timedelta(hours=1)
 
     def preserve(selected: object, *, scratch: Path) -> dict[str, object]:
-        assert selected == evidence and scratch == tmp_path
+        assert selected == evidence
+        if fault == "scheduled":
+            assert scratch == tmp_path / "scheduled" / "preserved"
+            directory(scratch)
+        else:
+            assert scratch == tmp_path
         calls.append("native-preserved-verifier")
         return {"evidence_sha256": digest(evidence)}
 
@@ -139,9 +171,13 @@ def test_original_native_bindings_are_not_replaced_by_current_cleanup(
     # Native preservation is exercised independently, including the actual
     # migrated archive/image. This test isolates new index/authority bindings.
     monkeypatch.setattr(local, "verify_preserved", preserve)
-    if fault == "none":
+    if fault in {"none", "scheduled"}:
         result = local.verify(
-            index, approved, selection={}, cleanup_contract=contract, scratch=tmp_path
+            index,
+            approved,
+            selection={},
+            cleanup_contract=contract,
+            scratch=tmp_path / "scheduled" if fault == "scheduled" else tmp_path,
         )
         assert result["status"] == "native-custody-and-cleanup-verified"
         assert result["custody_sha256"] == digest(index)

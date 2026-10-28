@@ -19,7 +19,7 @@ from scripts.m3_11_private_inputs import read_private, write_private
 from scripts.m3_11_qualification_evidence import canonical_bytes, fields
 from scripts.m3_11_unattended.connect_api import Connect, ConnectResponseError
 from scripts.m3_11_unattended.connect_auth import identity as connect_identity
-from scripts.m3_11_unattended.journal import _note_content
+from scripts.m3_11_unattended.journal import MAX_READ_CACHE_BYTES, _note_content
 from scripts.m3_11_unattended.model import (
     ROLES,
     AuthorityGeneration,
@@ -291,10 +291,51 @@ class ConnectInventoryReader:
 
     def __init__(self, client: Connect, vault: str) -> None:
         self.client, self.vault = client, Connect._identity(vault)
+        self._read_scope: tuple[int, str, str, str] | None = None
+        self._read_cache: dict[str, tuple[bytes, bytes]] = {}
+        self._read_cache_bytes = 0
 
-    def _read(self, item_id: str, *, published: bool = False) -> dict[str, object]:
+    def _clear_cache(self) -> None:
+        self._read_cache.clear()
+        self._read_cache_bytes = 0
+
+    def _read(
+        self, item_id: str, *, published: bool = False, listed: dict[str, object] | None = None
+    ) -> dict[str, object]:
+        # A publication readback is always a fresh exact GET. Ordinary scans may
+        # reuse a validated body only behind unchanged fresh versioned metadata.
+        key = canonical_bytes(listed) if listed is not None else None
+        cached = self._read_cache.get(item_id)
+        if not published and cached is not None and cached[0] == key:
+            return self._record(json.loads(cached[1]))
+        if cached is not None:
+            self._read_cache_bytes -= sum(map(len, self._read_cache.pop(item_id)))
         read = self.client.published_item if published else self.client.item
-        item = read(self.vault, item_id)
+        try:
+            item = read(self.vault, item_id)
+            result = self._record(item)
+        except Exception:
+            # Exact publication reads may be called outside records(). Contrary
+            # or failed evidence cannot leave a previously trusted body cached.
+            self._clear_cache()
+            raise
+        if (
+            not published
+            and listed is not None
+            and _positive_integer(listed.get("version"))
+            and type(item.get("version")) is int
+            and item["version"] == listed["version"]
+            and all(item.get(name) == value for name, value in listed.items())
+        ):
+            body = canonical_bytes(item)
+            size = len(key or b"") + len(body)
+            if key is not None and self._read_cache_bytes + size <= MAX_READ_CACHE_BYTES:
+                self._read_cache[item_id] = (key, body)
+                self._read_cache_bytes += size
+        return result
+
+    @staticmethod
+    def _record(item: dict[str, object]) -> dict[str, object]:
         if (
             item.get("category") != "SECURE_NOTE"
             or item.get("tags") != [TAG]
@@ -311,6 +352,17 @@ class ConnectInventoryReader:
         return record
 
     def records(self) -> list[dict[str, object]]:
+        scope = (id(self.client), self.client.url, self.client.credential_sha256, self.vault)
+        if self._read_scope != scope:
+            self._clear_cache()
+            self._read_scope = scope
+        try:
+            return self._records()
+        except Exception:
+            self._clear_cache()
+            raise
+
+    def _records(self) -> list[dict[str, object]]:
         response = self.client.request("GET", f"/v1/vaults/{self.vault}/items")
         if (
             response.status != HTTPStatus.OK
@@ -320,6 +372,7 @@ class ConnectInventoryReader:
             raise ConnectResponseError(
                 response, "inventory-list", "lease inventory listing is incomplete or unavailable"
             )
+        visible: dict[str, bytes] = {}
         records = []
         seen: set[str] = set()
         for item in response.body:
@@ -329,11 +382,19 @@ class ConnectInventoryReader:
             if item_id in seen:
                 raise LifecycleError("lease inventory listing repeats an item")
             seen.add(item_id)
+            visible[item_id] = canonical_bytes(item)
             # Historical journal items are handled by the migration reader.
             # A malformed item advertising this format cannot be skipped.
             if TAG in (item.get("tags") or []) or str(item.get("title", "")).startswith(PREFIX):
-                records.append(self._read(item_id))
-        return _collect(records)
+                records.append(self._read(item_id, listed=item))
+        result = _collect(records)
+        self._read_cache = {
+            key: value for key, value in self._read_cache.items() if visible.get(key) == value[0]
+        }
+        self._read_cache_bytes = sum(
+            len(metadata) + len(body) for metadata, body in self._read_cache.values()
+        )
+        return result
 
 
 class ConnectInventory(ConnectInventoryReader):

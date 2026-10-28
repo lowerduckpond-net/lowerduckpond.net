@@ -15,6 +15,7 @@ import re
 import zipfile
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import cast
@@ -62,7 +63,9 @@ def _list(value: object, key: str) -> list[dict[str, object]]:
     return cast(list[dict[str, object]], rows)
 
 
-def _run(raw: object, contract: dict[str, object]) -> dict[str, object]:
+def _run(
+    raw: object, contract: dict[str, object], *, manual_confirmation: bool = False
+) -> dict[str, object]:
     require(isinstance(raw, dict), "native terminal run is missing")
     run = cast(dict[str, object], raw)
     require(
@@ -74,8 +77,9 @@ def _run(raw: object, contract: dict[str, object]) -> dict[str, object]:
         and run.get("path") == ".github/workflows/m3-11-credential-cleanup.yml"
         and run.get("head_sha") == contract["native_workflow_revision"]
         and run.get("head_branch") == "main"
-        and run.get("event") == "schedule"
-        and run.get("display_title") == "M3.11 reconcile"
+        and run.get("event") == ("workflow_dispatch" if manual_confirmation else "schedule")
+        and run.get("display_title")
+        == ("M3.11 confirm" if manual_confirmation else "M3.11 reconcile")
         and run.get("status") == "completed"
         and run.get("conclusion") == "success",
         "native terminal scheduled run identity or result differs",
@@ -95,7 +99,20 @@ def _run(raw: object, contract: dict[str, object]) -> dict[str, object]:
     return run
 
 
-def verify(output: Path, contract: object, manifest: LeaseManifest) -> dict[str, object]:
+@dataclass(frozen=True)
+class VerifiedDocuments:
+    contract: dict[str, object]
+    run: dict[str, object]
+    attempt: dict[str, object]
+    job: dict[str, object]
+    documents: dict[str, dict[str, object]]
+    hashes: dict[str, object]
+    artifacts: list[dict[str, object]]
+
+
+def verified_documents(
+    output: Path, contract: object, manifest: LeaseManifest, *, manual_confirmation: bool = False
+) -> VerifiedDocuments:
     selected = fields(
         contract,
         {
@@ -123,8 +140,16 @@ def verify(output: Path, contract: object, manifest: LeaseManifest) -> dict[str,
         "native terminal collector contract differs",
     )
     directory(output)
-    run = _run(read_private(output / "run.json", maximum=MAX_BODY), selected)
-    attempt = _run(read_private(output / "attempt.json", maximum=MAX_BODY), selected)
+    run = _run(
+        read_private(output / "run.json", maximum=MAX_BODY),
+        selected,
+        manual_confirmation=manual_confirmation,
+    )
+    attempt = _run(
+        read_private(output / "attempt.json", maximum=MAX_BODY),
+        selected,
+        manual_confirmation=manual_confirmation,
+    )
     require(all(run[key] == attempt[key] for key in RUN_KEYS), "native terminal attempt changed")
     rows = _list(read_private(output / "jobs.json", maximum=MAX_BODY), "jobs")
     jobs = [row for row in rows if row.get("name") == "connect"]
@@ -215,6 +240,13 @@ def verify(output: Path, contract: object, manifest: LeaseManifest) -> dict[str,
             "zip_sha256": hashlib.sha256(raw).hexdigest(),
             "body_sha256": hashlib.sha256(body).hexdigest(),
         }
+    return VerifiedDocuments(selected, run, attempt, job, documents, hashes, artifacts)
+
+
+def verify(output: Path, contract: object, manifest: LeaseManifest) -> dict[str, object]:
+    verified = verified_documents(output, contract, manifest)
+    selected, run, job = verified.contract, verified.run, verified.job
+    documents, hashes = verified.documents, verified.hashes
     _receipts(documents, selected, manifest)
     return {
         "format": FORMAT,
@@ -230,9 +262,18 @@ def verify(output: Path, contract: object, manifest: LeaseManifest) -> dict[str,
     }
 
 
-def _receipts(
-    documents: dict[str, dict[str, object]], contract: dict[str, object], manifest: LeaseManifest
-) -> None:
+def _by_id(raw: object) -> dict[str, dict[str, object]]:
+    require(
+        isinstance(raw, list) and all(isinstance(row, dict) for row in raw),
+        "native terminal result inventory is invalid",
+    )
+    rows = cast(list[dict[str, object]], raw)
+    result = {str(row.get("intent_sha256")): row for row in rows}
+    require(len(result) == len(rows), "native terminal results repeat an obligation")
+    return result
+
+
+def baseline(documents: dict[str, dict[str, object]], contract: dict[str, object]) -> None:
     receipt, auth = documents["cleanup"], documents["authentication"]
     expected = fields(
         contract["authentication"],
@@ -268,8 +309,11 @@ def _receipts(
         and receipt.get("status") == "ready",
         "native terminal cleanup receipt differs",
     )
-    legacy = receipt.get("legacy")
-    baseline = cast(dict[str, object], contract["legacy"])
+    legacy_baseline(receipt.get("legacy"), contract["legacy"])
+
+
+def legacy_baseline(legacy: object, expected: object) -> None:
+    baseline = cast(dict[str, object], expected)
     require(isinstance(legacy, dict), "native terminal historical obligations are missing")
     legacy = cast(dict[str, object], legacy)
     require(
@@ -282,17 +326,7 @@ def _receipts(
         "native terminal historical policy or recovery changed",
     )
 
-    def by_id(raw: object) -> dict[str, dict[str, object]]:
-        require(
-            isinstance(raw, list) and all(isinstance(row, dict) for row in raw),
-            "native terminal result inventory is invalid",
-        )
-        rows = cast(list[dict[str, object]], raw)
-        result = {str(row.get("intent_sha256")): row for row in rows}
-        require(len(result) == len(rows), "native terminal results repeat an obligation")
-        return result
-
-    actual, original = by_id(legacy.get("results")), by_id(baseline.get("results"))
+    actual, original = _by_id(legacy.get("results")), _by_id(baseline.get("results"))
     require(
         set(actual) == set(original)
         and len(actual) == 51  # noqa: PLR2004 - immutable historical obligations
@@ -309,6 +343,13 @@ def _receipts(
             and actual[key].get("negative_authentication") in allowed,
             "native terminal historical uncertainty or denial regressed",
         )
+
+
+def _receipts(
+    documents: dict[str, dict[str, object]], contract: dict[str, object], manifest: LeaseManifest
+) -> None:
+    baseline(documents, contract)
+    receipt = documents["cleanup"]
     leases = receipt.get("leases")
     require(isinstance(leases, list), "native terminal lease inventory is missing")
     projected = []
@@ -324,7 +365,7 @@ def _receipts(
             "native terminal lease is unresolved",
         )
         if "results" in row:
-            results = by_id(row["results"])
+            results = _by_id(row["results"])
             require(
                 len(results) == 7  # noqa: PLR2004 - original seven roles
                 and all(
@@ -355,13 +396,14 @@ def _receipts(
     )
 
 
-def capture(
+def capture_files(
     api: Callable[[str], bytes],
     run_id: int,
     output: Path,
     contract: dict[str, object],
-    manifest: LeaseManifest,
-) -> dict[str, object]:
+    *,
+    manual_confirmation: bool = False,
+) -> None:
     """GET adapter is supplied by the sealed collector, not an arbitrary live CLI option."""
     require(type(run_id) is int and run_id > 0, "native terminal run ID is invalid")
     directory(output.parent)
@@ -380,7 +422,7 @@ def capture(
         require(isinstance(value, dict), "native terminal response is not an object")
         write_private(output / (filename + ".json"), value, maximum=MAX_BODY)
         responses[filename] = value
-    _run(responses["run"], contract)
+    _run(responses["run"], contract, manual_confirmation=manual_confirmation)
     for kind, prefix_name in (
         ("cleanup", "m3-11-credential-cleanup"),
         ("authentication", "m3-11-independent-authentication"),
@@ -402,6 +444,16 @@ def capture(
             len(raw),
             hashlib.sha256(raw).hexdigest(),
         )
+
+
+def capture(
+    api: Callable[[str], bytes],
+    run_id: int,
+    output: Path,
+    contract: dict[str, object],
+    manifest: LeaseManifest,
+) -> dict[str, object]:
+    capture_files(api, run_id, output, contract)
     result = verify(output, contract, manifest)
     record(output / "verified.json", result)
     return result
