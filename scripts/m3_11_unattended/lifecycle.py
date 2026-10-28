@@ -1074,13 +1074,18 @@ class LeaseLifecycle:
 
     def _before_create(self, check_cancelled: Callable[[], None]) -> None:
         check_cancelled()
+        records = self.records()
+        # Inventory can involve many bounded authenticated reads. Neither its
+        # elapsed time nor a cancellation arriving during it may be ignored at
+        # the irreversible CREATE boundary.
+        check_cancelled()
         now = self.clock()
         if (
             now >= instant(self.manifest.policy.issuance_before)
             or self.manifest.policy.deadline(instant(self.manifest.created_at)) - now
             < MINIMUM_TOKEN_REMAINING
             or any(self.state.directory.glob("close-*.json"))
-            or any(slot.startswith("close-") for slot in self.records())
+            or any(slot.startswith("close-") for slot in records)
         ):
             raise LifecycleError("lease creation is cancelled or outside its approved bounds")
 
