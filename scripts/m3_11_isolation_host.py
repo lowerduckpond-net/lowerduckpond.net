@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -145,7 +146,10 @@ class Host:
 
     def stop(self, journal: Journal | None) -> dict[str, object]:
         self.require(consumed=True)
-        record(self.root / "stop-requested.json", {"manifest_sha256": self.manifest.sha256})
+        # Stopping cannot depend on successful evidence I/O. Positive stopped
+        # observations and exact journal publication remain mandatory below.
+        with suppress(Exception):
+            record(self.root / "stop-requested.json", {"manifest_sha256": self.manifest.sha256})
         outcomes: dict[str, object] = {}
         # Fence the credential issuer first, then give the unchanged guest stop
         # guard a chance to quiesce Caddy before its container stops.

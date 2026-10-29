@@ -239,16 +239,21 @@ def run(host: Host, access: CleanupAccess, *, actor_id: str) -> None:
                 # A restart during an outage must still service the local
                 # deadline/death path. It cannot claim authenticated prearm.
                 verified = False
-        replace_private(
-            host.root / "watchdog.json",
-            {
-                "manifest_sha256": host.manifest.sha256,
-                "container_id": actor_id,
-                "admission_sha256": digest(host.evidence.fence.ticket),
-                "cleanup_access_verified": verified,
-                "observed_at": stamp(datetime.now(UTC)),
-            },
-        )
+        try:
+            replace_private(
+                host.root / "watchdog.json",
+                {
+                    "manifest_sha256": host.manifest.sha256,
+                    "container_id": actor_id,
+                    "admission_sha256": digest(host.evidence.fence.ticket),
+                    "cleanup_access_verified": verified,
+                    "observed_at": stamp(datetime.now(UTC)),
+                },
+            )
+        except Exception:
+            # Failed heartbeat persistence is never permission to leave issued
+            # consumers running. Prearm stays unavailable; service cleanup now.
+            requested = True
         if requested:
             result = host.cleanup(access)
             replace_private(host.root / "host-cleanup.json", result)

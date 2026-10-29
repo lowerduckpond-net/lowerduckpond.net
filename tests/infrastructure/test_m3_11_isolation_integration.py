@@ -619,3 +619,40 @@ def test_changed_cold_observation_program_never_executes(graph: tuple[Host, Jour
         call.args[:2] == ("exec", "--interactive") for call in docker.command.call_args_list
     )
     assert not provider.items
+
+
+def test_stop_intent_write_failure_cannot_skip_any_owned_stop(
+    graph: tuple[Host, Journal, Mock], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    host, journal, _ = graph
+    issue(Lease(host.credentials, host.manifest.intents, journal), FakeProvider(host.manifest.plan))
+
+    def unavailable(*args: object, **kwargs: object) -> None:
+        raise OSError("synthetic evidence write failure")
+
+    monkeypatch.setattr("scripts.m3_11_isolation_host.record", unavailable)
+    with pytest.raises((ValueError, OSError)):
+        host.stop(None)
+    assert all(
+        host.actor(role)["running"] is False
+        for role in ("controller", "source", "destination", "acme", "archive")
+    )
+
+
+def test_heartbeat_write_failure_still_services_due_cleanup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    host = Mock(spec=Host)
+    host.root, host.manifest, host.evidence = tmp_path, Mock(), Mock()
+    host.manifest.sha256 = "a" * 64
+    host.evidence.fence.ticket = {"synthetic": True}
+    host.cleanup.return_value = {"status": "verified"}
+    monkeypatch.setattr(watch, "due", lambda *args, **kwargs: True)
+
+    def unavailable(*args: object, **kwargs: object) -> None:
+        raise OSError("synthetic evidence write failure")
+
+    monkeypatch.setattr(watch, "replace_private", unavailable)
+    with pytest.raises(OSError):
+        watch.run(host, Mock(), actor_id="1" * 64)
+    host.cleanup.assert_called_once()
