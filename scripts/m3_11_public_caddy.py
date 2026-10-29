@@ -6,6 +6,7 @@ The controller binds these inputs to the original private combined context.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 import uuid
@@ -103,6 +104,29 @@ def configuration(nonce: str) -> bytes:
             },
         }
     )
+
+
+def isolation_configuration(nonce: str, network: object) -> bytes:
+    """A separately selected diagnostic mode; native configuration is unchanged."""
+    if not isinstance(network, dict) or set(network) != {"mode", "resolvers"}:
+        raise ValueError("isolated public DNS mode is unset or malformed")
+    if network == {"mode": "authoritative", "resolvers": []}:
+        return configuration(nonce)
+    resolvers = network["resolvers"]
+    if (
+        network["mode"] != "recursive-precheck"
+        or not isinstance(resolvers, list)
+        or len(resolvers) != 1
+        or not isinstance(resolvers[0], str)
+    ):
+        raise ValueError("isolated public DNS mode is unset or malformed")
+    resolver = ipaddress.ip_address(resolvers[0])
+    if str(resolver) != resolvers[0] or resolver.is_unspecified:
+        raise ValueError("isolated public DNS resolver is invalid")
+    value = json.loads(configuration(nonce))
+    dns = value["apps"]["tls"]["automation"]["policies"][0]["issuers"][0]["challenges"]["dns"]
+    dns["resolvers"] = resolvers
+    return canonical(value)
 
 
 def admin_configuration() -> dict[str, object]:
