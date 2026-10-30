@@ -139,7 +139,7 @@ class Cloudflare:
             raise LifecycleError("Cloudflare credential identity changed")
         return self._metadata(item)
 
-    def scope(self, role: str, targets: Targets) -> dict[str, object]:
+    def permission_groups(self, role: str) -> dict[str, str]:
         names = PERMISSIONS[role]
         expected_scope = (
             "com.cloudflare.api.account" if role == "audit" else "com.cloudflare.api.account.zone"
@@ -160,6 +160,10 @@ class Cloudflare:
             if len(selected) != 1:
                 raise LifecycleError("Cloudflare permission identity is missing or ambiguous")
             permissions[identifier(selected[0].get("id"))] = name
+        return permissions
+
+    def scope(self, role: str, targets: Targets) -> dict[str, object]:
+        permissions = self.permission_groups(role)
         resources = (
             {f"com.cloudflare.api.account.{targets.account_id}": "*"}
             if role == "audit"

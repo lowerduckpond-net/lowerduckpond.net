@@ -75,6 +75,9 @@ class DnsWitness:
     _failed: bool = field(default=False, init=False, repr=False)
     output_directory: Path | None = field(default=None, repr=False)
 
+    def binding_documents(self) -> tuple[Path, Path]:
+        return self.directory / "combined-context.json", self.directory / "combined-names.json"
+
     @classmethod
     def begin(
         cls, directory: Path, storage: LiveStorage, *, diagnostic: bool = False
@@ -187,9 +190,10 @@ class DnsWitness:
             raise ValueError("public DNS observation kind is invalid")
         if self.sequence >= MAX_OBSERVATIONS:
             raise ValueError("public DNS observation count exceeds its bound")
+        context_path, names_path = self.binding_documents()
         if (
-            _digest(read_private(self.directory / "combined-context.json")) != self.context_sha256
-            or _digest(read_private(self.directory / "combined-names.json")) != self.names_sha256
+            _digest(read_private(context_path)) != self.context_sha256
+            or _digest(read_private(names_path)) != self.names_sha256
         ):
             raise ValueError("public DNS original context or private names changed")
         started = _now()

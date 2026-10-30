@@ -11,7 +11,8 @@ import os
 import signal
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -19,7 +20,7 @@ from scripts.m3_11_qualification_evidence import fields
 from scripts.m3_11_unattended import cleanup
 from scripts.m3_11_unattended.config import LeaseConfiguration
 from scripts.m3_11_unattended.connect_api import Connect
-from scripts.m3_11_unattended.connect_auth import authenticate
+from scripts.m3_11_unattended.connect_auth import Access, authenticate
 from scripts.m3_11_unattended.connect_configuration import reader_access
 from scripts.m3_11_unattended.connect_host import independent_server
 from scripts.m3_11_unattended.docker import Docker
@@ -58,26 +59,15 @@ def bootstrap(value: object, *, helper: str) -> tuple[LeaseConfiguration, dict[s
     return config, credentials
 
 
-def execute(
-    raw: object,
+@contextmanager
+def session(
+    config: LeaseConfiguration,
+    credentials: dict[str, object],
     *,
     directory: Path,
-    helper: str,
     progress: Callable[[str], None] = lambda _stage: None,
-) -> dict[str, object]:
-    has_profile = isinstance(raw, dict) and "profile" in raw
-    selected = fields(raw, {"bootstrap", "operation"} | ({"profile"} if has_profile else set()))
-    if selected["operation"] not in {"confirm", "cleanup", "validate-profile"}:
-        raise LifecycleError("independent cleanup operation is unsupported")
-    requested = selected["bootstrap"]
-    profile = None
-    if has_profile:
-        from scripts.m3_11_unattended.connect_profile import apply  # noqa: PLC0415
-
-        requested, profile = apply(requested, selected["profile"], helper=helper)
-    if selected["operation"] == "validate-profile" and profile is None:
-        raise LifecycleError("profile validation needs an explicit public candidate")
-    config, credentials = bootstrap(requested, helper=helper)
+) -> Iterator[tuple[Connect, Access, dict[str, object]]]:
+    """The native authenticated independent runtime and complete teardown."""
     active = config.generations[config.active_generation]["cleanup"]
     reader, access = reader_access(active.reader_settings)
     vaults = strings(reader["vaults"])
@@ -102,6 +92,34 @@ def execute(
             directory / "authentication.json",
             {**authentication, "status": "verified", "observed_at": stamp(datetime.now(UTC))},
         )
+        yield client, access, authentication
+
+
+def execute(
+    raw: object,
+    *,
+    directory: Path,
+    helper: str,
+    progress: Callable[[str], None] = lambda _stage: None,
+) -> dict[str, object]:
+    has_profile = isinstance(raw, dict) and "profile" in raw
+    selected = fields(raw, {"bootstrap", "operation"} | ({"profile"} if has_profile else set()))
+    if selected["operation"] not in {"confirm", "cleanup", "validate-profile"}:
+        raise LifecycleError("independent cleanup operation is unsupported")
+    requested = selected["bootstrap"]
+    profile = None
+    if has_profile:
+        from scripts.m3_11_unattended.connect_profile import apply  # noqa: PLC0415
+
+        requested, profile = apply(requested, selected["profile"], helper=helper)
+    if selected["operation"] == "validate-profile" and profile is None:
+        raise LifecycleError("profile validation needs an explicit public candidate")
+    config, credentials = bootstrap(requested, helper=helper)
+    with session(config, credentials, directory=directory, progress=progress) as (
+        client,
+        access,
+        _authentication,
+    ):
         if selected["operation"] == "validate-profile":
             from scripts.m3_11_unattended.connect_profile import validate  # noqa: PLC0415
 

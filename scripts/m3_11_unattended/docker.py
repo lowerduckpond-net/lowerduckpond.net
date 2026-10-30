@@ -106,20 +106,16 @@ class Docker:
         self.command("rm", "--force", name)
 
 
-@contextmanager
-def admission(docker: Docker, *, image: str) -> Iterator[None]:
-    """Reserve admission atomically on the daemon, across all clients/revisions.
-
-    A lost launcher leaves this inert reservation in place for reconciliation;
-    it can never restart and silently begin a deferred attempt.
-    """
-    selected = (
+def reserve_admission(docker: Docker, *, image: str, labels: tuple[str, ...] = ()) -> str:
+    """Create the native inert global fence; the owner decides when to release."""
+    return (
         docker.command(
             "create",
             "--name",
             ADMISSION,
             "--label",
             OWNER + "=true",
+            *(argument for label in labels for argument in ("--label", label)),
             "--network",
             "none",
             image,
@@ -128,6 +124,16 @@ def admission(docker: Docker, *, image: str) -> Iterator[None]:
         .decode()
         .strip()
     )
+
+
+@contextmanager
+def admission(docker: Docker, *, image: str) -> Iterator[None]:
+    """Reserve admission atomically on the daemon, across all clients/revisions.
+
+    A lost launcher leaves this inert reservation in place for reconciliation;
+    it can never restart and silently begin a deferred attempt.
+    """
+    selected = reserve_admission(docker, image=image)
     try:
         yield
     finally:

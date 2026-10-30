@@ -1,0 +1,6 @@
+---
+name: Independent isolated public CA cleanup
+description: Confirm and clean up exactly three Cloudflare diagnostic roles without replacing the existing secret.
+runs:
+  using: node24
+  main: index.js

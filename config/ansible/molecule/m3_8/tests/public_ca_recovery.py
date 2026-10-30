@@ -24,6 +24,7 @@ from scripts.m3_11_live_storage import LiveStorage
 from scripts.m3_11_phase_receipts import Recorder
 from scripts.m3_11_private_inputs import read_private, read_private_bytes, write_private
 from scripts.m3_11_public_inputs import require_original
+from scripts.m3_11_public_sequence import exercise
 
 
 def _digest(value: object) -> str:
@@ -41,6 +42,57 @@ def run(
     # The live controller retains the same read-only DNS witness for the fresh
     # teardown absence check; it cannot initialize a replacement baseline.
     return recovery, public_ca
+
+
+def program(fixture: Fixture, *, diagnostic: bool = False, isolated: bool = False) -> str:
+    """Assemble exact selected helpers; credentials remain in private stdin."""
+    script_root = Path(policy.__file__).parent
+    return _selected_python(
+        fixture.destination,
+        """
+import json, sys, types
+package = types.ModuleType('scripts')
+package.__path__ = []
+sys.modules['scripts'] = package
+"""
+        + "\n".join(
+            f"module = types.ModuleType({name!r})\n"
+            f"sys.modules[{name!r}] = module\n"
+            f"exec(compile({(script_root / filename).read_bytes()!r}, "
+            f"{filename!r}, 'exec'), module.__dict__)\n"
+            for name, filename in (
+                ("scripts.m3_11_public_caddy", "m3_11_public_caddy.py"),
+                ("scripts.m3_11_public_probe", "m3_11_public_probe.py"),
+            )
+        )
+        + (
+            "helper = types.ModuleType('scripts.m3_11_debug_dns_probe')\n"
+            "sys.modules[helper.__name__] = helper\n"
+            f"exec(compile({(script_root / 'm3_11_debug_dns_probe.py').read_bytes()!r}, "
+            "'m3_11_debug_dns_probe.py', 'exec'), helper.__dict__)\n"
+            f"exec(compile({(script_root / 'm3_11_debug_public.py').read_bytes()!r}, "
+            "'m3_11_debug_public.py', 'exec'), module.__dict__)\n"
+            if diagnostic
+            else ""
+        )
+        + """
+request = json.load(sys.stdin)
+action = request.pop('action')
+actions = {name: getattr(module, name) for name in (
+    'install', 'start', 'ready', 'suspend', 'interrupt', 'rebooted',
+    'open_verified', 'restore_native',
+    'stop_failed', 'diagnostic_prepare', 'diagnostic_start', 'diagnostic_interrupt',
+    'diagnostic_open', 'diagnostic_finish', 'diagnostic_retire_dns',
+    'diagnostic_stop_failed', 'diagnostic_suspend') if hasattr(module, name)}
+"""
+        + (
+            "actions.update(install_isolated=module.install_isolated, "
+            "observe_prepared=module.observe_prepared)\n"
+            if isolated
+            else ""
+        )
+        + "print(json.dumps(actions[action](**request), sort_keys=True))\n",
+    )
 
 
 class PublicRecovery:
@@ -71,47 +123,7 @@ class PublicRecovery:
         # Execute the exact checked-out fixture helpers through the destination's
         # selected installed artifact. Credentials and captured roots use stdin;
         # neither command arguments nor controller diagnostics contain the token.
-        script_root = Path(policy.__file__).parent
-        self.program = _selected_python(
-            fixture.destination,
-            """
-import json, sys, types
-package = types.ModuleType('scripts')
-package.__path__ = []
-sys.modules['scripts'] = package
-"""
-            + "\n".join(
-                f"module = types.ModuleType({name!r})\n"
-                f"sys.modules[{name!r}] = module\n"
-                f"exec(compile({(script_root / filename).read_bytes()!r}, "
-                f"{filename!r}, 'exec'), module.__dict__)\n"
-                for name, filename in (
-                    ("scripts.m3_11_public_caddy", "m3_11_public_caddy.py"),
-                    ("scripts.m3_11_public_probe", "m3_11_public_probe.py"),
-                )
-            )
-            + (
-                "helper = types.ModuleType('scripts.m3_11_debug_dns_probe')\n"
-                "sys.modules[helper.__name__] = helper\n"
-                f"exec(compile({(script_root / 'm3_11_debug_dns_probe.py').read_bytes()!r}, "
-                "'m3_11_debug_dns_probe.py', 'exec'), helper.__dict__)\n"
-                f"exec(compile({(script_root / 'm3_11_debug_public.py').read_bytes()!r}, "
-                "'m3_11_debug_public.py', 'exec'), module.__dict__)\n"
-                if diagnostic
-                else ""
-            )
-            + """
-request = json.load(sys.stdin)
-action = request.pop('action')
-actions = {name: getattr(module, name) for name in (
-    'install', 'start', 'ready', 'suspend', 'interrupt', 'rebooted',
-    'open_verified', 'restore_native',
-    'stop_failed', 'diagnostic_prepare', 'diagnostic_start', 'diagnostic_interrupt',
-    'diagnostic_open', 'diagnostic_finish', 'diagnostic_retire_dns',
-    'diagnostic_stop_failed', 'diagnostic_suspend') if hasattr(module, name)}
-print(json.dumps(actions[action](**request), sort_keys=True))
-""",
-        )
+        self.program = program(fixture, diagnostic=diagnostic)
 
     def _remaining(self) -> int:
         remaining = math.floor(self.deadline - time.monotonic())
@@ -137,6 +149,9 @@ print(json.dumps(actions[action](**request), sort_keys=True))
 
     def call(self, action: str, **arguments: object) -> dict[str, object]:
         self._identity()
+        return self._dispatch(action, **arguments)
+
+    def _dispatch(self, action: str, **arguments: object) -> dict[str, object]:
         if action not in {"install", "diagnostic_prepare"}:
             arguments["context_sha256"] = self.context_sha256
         raw = self.fixture.command(
@@ -216,6 +231,16 @@ print(json.dumps(actions[action](**request), sort_keys=True))
                         )
             raise
 
+    @property
+    def audit_rotation(self) -> bool:
+        return cast("bool", self.fixture.target["auditRotationEnabled"])
+
+    def gate_closed(self) -> None:
+        gate_closed(self.fixture)
+
+    def reboot(self) -> None:
+        self.fixture.reboot()
+
     def _run(self) -> tuple[dict[str, object], dict[str, object]]:
         value = {
             "context_sha256": self.context_sha256,
@@ -230,46 +255,8 @@ print(json.dumps(actions[action](**request), sort_keys=True))
             },
             "token": self.token,
         }
-        original = self.call("install", value=value)
-        self.installed = True
-        self.call("start")
-        gate_closed(self.fixture)
-        self.peer(opened=False)
-        observations = []
-        while True:
-            self._remaining()
-            observation = self.witness.sample("activity")
-            observations.append(observation.sha256)
-            if observation.record_count:
-                interruption_cleanup = self.drain_issuance()
-                interrupted = self.call("interrupt")
-                break
-            if self.call("ready")["ready"]:
-                raise ValueError("public issuance finished without an observed interruption")
-            self._wait()
-        gate_closed(self.fixture)
-        self.fixture.reboot()
-        reboot = self.call("rebooted")
-        gate_closed(self.fixture)
-        self.peer(opened=False)
-        self.call("start", resume=True)
-        while True:
-            self._remaining()
-            observations.append(self.witness.sample("activity").sha256)
-            result = self.call("ready")
-            if result["ready"]:
-                tls = evidence.fields(result["tls"], {"issuer", "certificates"})
-                break
-            self._wait()
-        self.witness.require_both_zones_observed()
-        cleanup = self.witness.require_absent("cleanup")
-        self.peer(opened=False)
-        opened = self.call("open_verified", expected=tls)
-        self.peer(opened=True)
-        restored = self.call(
-            "restore_native", audit_rotation=self.fixture.target["auditRotationEnabled"]
-        )
-        self._identity()
+        observations = exercise(self, value)
+        tls = observations["tls"]
         public_ca = {
             "issuer": policy.ISSUER,
             "trust": "system-public-roots",
@@ -282,15 +269,7 @@ print(json.dumps(actions[action](**request), sort_keys=True))
             "original_public_inputs_sha256": hashlib.sha256(
                 read_private_bytes(self.directory / "public-inputs" / "original.json")
             ).hexdigest(),
-            "original": original,
-            "interrupted": interrupted,
-            "interruption_cleanup": interruption_cleanup,
-            "rebooted": reboot,
-            "tls": tls,
-            "opened": opened,
-            "restored": restored,
-            "dns_activity_sha256": observations,
-            "dns_cleanup_sha256": cleanup.sha256,
+            **observations,
             "public_ca": public_ca,
         }
         write_private(self.directory / "public-ca.json", details)

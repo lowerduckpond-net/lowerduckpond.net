@@ -132,6 +132,31 @@ def _fixture() -> None:
         raise ValueError("public probe is restricted to the owned Docker fixture")
 
 
+def observe_prepared(binary: str, binary_sha256: str, restore_id: str) -> dict[str, object]:
+    """Read the actual completed journal before any isolated credential issuance."""
+    _fixture()
+    policy.service(binary)
+    if _digest(_read(Path(binary), maximum=256 * policy.MAXIMUM_BYTES)) != binary_sha256:
+        raise ValueError("isolated preparation binary differs")
+    if any(
+        path.exists() or path.is_symlink() for path in (policy.INPUTS, policy.STORAGE, UNIT_PATH)
+    ):
+        raise ValueError("isolated preparation is not a fresh cold public fixture")
+    with RestoreStore.locked(policy.RECOVERY) as store:
+        journal_sha256 = _journal(store)
+        journal = store.read()
+        if journal is None or journal.restore_id != restore_id:
+            raise ValueError("isolated preparation restore identity differs")
+    if not restore_admission():
+        raise ValueError("isolated reconstruction has not completed native activation")
+    return {
+        "restore_id": restore_id,
+        "journal_sha256": journal_sha256,
+        "binary_sha256": binary_sha256,
+        "public_store_absent": True,
+    }
+
+
 def _guard(context_sha256: str) -> dict[str, object]:
     _fixture()
     marker = _document("original")
@@ -178,11 +203,28 @@ def _closed() -> None:
 
 def install(value: dict[str, object]) -> dict[str, object]:
     """No public process starts here; retain the actual empty-store observation."""
+    return _install(value)
+
+
+def install_isolated(value: dict[str, object]) -> dict[str, object]:
+    """Separate diagnostic entry; a missing DNS choice fails before mutation."""
+    selected = dict(value)
+    network = selected.pop("isolation_network", None)
+    policy.isolation_configuration(str(selected.get("nonce")), network)
+    return _install(selected, network=network)
+
+
+def _install(value: dict[str, object], *, network: object = None) -> dict[str, object]:
     _fixture()
     if set(value) != {"context_sha256", "binary", "binary_sha256", "nonce", "files", "token"}:
         raise ValueError("public probe inputs are malformed")
     binary, nonce = str(value["binary"]), str(value["nonce"])
-    unit, configuration = policy.service(binary), policy.configuration(nonce)
+    unit = policy.service(binary)
+    configuration = (
+        policy.configuration(nonce)
+        if network is None
+        else policy.isolation_configuration(nonce, network)
+    )
     credential = policy.credential_environment(value["token"])
     for field in ("context_sha256", "binary_sha256"):
         if (
@@ -243,6 +285,8 @@ def install(value: dict[str, object]) -> dict[str, object]:
         "files": {name: _digest(raw) for name, raw in decoded.items()},
         "journal_sha256": journal_sha256,
     }
+    if network is not None:
+        marker["isolation_network"] = network
     result = _record("original", marker)
     _guard(str(value["context_sha256"]))
     _closed()
@@ -317,7 +361,12 @@ def _require_suspended() -> None:
 def _suspend(context_sha256: str) -> None:
     marker = _guard(context_sha256)
     _closed()
-    if _read(policy.INPUTS / "caddy.json") != policy.configuration(str(marker["nonce"])):
+    expected = (
+        policy.isolation_configuration(str(marker["nonce"]), marker["isolation_network"])
+        if "isolation_network" in marker
+        else policy.configuration(str(marker["nonce"]))
+    )
+    if _read(policy.INPUTS / "caddy.json") != expected:
         raise ValueError("retained public probe predates controlled issuance suspension")
     if ready(context_sha256)["ready"]:
         raise ValueError("public issuance already completed before its interruption")
