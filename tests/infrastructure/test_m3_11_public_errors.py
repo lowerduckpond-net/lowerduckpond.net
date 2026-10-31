@@ -196,14 +196,22 @@ module._guard = lambda context: {'nonce': '0198d17f-6f4a-7000-8000-000000000001'
 module._closed = lambda: None
 module._document = lambda name: {}
 module._record = lambda name, value: value
-module._read = lambda path: module.policy.configuration('0198d17f-6f4a-7000-8000-000000000001')
+nonce = '0198d17f-6f4a-7000-8000-000000000001'
+def read(path):
+    return (module.policy.interruption_configuration(nonce)
+            if path.name == 'interruption.json' else module.policy.configuration(nonce))
+module._read = read
 module.ready = lambda context: {'ready': FAULT == 'complete'}
+active = module.policy.interruption_configuration(nonce)
 def admin(method, path, body=None):
+    global active
     if FAULT == 'admin-response':
         raise ValueError('public probe issuance suspension was not confirmed')
     if FAULT == 'private-exception':
         raise OSError(PRIVATE)
-    return b'{}' if FAULT == 'readback' else module.policy.suspended_configuration()
+    if method == 'POST':
+        active = b'{}' if FAULT == 'readback' else module.policy.suspended_configuration()
+    return active
 module._admin = admin
 """
     patch = "FAULT = " + repr(fault) + "\nPRIVATE = " + repr(SECRET) + "\n" + patch

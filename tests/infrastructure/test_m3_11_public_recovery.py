@@ -222,7 +222,15 @@ def test_completed_issuance_cannot_be_relabeled_as_interrupted(
     monkeypatch.setattr(probe, "_tls", Mock(return_value={"certificates": ["all four"]}))
     nonce = str(uuid.uuid7())
     monkeypatch.setattr(probe, "_guard", Mock(return_value={"nonce": nonce}))
-    monkeypatch.setattr(probe, "_read", Mock(return_value=policy.configuration(nonce)))
+    monkeypatch.setattr(
+        probe,
+        "_read",
+        lambda path: (
+            policy.interruption_configuration(nonce)
+            if path.name == "interruption.json"
+            else policy.configuration(nonce)
+        ),
+    )
     control = Mock()
     monkeypatch.setattr(probe, "_admin", control)
     with pytest.raises(ValueError, match="already completed"):
@@ -366,6 +374,7 @@ def controller(
         path.chmod(0o600)
     value.original = {name: public_inputs / name for name in ("roots.pem", "hosts", "resolv.conf")}
     value.witness = Mock()
+    value.witness.both_zones_observed = True
     value.witness.sample.side_effect = [
         Mock(record_count=1, sha256="c" * 64),  # active challenge
         Mock(record_count=1, sha256="c" * 64),  # asynchronous cleanup still running

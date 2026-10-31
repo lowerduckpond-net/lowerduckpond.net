@@ -139,7 +139,13 @@ def test_actual_private_socket_suspension_failures_have_distinct_safe_codes(
     monkeypatch.setattr(probe, "_closed", Mock())
     monkeypatch.setattr(probe, "_document", Mock(return_value={}))
     monkeypatch.setattr(probe, "_record", Mock())
-    monkeypatch.setattr(probe, "_read", Mock(return_value=policy.configuration(nonce)))
+    held = policy.interruption_configuration(nonce)
+    monkeypatch.setattr(
+        probe,
+        "_read",
+        lambda path: held if path.name == "interruption.json" else policy.configuration(nonce),
+    )
+    control["config"] = json.loads(held)
     monkeypatch.setattr(probe, "ready", Mock(return_value={"ready": False}))
     if fault == "status":
         control["status"] = 500
@@ -150,5 +156,7 @@ def test_actual_private_socket_suspension_failures_have_distinct_safe_codes(
     payload = errors.failure("suspend", caught.value, context_sha256="a" * 64)
     assert cast("dict[str, object]", payload[errors.KEY])["code"] == code
     assert control["calls"] == (
-        [("POST", "/load")] if fault == "status" else [("POST", "/load"), ("GET", "/config/")]
+        [("GET", "/config/")]
+        if fault == "status"
+        else [("GET", "/config/"), ("POST", "/load"), ("GET", "/config/")]
     )

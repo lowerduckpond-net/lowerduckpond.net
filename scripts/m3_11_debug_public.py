@@ -67,10 +67,10 @@ def diagnostic_prepare(value: dict[str, object]) -> dict[str, object]:
     return {"cold": False}
 
 
-def diagnostic_start(context_sha256: str) -> dict[str, object]:
-    probe._guard(context_sha256)
+def diagnostic_start(context_sha256: str, *, resume: bool = False) -> dict[str, object]:
+    marker = probe._guard(context_sha256)
     probe._closed()
-    probe._systemctl("start", policy.UNIT)
+    probe._activate_configuration(marker, resume=resume)
     return {"started": True}
 
 

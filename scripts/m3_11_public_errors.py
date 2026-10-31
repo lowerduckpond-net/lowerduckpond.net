@@ -74,6 +74,9 @@ REASONS = {
     "public probe admin socket is not private to the owned issuer": "admin-socket-unsafe",
     "public probe issuance suspension was not confirmed": "admin-response-unverified",
     "public probe still has active issuance configuration": "issuance-still-active",
+    "public probe issuance configuration was not confirmed": "issuance-config-unverified",
+    "public probe interruption barrier changed": "interruption-barrier-changed",
+    "public interruption already has certificate material": "interruption-has-certificates",
     "isolated public DNS mode is unset or malformed": "isolation-network-unset",
     "public probe action is unsupported": "unsupported-action",
 }

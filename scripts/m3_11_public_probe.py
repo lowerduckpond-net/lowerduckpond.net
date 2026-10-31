@@ -264,8 +264,14 @@ def _install(value: dict[str, object], *, network: object = None) -> dict[str, o
         ("/usr/sbin/nft", "destroy", "table", "ip", "restore_fixture_dns"),
         failure="public_probe_controlled_dns_remove_failed",
     )
-    decoded["caddy.json"] = configuration
-    decoded["environment"] = credential
+    decoded.update(
+        {
+            "caddy.json": configuration,
+            "interruption.json": policy.interruption_configuration(nonce, network),
+            "bootstrap.json": policy.suspended_configuration(),
+            "environment": credential,
+        }
+    )
     for name, raw in decoded.items():
         _write(
             policy.INPUTS / name,
@@ -358,6 +364,13 @@ def _require_suspended() -> None:
         raise ValueError("public probe still has active issuance configuration")
 
 
+def _require_configuration(expected: bytes) -> None:
+    # Compare potentially sensitive admin data only in memory, never in a
+    # failure message or controller observation.
+    if json.loads(_admin("GET", "/config/")) != json.loads(expected):
+        raise ValueError("public probe issuance configuration was not confirmed")
+
+
 def _suspend(context_sha256: str) -> None:
     marker = _guard(context_sha256)
     _closed()
@@ -368,8 +381,12 @@ def _suspend(context_sha256: str) -> None:
     )
     if _read(policy.INPUTS / "caddy.json") != expected:
         raise ValueError("retained public probe predates controlled issuance suspension")
+    held = policy.interruption_configuration(str(marker["nonce"]), marker.get("isolation_network"))
+    if _read(policy.INPUTS / "interruption.json") != held:
+        raise ValueError("public probe interruption barrier changed")
     if ready(context_sha256)["ready"]:
         raise ValueError("public issuance already completed before its interruption")
+    _require_configuration(held)
     _admin("POST", "/load", policy.suspended_configuration())
     _require_suspended()
 
@@ -408,8 +425,32 @@ def ready(context_sha256: str) -> dict[str, object]:
         return {"ready": False}
 
 
+def _activate_configuration(marker: dict[str, object], *, resume: bool) -> None:
+    # Every boot is inert. Select the held initial leg or the ordinary issuer
+    # only after verifying the actual private admin endpoint is still inert.
+    expected = (
+        policy.configuration(str(marker["nonce"]))
+        if "isolation_network" not in marker
+        else policy.isolation_configuration(str(marker["nonce"]), marker["isolation_network"])
+    )
+    if not resume:
+        expected = policy.interruption_configuration(
+            str(marker["nonce"]), marker.get("isolation_network")
+        )
+    selected = policy.INPUTS / ("caddy.json" if resume else "interruption.json")
+    if (
+        _read(selected) != expected
+        or _read(policy.INPUTS / "bootstrap.json") != policy.suspended_configuration()
+    ):
+        raise ValueError("public probe interruption barrier changed")
+    _systemctl("start", policy.UNIT)
+    _require_suspended()
+    _admin("POST", "/load", expected)
+    _require_configuration(expected)
+
+
 def start(context_sha256: str, *, resume: bool = False) -> dict[str, object]:
-    _guard(context_sha256)
+    marker = _guard(context_sha256)
     _closed()
     if resume and _document("rebooted")["storage"] != _inventory():
         raise ValueError("public probe account/certificate bytes changed before resume")
@@ -417,7 +458,7 @@ def start(context_sha256: str, *, resume: bool = False) -> dict[str, object]:
         "resuming" if resume else "starting",
         {"pid_one": Path("/proc/1/stat").read_text().split()[21]},
     )
-    _systemctl("start", policy.UNIT)
+    _activate_configuration(marker, resume=resume)
     return {"started": True}
 
 
@@ -432,6 +473,8 @@ def interrupt(context_sha256: str) -> dict[str, object]:
     _require_suspended()
     _systemctl("stop", policy.UNIT)
     inventory = _inventory()
+    if any(name.startswith("certificates/") for name in inventory):
+        raise ValueError("public interruption already has certificate material")
     if not any(name.startswith("acme/") and name.endswith(".key") for name in inventory):
         raise ValueError("public interruption did not retain an actual ACME account")
     return _record(

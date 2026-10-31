@@ -259,8 +259,12 @@ class DnsWitness:
             raise ValueError("public DNS challenge names are not empty")
         return result
 
+    @property
+    def both_zones_observed(self) -> bool:
+        return self.observed_zones == {domain for domain, _ in ZONES}
+
     def require_both_zones_observed(self) -> None:
-        if self.observed_zones != {domain for domain, _ in ZONES}:
+        if not self.both_zones_observed:
             raise ValueError("public DNS-01 activity was not independently observed in both zones")
 
 

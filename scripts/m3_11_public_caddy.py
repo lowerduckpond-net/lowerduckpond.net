@@ -12,6 +12,8 @@ import re
 import uuid
 from pathlib import Path
 
+from lowerduckpond_static_host_agent.host_restore_coordinator import COORDINATOR_SECONDS
+
 INPUTS = Path("/etc/lowerduckpond-m3-11-public")
 STORAGE = Path("/var/lib/lowerduckpond-m3-11-public-caddy")
 UNIT = "lowerduckpond-m3-11-public-caddy.service"
@@ -129,6 +131,22 @@ def isolation_configuration(nonce: str, network: object) -> bytes:
     return canonical(value)
 
 
+def interruption_configuration(nonce: str, network: object = None) -> bytes:
+    """Publish real challenges but hold CA validation throughout the public phase.
+
+    CertMagic waits *after* Present and cancels this wait when its app stops.
+    The timer starts later than the controller's original coordinator deadline;
+    no initial certificate can complete while that attempt remains eligible.
+    Resume loads the normal configuration, retaining all propagation checks.
+    """
+    value = json.loads(
+        configuration(nonce) if network is None else isolation_configuration(nonce, network)
+    )
+    dns = value["apps"]["tls"]["automation"]["policies"][0]["issuers"][0]["challenges"]["dns"]
+    dns["propagation_delay"] = f"{COORDINATOR_SECONDS}s"
+    return canonical(value)
+
+
 def admin_configuration() -> dict[str, object]:
     # The disposable issuer alone exposes this private Unix socket. No TCP
     # admin listener or persisted replacement configuration is permitted.
@@ -177,7 +195,7 @@ BindReadOnlyPaths={INPUTS}/hosts:/etc/hosts
 BindReadOnlyPaths={INPUTS}/resolv.conf:/etc/resolv.conf
 BindReadOnlyPaths={RECOVERY}
 ExecStartPre=!/usr/local/libexec/lowerduckpond/host-restore-gate --caddy
-ExecStart={binary} run --config {INPUTS}/caddy.json
+ExecStart={binary} run --config {INPUTS}/bootstrap.json
 Restart=no
 TimeoutStartSec=120s
 TimeoutStopSec=5s

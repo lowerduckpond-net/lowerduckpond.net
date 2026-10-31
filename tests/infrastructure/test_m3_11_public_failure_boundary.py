@@ -79,7 +79,11 @@ module._guard = lambda context: {{'nonce': '0198d17f-6f4a-7000-8000-000000000001
 module._closed = lambda: None
 module._document = lambda name: {{}}
 module._record = lambda name, value: value
-module._read = lambda path: module.policy.configuration('0198d17f-6f4a-7000-8000-000000000001')
+nonce = '0198d17f-6f4a-7000-8000-000000000001'
+def read(path):
+    return (module.policy.interruption_configuration(nonce)
+            if path.name == 'interruption.json' else module.policy.configuration(nonce))
+module._read = read
 def missing_tls(marker):
     raise FileNotFoundError()
 module._tls = missing_tls
