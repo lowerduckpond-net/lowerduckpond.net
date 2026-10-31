@@ -293,6 +293,10 @@ os.execv(sys.executable,[sys.executable,*sys.argv[5:]])
     )
     assert readback["provider_absent"] is True
     assert primary.read_bytes() == before
+    assert (
+        cast("dict[str, object]", errors.retained_failures(host.phase)["failures"])["suspend"]
+        == caught.value.receipt
+    )
     assert read_private(host.root / "functional-terminal.json")["status"] == "failed"
     with pytest.raises(FileNotFoundError):
         functional(host)  # Cleanup cannot manufacture an isolated recovery prerequisite.

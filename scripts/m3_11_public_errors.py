@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import cast
 
 from lowerduckpond_static_host_agent.host_restore_journal import HostRestoreError
@@ -61,6 +62,7 @@ TYPES = frozenset(
         "KeyError",
         "TypeError",
         "AssertionError",
+        "AttributeError",
         "unknown",
     }
 )
@@ -187,3 +189,44 @@ def observation(raw: bytes, *, action: str, context_sha256: str | None = None) -
         ):
             raise ValueError("public probe failure coordinates are malformed")
     raise ProbeError(cast(dict[str, object], receipt))
+
+
+def retained_failures(directory: Path) -> dict[str, object]:
+    """Summarize fixed isolated receipt paths after cleanup, without blocking it.
+
+    This telemetry grants no cleanup or recovery authority. Damaged diagnostic
+    metadata yields fixed unavailable labels, never raw bytes or an exception.
+    """
+    from scripts.m3_11_private_inputs import read_private  # noqa: PLC0415 - host-only reader
+    from scripts.m3_11_unattended.model import digest  # noqa: PLC0415
+
+    failures: dict[str, object] = {}
+    unavailable: list[str] = []
+    context: str | None = None
+    context_available = True
+    try:
+        context = digest(read_private(directory / "isolation-context.json"))
+    except FileNotFoundError:
+        pass
+    except Exception:
+        context_available = False
+    for action in sorted(ACTIONS):
+        path = directory / f"public-probe-failure-{action}.json"
+        try:
+            if not path.exists() and not path.is_symlink():
+                continue
+            if not context_available:
+                unavailable.append(action)
+                continue
+            raw = read_private(path, maximum=8192)
+            observation(json.dumps({KEY: raw}).encode(), action=action, context_sha256=context)
+        except ProbeError as error:
+            failures[action] = error.receipt
+        except Exception:
+            unavailable.append(action)
+    return {
+        "format": "lowerduckpond-public-probe-diagnostics-v1",
+        "failures": failures,
+        "unavailable_actions": unavailable,
+        "context_available": context_available,
+    }

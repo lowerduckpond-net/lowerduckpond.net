@@ -16,7 +16,8 @@ import pytest
 from lowerduckpond_static_host_agent.host_restore_journal import HostRestoreError
 
 from scripts import m3_11_public_errors as errors
-from scripts.m3_11_private_inputs import read_private
+from scripts.m3_11_private_inputs import read_private, write_private
+from scripts.m3_11_unattended.model import digest
 from scripts.qualification_probe import bounded_command
 
 SECRET = "synthetic-private-payload-never-publish"  # noqa: S105 - synthetic sentinel
@@ -58,6 +59,12 @@ def test_unknown_exception_content_and_chains_are_never_stringified() -> None:
         "error_type": "unknown",
         "frames": [],
     }
+    assert SECRET not in json.dumps(raw)
+
+
+def test_attribute_error_keeps_only_the_fixed_type_label() -> None:
+    raw = errors.failure("suspend", AttributeError(SECRET))
+    assert cast("dict[str, object]", raw[errors.KEY])["error_type"] == "AttributeError"
     assert SECRET not in json.dumps(raw)
 
 
@@ -259,6 +266,48 @@ def test_raw_subprocess_failure_stays_generic_and_discards_both_payloads() -> No
 def test_successful_probe_observation_is_unchanged() -> None:
     assert errors.observation(b'{"issuance_suspended":true}', action="suspend") == {
         "issuance_suspended": True,
+    }
+
+
+@pytest.mark.parametrize("fault", [None, "context", "receipt", "symlink"])
+def test_retained_failure_summary_is_validated_and_cannot_block_cleanup(
+    tmp_path: Path,
+    fault: str | None,
+) -> None:
+    context: dict[str, object] = {"synthetic_context": True}
+    write_private(tmp_path / "isolation-context.json", context)
+    raw = errors.failure(
+        "suspend",
+        ValueError("public probe issuance suspension was not confirmed"),
+        context_sha256=digest(context),
+    )
+    path = tmp_path / "public-probe-failure-suspend.json"
+    write_private(path, cast("dict[str, object]", raw[errors.KEY]))
+    if fault == "context":
+        (tmp_path / "isolation-context.json").write_text(SECRET)
+    if fault == "receipt":
+        path.write_text(SECRET)
+    if fault == "symlink":
+        path.unlink()
+        path.symlink_to(tmp_path / "missing-private-target")
+    result = errors.retained_failures(tmp_path)
+    assert SECRET not in json.dumps(result)
+    if fault is None:
+        assert result["failures"] == {"suspend": raw[errors.KEY]}
+        assert result["unavailable_actions"] == []
+    else:
+        assert result["failures"] == {}
+        assert result["unavailable_actions"] == ["suspend"]
+
+
+def test_absent_failure_files_do_not_create_a_failure_or_read_credentials(tmp_path: Path) -> None:
+    (tmp_path / "credentials").mkdir()
+    (tmp_path / "credentials/issued.json").write_text("must not be read")
+    assert errors.retained_failures(tmp_path) == {
+        "format": "lowerduckpond-public-probe-diagnostics-v1",
+        "failures": {},
+        "unavailable_actions": [],
+        "context_available": True,
     }
 
 

@@ -67,6 +67,19 @@ source/runtime/preparation bindings. It cannot update or reinterpret a consumed
 attempt. A suspension failure still fails the sequence before interruption,
 reboot or any success receipt; reporting an error does not relax that gate.
 
+The caller's final result/status can use `retained_failures` to surface validated
+isolated failure receipts after reader disposal. Only fixed action filenames are
+read and each receipt must match the original context. Damaged or unavailable
+diagnostics yield fixed unavailable-action labels; they grant no authority and
+cannot prevent the existing cleanup. Caller wiring and its exact package bytes
+require their own offline finalizer check before another private handoff.
+
+In the caller, import `retained_failures` from `scripts.m3_11_public_errors` and
+add `result["public_probe_diagnostics"] = retained_failures(root / "phase")`
+to both read-only status and the final result, after native closure checks and
+reader disposal. This field is diagnostic only; it cannot replace any original
+closure, admission or prerequisite fact.
+
 ## DNS modes
 
 The strict plan requires a mode and resolver list. Missing or ambiguous input
