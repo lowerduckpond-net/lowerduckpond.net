@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import json
 import subprocess
 import sys
 import uuid
@@ -18,6 +19,7 @@ from lowerduckpond_static_host_agent.host_restore_journal import RestoreStore
 from scripts import m3_11_debug_public as public
 from scripts import m3_11_debug_stages as stages
 from scripts import m3_11_public_caddy as policy
+from scripts import m3_11_public_errors as errors
 from scripts import m3_11_public_probe as probe
 from scripts import m3_11_qualification_evidence as evidence
 from scripts.m3_11_private_inputs import write_private
@@ -198,7 +200,7 @@ def test_diagnostic_failure_repeats_quiescence_without_replacing_original_receip
         public.diagnostic_stop_failed("changed")
 
 
-@pytest.mark.parametrize("diagnostic", [False, True])
+@pytest.mark.parametrize("dispatch", [(False, False), (False, True), (True, False), (True, True)])
 @pytest.mark.parametrize(
     "action", ["diagnostic_start", "diagnostic_retire_dns", "diagnostic_stop_failed"]
 )
@@ -206,9 +208,10 @@ def test_diagnostic_actions_exist_only_in_explicit_debug_dispatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     installed_module: Callable[[str], ModuleType],
-    diagnostic: bool,
+    dispatch: tuple[bool, bool],
     action: str,
 ) -> None:
+    diagnostic, typed_failure = dispatch
     module = installed_module("public_ca_recovery")
     run_id, nonce = str(uuid.uuid7()), str(uuid.uuid7())
     write_private(
@@ -233,20 +236,35 @@ def test_diagnostic_actions_exist_only_in_explicit_debug_dispatch(
     recovery = module.PublicRecovery(fixture, storage, tmp_path, diagnostic=diagnostic)
     # Invoke with missing arguments: dispatch must resolve the name only in the
     # diagnostic program, without performing a guest mutation on this controller.
+    request = {"action": action}
+    if typed_failure:
+        request["failure_protocol"] = errors.FORMAT
     result = subprocess.run(  # noqa: S603 - missing required arguments prevent execution
         [sys.executable, "-c", recovery.program],
-        input=evidence.canonical_bytes({"action": action}),
+        input=evidence.canonical_bytes(request),
         capture_output=True,
         timeout=30,
         check=False,
     )
-    assert result.returncode != 0
-    assert (b"TypeError" if diagnostic else b"KeyError") in result.stderr
+    if typed_failure:
+        assert result.returncode == 0  # Only the transport succeeded.
+        assert result.stderr == b""
+        with pytest.raises(errors.ProbeError) as caught:
+            errors.observation(result.stdout, action=action)
+        assert caught.value.receipt["code"] == (
+            "unclassified" if diagnostic else "unsupported-action"
+        )
+        assert caught.value.receipt["error_type"] == ("TypeError" if diagnostic else "ValueError")
+    else:
+        assert result.returncode != 0
+        assert (b"TypeError" if diagnostic else b"ValueError") in result.stderr
+        if not diagnostic:
+            assert b"public probe action is unsupported" in result.stderr
 
 
 @pytest.mark.parametrize("action", ["ready", "diagnostic_retire_dns"])
 def test_only_dns_retirement_gets_a_private_mount_namespace(
-    installed_module: Callable[[str], ModuleType], action: str
+    installed_module: Callable[[str], ModuleType], action: str, tmp_path: Path
 ) -> None:
     module = installed_module("public_ca_recovery")
     recovery = module.PublicRecovery.__new__(module.PublicRecovery)
@@ -255,10 +273,16 @@ def test_only_dns_retirement_gets_a_private_mount_namespace(
     recovery.fixture = Mock(destination_id="owned-destination")
     recovery.fixture.command.return_value = b"{}"
     recovery.program = "pass"
+    recovery.directory = tmp_path
     recovery.context_sha256 = "a" * 64
     assert recovery.call(action) == {}
     arguments = recovery.fixture.command.call_args.args
     assert arguments[:4] == ("docker", "exec", "--interactive", "owned-destination")
+    assert json.loads(recovery.fixture.command.call_args.kwargs["stdin"]) == {
+        "action": action,
+        "context_sha256": recovery.context_sha256,
+        "failure_protocol": errors.FORMAT,
+    }
     if action == "diagnostic_retire_dns":
         assert arguments[4:9] == ("/usr/bin/unshare", "--mount", "--propagation", "private", "--")
     else:

@@ -458,6 +458,30 @@ def test_public_controller_keeps_interruption_and_reboot_before_verification(
     assert (controller.directory / "public-ca.json").exists()
 
 
+def test_typed_guest_failure_preserves_primary_error_if_failure_stop_also_fails(
+    controller: Controller,
+) -> None:
+    from scripts import m3_11_public_errors as errors  # noqa: PLC0415
+
+    original = cast("Callable[..., dict[str, object]]", controller.call.side_effect)
+    failure = errors.ProbeError({"action": "suspend", "code": "admin-response-unverified"})
+
+    def call(action: str, **arguments: object) -> dict[str, object]:
+        if action == "suspend":
+            raise failure
+        if action == "stop_failed":
+            raise OSError("synthetic private cleanup error")
+        return original(action, **arguments)
+
+    controller.call.side_effect = call
+    with pytest.raises(errors.ProbeError) as caught:
+        controller.run()
+    assert caught.value is failure
+    assert controller.call.call_args_list[-1].args == ("stop_failed",)
+    controller.fixture.reboot.assert_not_called()
+    assert not (controller.directory / "public-ca.json").exists()
+
+
 @pytest.mark.parametrize(
     "fault", ["unobserved-interruption", "one-zone", "dns-leftover", "reboot-timeout"]
 )
@@ -517,6 +541,8 @@ def test_installed_dispatch_loads_real_helpers_without_credentials_in_arguments(
         check=False,
         timeout=30,
     )
+    # Direct/legacy callers do not opt into the typed protocol. They retain
+    # nonzero failure semantics, including host stop/cleanup consumers.
     assert result.returncode != 0
-    assert b"KeyError: 'unsupported'" in result.stderr
+    assert b"public probe action is unsupported" in result.stderr
     assert token.encode() not in result.stderr + result.stdout

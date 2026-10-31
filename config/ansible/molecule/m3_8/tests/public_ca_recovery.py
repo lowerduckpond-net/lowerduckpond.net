@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 import math
 import time
 from pathlib import Path
@@ -17,6 +16,7 @@ from restore_scenarios import gate_closed
 from test_export_import import _selected_python
 
 from scripts import m3_11_public_caddy as policy
+from scripts import m3_11_public_errors as errors
 from scripts import m3_11_qualification_evidence as evidence
 from scripts import qualification_restore as owned
 from scripts.m3_11_dns_witness import POLL_INTERVAL_SECONDS, DnsWitness
@@ -61,6 +61,7 @@ sys.modules['scripts'] = package
             f"exec(compile({(script_root / filename).read_bytes()!r}, "
             f"{filename!r}, 'exec'), module.__dict__)\n"
             for name, filename in (
+                ("scripts.m3_11_public_errors", "m3_11_public_errors.py"),
                 ("scripts.m3_11_public_caddy", "m3_11_public_caddy.py"),
                 ("scripts.m3_11_public_probe", "m3_11_public_probe.py"),
             )
@@ -76,8 +77,6 @@ sys.modules['scripts'] = package
             else ""
         )
         + """
-request = json.load(sys.stdin)
-action = request.pop('action')
 actions = {name: getattr(module, name) for name in (
     'install', 'start', 'ready', 'suspend', 'interrupt', 'rebooted',
     'open_verified', 'restore_native',
@@ -91,8 +90,46 @@ actions = {name: getattr(module, name) for name in (
             if isolated
             else ""
         )
-        + "print(json.dumps(actions[action](**request), sort_keys=True))\n",
+        + """
+from scripts import m3_11_public_errors as errors
+action = None
+context_sha256 = None
+failure_protocol = None
+try:
+    request = json.load(sys.stdin)
+    failure_protocol = request.pop('failure_protocol', None)
+    if failure_protocol is not None and failure_protocol != errors.FORMAT:
+        raise ValueError('public probe failure protocol is unsupported')
+    action = request.pop('action')
+    if not isinstance(action, str) or action not in actions:
+        raise ValueError('public probe action is unsupported')
+    context_sha256 = request.get('context_sha256')
+    if action in ('install', 'install_isolated', 'diagnostic_prepare'):
+        value = request.get('value')
+        context_sha256 = value.get('context_sha256') if isinstance(value, dict) else None
+    result = actions[action](**request)
+except Exception as error:
+    if failure_protocol != errors.FORMAT:
+        raise
+    result = errors.failure(action, error, context_sha256=context_sha256)
+print(json.dumps(result, sort_keys=True))
+""",
     )
+
+
+def observation(
+    raw: bytes, *, action: str, directory: Path, context_sha256: str | None = None
+) -> dict[str, object]:
+    try:
+        return errors.observation(raw, action=action, context_sha256=context_sha256)
+    except errors.ProbeError as error:
+        try:
+            write_private(directory / f"public-probe-failure-{action}.json", error.receipt)
+        except Exception:
+            # Retaining diagnostics must not replace the original safe failure
+            # or prevent the caller's existing stop/cleanup handling.
+            error.add_note("public probe failure receipt could not be retained")
+        raise error from None
 
 
 class PublicRecovery:
@@ -169,16 +206,18 @@ class PublicRecovery:
             "-B",
             "-c",
             self.program,
-            stdin=evidence.canonical_bytes({"action": action, **arguments}),
+            stdin=evidence.canonical_bytes(
+                {"failure_protocol": errors.FORMAT, "action": action, **arguments}
+            ),
             # Failure handling stops issuance; it cannot resume or produce a
             # passing receipt after the original qualification deadline.
             timeout=30
             if action in {"stop_failed", "diagnostic_stop_failed"}
             else min(180, self._remaining()),
         )
-        result = json.loads(raw)
-        if not isinstance(result, dict):
-            raise ValueError("public recovery probe did not return an observation")
+        result = observation(
+            raw, action=action, directory=self.directory, context_sha256=self.context_sha256
+        )
         if action not in {"stop_failed", "diagnostic_stop_failed"}:
             self._remaining()
         return cast("dict[str, object]", result)

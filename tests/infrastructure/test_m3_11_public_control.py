@@ -12,11 +12,13 @@ import threading
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from typing import cast
 from unittest.mock import Mock
 
 import pytest
 
 from scripts import m3_11_public_caddy as policy
+from scripts import m3_11_public_errors as errors
 from scripts import m3_11_public_probe as probe
 
 
@@ -41,7 +43,9 @@ def control(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, object]]:
                 self.wfile.write(body)
 
             def do_POST(self) -> None:
-                state["config"] = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                incoming = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if not state.get("ignore_load"):
+                    state["config"] = incoming
                 calls.append(("POST", self.path))
                 self.reply(b"")
 
@@ -119,3 +123,32 @@ def test_suspension_rejects_legacy_or_changed_configuration_before_control(
     with pytest.raises(ValueError, match="predates controlled"):
         probe._suspend("a" * 64)
     admin.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "fault,code", [("status", "admin-response-unverified"), ("readback", "issuance-still-active")]
+)
+def test_actual_private_socket_suspension_failures_have_distinct_safe_codes(
+    control: dict[str, object],
+    monkeypatch: pytest.MonkeyPatch,
+    fault: str,
+    code: str,
+) -> None:
+    nonce = "0198d17f-6f4a-7000-8000-000000000001"
+    monkeypatch.setattr(probe, "_guard", Mock(return_value={"nonce": nonce}))
+    monkeypatch.setattr(probe, "_closed", Mock())
+    monkeypatch.setattr(probe, "_document", Mock(return_value={}))
+    monkeypatch.setattr(probe, "_record", Mock())
+    monkeypatch.setattr(probe, "_read", Mock(return_value=policy.configuration(nonce)))
+    monkeypatch.setattr(probe, "ready", Mock(return_value={"ready": False}))
+    if fault == "status":
+        control["status"] = 500
+    else:
+        control["ignore_load"] = True
+    with pytest.raises(ValueError) as caught:
+        probe.suspend("a" * 64)
+    payload = errors.failure("suspend", caught.value, context_sha256="a" * 64)
+    assert cast("dict[str, object]", payload[errors.KEY])["code"] == code
+    assert control["calls"] == (
+        [("POST", "/load")] if fault == "status" else [("POST", "/load"), ("GET", "/config/")]
+    )

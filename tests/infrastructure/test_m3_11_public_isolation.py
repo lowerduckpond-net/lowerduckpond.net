@@ -412,13 +412,23 @@ def test_guest_program_uses_real_helpers_and_no_token_argv(
     assert SECRET not in program
     result = subprocess.run(  # noqa: S603 - real helpers; unset mode forbids mutation
         [sys.executable, "-c", program],
-        input=b'{"action":"install_isolated","value":{}}',
+        input=json.dumps(
+            {
+                "action": "install_isolated",
+                "value": {},
+                "failure_protocol": "lowerduckpond-public-probe-failure-v1",
+            }
+        ).encode(),
         capture_output=True,
         check=False,
         timeout=10,
     )
-    assert result.returncode != 0
-    assert b"isolated public DNS mode is unset or malformed" in result.stderr
+    assert result.returncode == 0  # Transport succeeded; typed observation must fail closed.
+    from scripts.m3_11_public_errors import ProbeError, observation  # noqa: PLC0415
+
+    with pytest.raises(ProbeError, match="isolation-network-unset"):
+        observation(result.stdout, action="install_isolated")
+    assert result.stderr == b""
     assert SECRET.encode() not in result.stdout + result.stderr
 
 
