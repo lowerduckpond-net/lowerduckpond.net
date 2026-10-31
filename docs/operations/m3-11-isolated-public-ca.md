@@ -44,6 +44,29 @@ The shared public sequence then requires:
 The functional observation explicitly leaves cleanup pending. It cannot serve
 as a complete isolated prerequisite or combined qualification result.
 
+## Failure observations
+
+The controller opts into the selected guest's typed failure protocol. A failed
+action returns only a strict envelope with the expected action/context, fixed
+assertion and exception labels, and bounded line numbers from selected helper
+modules. The controller rejects that envelope before accepting any observation,
+retains `public-probe-failure-<action>.json` once, and raises a safe error through
+the existing failure-stop and cleanup path. Malformed or mismatched envelopes
+fail closed without saving their raw bytes. Receipt-write failure cannot hide
+the action failure or suppress cleanup; cleanup failures cannot replace the
+primary failure.
+
+Exception messages, arguments, notes, chains, locals, source lines, configuration
+and raw stderr are not diagnostic output. Known native TLS assertions use only
+an exact fixed-code allowlist. Unknown failures remain unclassified. A transport
+failure without a valid envelope remains an ordinary failed command.
+
+Direct guest consumers, including native host stop/cleanup, do not opt in and
+retain nonzero failure exits. A guest-program digest change requires fresh
+source/runtime/preparation bindings. It cannot update or reinterpret a consumed
+attempt. A suspension failure still fails the sequence before interruption,
+reboot or any success receipt; reporting an error does not relax that gate.
+
 ## DNS modes
 
 The strict plan requires a mode and resolver list. Missing or ambiguous input

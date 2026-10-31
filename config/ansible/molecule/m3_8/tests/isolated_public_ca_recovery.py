@@ -20,12 +20,13 @@ from pathlib import Path
 
 import restore_scenarios as restore
 from lowerduckpond_static_host_agent.host_restore_coordinator import COORDINATOR_SECONDS
-from public_ca_recovery import PublicRecovery, program
+from public_ca_recovery import PublicRecovery, observation, program
 from restore_fixture import Fixture
 from testinfra.host import Host
 
 from scripts import m3_11_isolation_preparation as preparation
 from scripts import m3_11_public_caddy as policy
+from scripts import m3_11_public_errors as errors
 from scripts import qualification_restore as owned
 from scripts.m3_11_isolation_contract import (
     CONTEXT_FORMAT,
@@ -104,6 +105,7 @@ def observe_preparation(
         stdin=policy.canonical(
             {
                 "action": "observe_prepared",
+                "failure_protocol": errors.FORMAT,
                 "binary": fixture.binary,
                 "binary_sha256": binary_sha,
                 "restore_id": fixture.restore_id,
@@ -154,7 +156,7 @@ def observe_preparation(
             ).hexdigest(),
             "source_fence_sha256": hashlib.sha256(fixture.fence).hexdigest(),
             "guest_program_sha256": hashlib.sha256(guest.encode()).hexdigest(),
-            "restore": json.loads(raw),
+            "restore": observation(raw, action="observe_prepared", directory=directory),
             "captured_at": captured,
             "actors": {
                 name: {key: item[key] for key in ("id", "name", "owner", "image")}
@@ -302,7 +304,7 @@ class IsolatedRecovery(PublicRecovery):
         self.program = program(fixture, isolated=True)
         if hashlib.sha256(self.program.encode()).hexdigest() != prepared["guest_program_sha256"]:
             raise ValueError("isolated selected guest program changed after preparation")
-        original_restore = json.loads(
+        original_restore = observation(
             fixture.command(
                 "docker",
                 "exec",
@@ -316,13 +318,16 @@ class IsolatedRecovery(PublicRecovery):
                 stdin=policy.canonical(
                     {
                         "action": "observe_prepared",
+                        "failure_protocol": errors.FORMAT,
                         "binary": fixture.binary,
                         "binary_sha256": plan.caddy_binary_sha256,
                         "restore_id": fixture.restore_id,
                     }
                 ),
                 timeout=60,
-            )
+            ),
+            action="observe_prepared",
+            directory=directory,
         )
         if original_restore != prepared["restore"]:
             raise ValueError("isolated genuine reconstruction changed after preparation")
@@ -475,12 +480,17 @@ class IsolatedRecovery(PublicRecovery):
                 "-B",
                 "-c",
                 self.program,
-                stdin=policy.canonical({"action": "install_isolated", **arguments}),
+                stdin=policy.canonical(
+                    {"failure_protocol": errors.FORMAT, "action": "install_isolated", **arguments}
+                ),
                 timeout=min(180, self._remaining()),
             )
-            result = json.loads(raw)
-            if not isinstance(result, dict):
-                raise ValueError("isolated install did not return an observation")
+            result = observation(
+                raw,
+                action="install_isolated",
+                directory=self.directory,
+                context_sha256=self.context_sha256,
+            )
             self._remaining()
             return result
         return super().call(action, **arguments)
