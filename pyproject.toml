@@ -417,6 +417,7 @@ files = [
   "scripts/m3_11_public_probe.py",
   "scripts/m3_11_public_errors.py",
   "tests/infrastructure/test_m3_11_public_errors.py",
+  "tests/infrastructure/test_m3_11_public_failure_boundary.py",
   "scripts/m3_11_pending_probe.py",
   "tests/infrastructure/test_m3_11_combined_accounting.py",
   "tests/infrastructure/test_m3_11_public_recovery.py",
