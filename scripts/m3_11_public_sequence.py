@@ -49,7 +49,7 @@ def exercise(recovery: Recovery, value: dict[str, object]) -> dict[str, object]:
         recovery._remaining()
         observation = recovery.witness.sample("activity")
         observations.append(observation.sha256)
-        if observation.record_count:
+        if observation.record_count and recovery.witness.both_zones_observed:
             interruption_cleanup = recovery.drain_issuance()
             interrupted = recovery.call("interrupt")
             break

@@ -422,6 +422,7 @@ files = [
   "tests/infrastructure/test_m3_11_combined_accounting.py",
   "tests/infrastructure/test_m3_11_public_recovery.py",
   "tests/infrastructure/test_m3_11_public_control.py",
+  "tests/infrastructure/test_m3_11_public_interruption.py",
   "scripts/m3_11_phase_receipts.py",
   "scripts/m3_11_combined_local.py",
   "scripts/m3_11_combined_live.py",

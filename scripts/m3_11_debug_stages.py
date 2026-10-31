@@ -57,7 +57,7 @@ def public_recovery(
             ready = public.call("ready")
             if ready["ready"]:
                 break
-            if observation.record_count and not interrupted:
+            if observation.record_count and public.witness.both_zones_observed and not interrupted:
                 public.drain_issuance(diagnostic=True)
                 before = public.call("diagnostic_interrupt")
                 fixture.reboot()
@@ -65,7 +65,7 @@ def public_recovery(
                 public.peer(opened=False)
                 if before != after:
                     raise ValueError("diagnostic public reboot changed retained account bytes")
-                public.call("diagnostic_start")
+                public.call("diagnostic_start", resume=True)
                 interrupted = True
             public._wait()
         public.witness.require_absent("cleanup")

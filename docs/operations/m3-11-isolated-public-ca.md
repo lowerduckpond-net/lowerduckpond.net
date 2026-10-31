@@ -44,6 +44,39 @@ The shared public sequence then requires:
 The functional observation explicitly leaves cleanup pending. It cannot serve
 as a complete isolated prerequisite or combined qualification result.
 
+## Controlled interruption
+
+The disposable issuer boots with no applications, behind its existing closed
+ingress gate. The initial leg explicitly loads a sealed configuration that
+publishes real DNS-01 challenges but holds every subject before CA validation.
+Its `propagation_delay` equals the existing 1,800-second coordinator budget and
+starts after that budget's clock. The controller cancels the hold after actual
+TXT activity has been independently observed in both zones; it never waits for
+the hold timer to expire. This prevents a fast issuer from completing while the
+controller is making remote DNS observations.
+
+This ordering uses the pinned CertMagic implementation: [`Present` publishes the
+record](https://github.com/caddyserver/certmagic/blob/c7496f1a6a93025c528b03cde701bf06394440fd/solvers.go#L240-L301),
+then [`Wait` observes the delay or context cancellation before propagation checks](https://github.com/caddyserver/certmagic/blob/c7496f1a6a93025c528b03cde701bf06394440fd/solvers.go#L383-L443).
+[acmez initiates CA validation only after that wait succeeds](https://github.com/mholt/acmez/blob/7dcf056529711646f5b419cac305fa170b108bb7/client.go#L398-L449).
+Reload acknowledgement is not proof of DNS cleanup: the existing positive
+absence observations remain required before stop and reboot. An uncertain
+provider write or failed cleanup cannot become passing evidence.
+
+Bootstrap, held and normal configurations are immutable inputs. The helper
+checks the actual private admin configuration after every load. Interruption
+still rejects completed TLS readiness and also rejects any certificate material
+in stopped storage; a real ACME account must remain. After the verified reboot,
+the service again boots without applications, then explicitly loads the normal
+configuration with no hold. Authoritative propagation, production CA, public
+trust, four-subject TLS readiness and ingress checks remain unchanged.
+
+The hold changes neither execution deadlines nor credential lifetime. Its
+guarantee is bounded by the original public phase, not a scheduler-hard stop
+after timeout. Native failure handling and independent cleanup remain owners of
+any late or uncertain effects. Fresh nonce and empty account/certificate storage
+remain mandatory; cached authorization cannot substitute for real TXT evidence.
+
 ## Failure observations
 
 The controller opts into the selected guest's typed failure protocol. A failed
