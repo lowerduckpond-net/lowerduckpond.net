@@ -20,7 +20,7 @@ repos:
         args: ["--fix=no"]
       - id: trailing-whitespace
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: b82a6c8896e491b9cb377a99ff3412131920681b # v0.23.2
+    rev: 341e2a331ba578029e66c2e01183e7a6b5ca9ab4 # v0.24.0
     hooks:
       - id: markdownlint-cli2
   - repo: https://github.com/gitleaks/gitleaks
