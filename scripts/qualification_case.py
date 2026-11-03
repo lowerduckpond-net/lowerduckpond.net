@@ -197,7 +197,14 @@ def validate_installed_receipt(receipt: dict[str, object], run_id: str) -> dict[
 
 
 @protected_run
-def phase(directory: Path, environment: dict[str, str], uv: str, name: str) -> int:
+def phase(
+    directory: Path,
+    environment: dict[str, str],
+    uv: str,
+    name: str,
+    *,
+    project: Path | None = None,
+) -> int:
     from scripts.qualification_disposition import require_available  # noqa: PLC0415
 
     require_available(directory)
@@ -216,7 +223,7 @@ def phase(directory: Path, environment: dict[str, str], uv: str, name: str) -> i
                 "m3_8",
             ],
             env=environment,
-            cwd=ROOT / "config/ansible",
+            cwd=(project or ROOT) / "config/ansible",
             stdout=stream,
             stderr=subprocess.STDOUT,
             check=False,

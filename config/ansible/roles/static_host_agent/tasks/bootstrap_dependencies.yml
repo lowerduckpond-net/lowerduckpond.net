@@ -1,0 +1,33 @@
+---
+# The completed M3.10 predecessor predates both helpers. Install admission first:
+# an interruption must never leave a new publication gate without its dependency.
+- name: Create the bootstrap command directory
+  ansible.builtin.file:
+    path: /usr/local/libexec/lowerduckpond
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install bootstrap-independent root recovery admission
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../host_recovery/files/host-restore-gate"
+    dest: /usr/local/libexec/lowerduckpond/host-restore-gate
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Require ordinary recovery admission before bootstrap configuration
+  ansible.builtin.command:
+    argv:
+      - /usr/local/libexec/lowerduckpond/host-restore-gate
+      - --ordinary
+  changed_when: false
+
+- name: Install the bootstrap static configuration interpreter
+  ansible.builtin.copy:
+    src: "{{ role_path }}/../base/files/configure-static-python"
+    dest: /usr/local/libexec/lowerduckpond/configure-static-python
+    owner: root
+    group: root
+    mode: "0700"

@@ -77,8 +77,10 @@ The production check validates the fresh fixture receipt against the controller'
 approved policy digest before reading production inputs. Its audit child must match
 the receipt's exact native identity and original expiry, including when an approved
 lease is reused by a later attempt. This permits explicitly approved milestone
-lifetimes beyond eight days; ordinary audit-token callers retain their eight-day
-limit and production Caddy still requires its exact non-expiring policy.
+lifetimes beyond the ordinary workstation maximum; ordinary M3.10/M3.11
+audit-token callers allow a 90-day token with a 91-day maximum remaining lifetime
+for date-based expiry selection. Production Caddy still requires its exact
+non-expiring policy, and the separate M3.7 audit path retains its eight-day limit.
 
 Stage the independent bundle using its verified native reader document. Its URL
 placeholder is `https://independent.invalid`; the action substitutes only the
@@ -1680,8 +1682,8 @@ remaining from now**: the 660-minute outer attempt ceiling plus a two-hour clean
 and reporting margin. It does this after dependency sync and before building
 the storage fixture, allocating hosts, or writing qualification data to providers.
 A short-lived token is named in the error with an instruction to roll it.
-The existing eight-day audit-token and 91-day Page Rules maximum remaining
-lifetimes still apply. Old issue/start dates retained by rolled tokens are valid;
+The audit-token and Page Rules maximum remaining lifetimes are both 91 days,
+permitting a 90-day token plus the existing one-day date-selection allowance. Old issue/start dates retained by rolled tokens are valid;
 these checks do not measure the original issue-to-expiry interval.
 
 To check the same starting condition separately in the private environment shell:
@@ -2038,6 +2040,25 @@ never erased or treated as a new M3.10 deployment. A passed preflight does not
 replace final combined qualification or authorize production convergence.
 
 ## Explicit production convergence and resume
+
+Bootstrap installs only its two missing executable prerequisites after verifying
+the original leased transaction and configuration phase: the bootstrap-independent
+recovery admission gate, then the root static configuration interpreter. Ordinary
+recovery admission must pass between those copies. Pending recovery remains
+closed; this does not create recovery state, change firewall mode, recreate static
+locks or run the broad base role. A departure between copies preserves the same
+`namespace.started` journal and resumes with the original artifact and fences.
+
+The installed `production-rollout` regression first converges the actual completed
+M3.10 predecessor `22147a64e9b39e7965201cf2d96e07aeaa6d3ca1`, before any candidate
+site tasks can seed either dependency. Only its fixture harness is adapted to
+the current owned container names, dynamic SSH port and pinned MinIO recipe;
+historical site roles, build scripts, lockfiles and artifact sources stay exact.
+It interrupts real Ansible after the first
+acknowledged dependency copy, checks unchanged lock inodes and old artifact
+selection, then resumes with a new SSH owner through the existing namespace,
+retained-backup, idempotence and acceptance gates. This is disposable diagnostic
+coverage, not another production deployment or a replacement live qualification.
 
 After P6c merges and the final live qualification passes, run the following only
 as the separately authorized production step. Use clean, current `main`, the

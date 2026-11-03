@@ -689,6 +689,7 @@ def _require_account_token_policies(  # noqa: PLR0913 -- all credential roles ar
     zone_ids: frozenset[str],
     now: datetime,
     minimum_audit_remaining: timedelta = timedelta(),
+    maximum_audit_remaining: timedelta = MAXIMUM_AUDIT_TOKEN_REMAINING,
     approved_audit: tuple[str, datetime] | None = None,
 ) -> None:
     audit_details = _account_token_details(
@@ -727,12 +728,13 @@ def _require_account_token_policies(  # noqa: PLR0913 -- all credential roles ar
             raise ProductionEdgePreflightError(
                 "the temporary token-audit identity or expiry differs from its approved lease"
             )
-        if audit_details.get("not_before") and _timestamp(audit_details["not_before"]) > now:
-            raise ProductionEdgePreflightError("the temporary token-audit token is not valid yet")
-    elif not now < expires_on <= now + MAXIMUM_AUDIT_TOKEN_REMAINING:
+    elif not now < expires_on <= now + maximum_audit_remaining:
         raise ProductionEdgePreflightError(
-            "the temporary token-audit token must expire within 8 days from now"
+            "the temporary token-audit token must expire within "
+            f"{maximum_audit_remaining.days} days from now"
         )
+    if audit_details.get("not_before") and _timestamp(audit_details["not_before"]) > now:
+        raise ProductionEdgePreflightError("the temporary token-audit token is not valid yet")
     if expires_on - now < minimum_audit_remaining:
         hours = minimum_audit_remaining.total_seconds() / 3600
         raise ProductionEdgePreflightError(

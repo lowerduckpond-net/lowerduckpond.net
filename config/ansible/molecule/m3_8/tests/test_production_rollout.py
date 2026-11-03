@@ -10,7 +10,15 @@ def test_installed_production_rollout_preserves_original_evidence(
 ) -> None:
     assert host.run("systemctl is-active caddy.service").rc == 0
     fixture = Fixture(monkeypatch)
+    locks = fixture.lock_state()
+    partial = fixture.run("bootstrap")
+    assert partial[-1][0] == "namespace.started"
+    fixture.bootstrap_dependencies(partial=True)
+    assert fixture.lock_state() == locks
     namespace = fixture.run("namespace")
+    assert namespace[: len(partial)] == partial
+    fixture.bootstrap_dependencies()
+    assert fixture.lock_state() == locks
     assert namespace[-1][0] == "namespace"
     capture = fixture.run("backup")
     assert capture[: len(namespace)] == namespace

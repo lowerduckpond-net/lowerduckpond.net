@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from scripts import qualification_production_predecessor as predecessor
 from scripts import qualification_restore as restore
 from scripts.qualification_case import (
     ROOT,
@@ -46,6 +47,20 @@ def stage_receipts(
     return None
 
 
+def case_configuration(
+    directory: Path, verify: Path, case: str
+) -> tuple[dict[str, object], Path | None]:
+    configuration: dict[str, object] = {
+        "scenario": {"create_sequence": ["dependency", "create"]},
+        "ansible": {"playbooks": {"verify": str(verify)}},
+    }
+    previous = None
+    if case == "production-rollout":
+        previous, variables = predecessor.prepare(directory)
+        configuration["provisioner"] = {"ansible_args": ["--extra-vars", "@" + str(variables)]}
+    return configuration, previous
+
+
 def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) -> int:  # noqa: PLR0915 - distinct retained-failure and successful teardown paths
     group = GROUPS[case]
     with run_lease(directory, create=True):
@@ -81,17 +96,19 @@ def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) 
         verify = directory / "verify.yml"
         with verify.open("x", encoding="ascii") as stream:
             json.dump(playbook, stream)
+        configuration, previous = case_configuration(directory, verify, case)
         with (directory / "case-base.yml").open("x", encoding="ascii") as stream:
             json.dump(
-                {
-                    "scenario": {"create_sequence": ["dependency", "create"]},
-                    "ansible": {"playbooks": {"verify": str(verify)}},
-                },
+                configuration,
                 stream,
             )
         identities: dict[str, str] = {}
         for name in group.phases:
-            status = phase(directory, environment, uv, name)
+            status = (
+                phase(directory, environment, uv, name, project=previous)
+                if previous is not None and name in {"converge", "idempotence"}
+                else phase(directory, environment, uv, name)
+            )
             if name == "create":
                 try:
                     identities = record_created_containers(directory, environment, status)

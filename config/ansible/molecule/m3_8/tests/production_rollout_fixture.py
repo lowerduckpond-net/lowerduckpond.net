@@ -11,9 +11,9 @@ import json
 import os
 import shlex
 import shutil
-import tarfile
 import tempfile
 import uuid
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -29,16 +29,14 @@ from scripts import m3_11_production_workflow as workflow
 from scripts import production_qualification_inputs as inputs
 from scripts.m3_11_production_proposals import Proposals
 from scripts.m3_11_production_replica import Replica
-from scripts.m3_11_production_session import Logs, controller
+from scripts.m3_11_production_session import Logs, Result, controller
 from scripts.qualification_case import owned_containers
 from scripts.qualification_context import ARTIFACT_ENV, HOST_ENV
+from scripts.qualification_production_predecessor import PREDECESSOR, REPOSITORY
 
 ROOT = Path(__file__).resolve().parents[5]
-# Last main before the production controller; its real site config has recovery
-# and rotation disabled and retains the completed empty M3.10 layout.
-PREDECESSOR = "69859cbb949d95c1aae6959363773cbf1d8e126b"
-REPOSITORY = "/var/cache/lowerduckpond-backup/rollout-fixture-repository"
 INSTALL = "/opt/lowerduckpond/static-host-agent"
+BOOTSTRAP_DEPARTURE = 86
 
 
 class ControllerDepartureError(Exception):
@@ -56,7 +54,9 @@ class Fixture:
         self.directory.mkdir(mode=0o700)
         self.logs = Logs(self.directory)
         self.artifact = self.directory / "candidate.tar"
-        shutil.copyfile(self.source_artifact, self.artifact)
+        self.command(
+            "candidate-build", [str(ROOT / "scripts/build-static-host-agent"), str(self.artifact)]
+        )
         self.artifact.chmod(0o400)
         self.digest = hashlib.sha256(self.artifact.read_bytes()).hexdigest()
         self.patch = monkeypatch
@@ -77,46 +77,13 @@ class Fixture:
         return self.command(name, ["docker", "exec", "-i", self.host, *arguments], data)
 
     def predecessor(self) -> None:
-        previous = self.directory / "predecessor"
-        previous.mkdir(mode=0o700)
-        archive = self.logs.run("previous-source", ["git", "-C", str(ROOT), "archive", PREDECESSOR])
-        assert archive.status == 0
-        with tarfile.open(archive.stdout) as source:
-            source.extractall(previous, filter="data")
-        variables = self.directory / "predecessor-variables.json"
-        variables.write_bytes(
-            journal.canonical({"backup_node_name": probe.NODE, "backup_repository": REPOSITORY})
-        )
-        base = self.directory / "predecessor-base.yml"
-        base.write_bytes(
-            journal.canonical(
-                {"provisioner": {"ansible_args": ["--extra-vars", "@" + str(variables)]}}
+        # The group's first converge/idempotence ran this actual predecessor,
+        # never the candidate site. Assert both historically absent dependencies.
+        for name in ("configure-static-python", "host-restore-gate"):
+            self.remote(
+                "previous-missing-" + name,
+                ["test", "!", "-e", "/usr/local/libexec/lowerduckpond/" + name],
             )
-        )
-        environment = {
-            key: value for key, value in self.environment.items() if not key.startswith("MOLECULE_")
-        }
-        environment["MOLECULE_EPHEMERAL_DIRECTORY"] = self.environment[
-            "MOLECULE_EPHEMERAL_DIRECTORY"
-        ]
-        result = self.logs.run(
-            "previous-converge",
-            [
-                "uv",
-                "run",
-                "--directory",
-                str(previous / "config/ansible"),
-                "--frozen",
-                "molecule",
-                "--base-config",
-                str(base),
-                "converge",
-                "--scenario-name",
-                "m3_8",
-            ],
-            environment=environment,
-        )
-        assert result.status == 0, f"preceding site convergence failed: {result.stdout}"
         shutil.copyfile(self.artifact, self.source_artifact)
         self.source_artifact.with_suffix(".tar.sha256").write_text(self.digest + "\n")
         selected = (
@@ -126,6 +93,7 @@ class Fixture:
             .rsplit("/", 1)[-1]
         )
         assert selected != self.digest
+        self.previous_digest = selected
         self.remote(
             "previous-completion",
             ["bash", "-s", "--", "record", selected, PREDECESSOR],
@@ -330,6 +298,90 @@ class Fixture:
             ],
         )
 
+    def interrupt_bootstrap(self, logs: Logs, patch: pytest.MonkeyPatch, attempt: Path) -> None:
+        original = logs.run
+        marker = attempt / "bootstrap-departure"
+
+        def interrupted(
+            name: str,
+            arguments: Sequence[str],
+            *,
+            data: bytes = b"",
+            environment: Mapping[str, str] | None = None,
+        ) -> Result:
+            if name == "ansible-bootstrap":
+                assert environment is not None
+                environment = {
+                    **environment,
+                    "ANSIBLE_CALLBACK_PLUGINS": str(
+                        ROOT / "config/ansible/molecule/m3_8/callback_plugins"
+                    )
+                    + os.pathsep
+                    + environment["ANSIBLE_CALLBACK_PLUGINS"],
+                    "ANSIBLE_CALLBACKS_ENABLED": environment["ANSIBLE_CALLBACKS_ENABLED"]
+                    + ",ldp_bootstrap_departure",
+                    "LDP_M3_11_TEST_DEPARTURE": str(marker),
+                }
+            result = original(name, arguments, data=data, environment=environment)
+            if name == "ansible-bootstrap":
+                assert result.status == BOOTSTRAP_DEPARTURE
+                assert marker.read_text() == "acknowledged-first-dependency\n"
+            return result
+
+        patch.setattr(logs, "run", interrupted)
+
+    def lock_state(self) -> bytes:
+        return self.remote(
+            "lock-inodes",
+            [
+                "python3",
+                "-c",
+                "import json;from pathlib import Path;"
+                "root=Path('/var/lib/lowerduckpond/static/locks');"
+                "print(json.dumps({n:[(s:= (root/n).lstat()).st_dev,s.st_ino,s.st_mode,"
+                "s.st_uid,s.st_gid,s.st_nlink,s.st_size] "
+                "for n in ['intake.lock','export.lock','publication.lock',"
+                "'tenant-state.lock']},sort_keys=True))",
+            ],
+        )
+
+    def bootstrap_dependencies(self, *, partial: bool = False) -> None:
+        self.remote(
+            "bootstrap-dependency-proof",
+            [
+                "python3",
+                "-c",
+                "import hashlib,os,stat,sys;from pathlib import Path;root=Path(sys.argv[1]);"
+                "gate=root/'host-restore-gate';wrapper=root/'configure-static-python';"
+                "expected=not bool(int(sys.argv[2]));"
+                "assert gate.is_file() and gate.stat().st_uid==0 and gate.stat().st_gid==0;"
+                "assert stat.S_IMODE(gate.stat().st_mode)==0o755;"
+                "assert hashlib.sha256(gate.read_bytes()).hexdigest()==sys.argv[3];"
+                "assert wrapper.exists()==expected;"
+                "assert not expected or (stat.S_IMODE(wrapper.stat().st_mode)==0o700 "
+                "and wrapper.stat().st_uid==0 and wrapper.stat().st_gid==0 "
+                "and hashlib.sha256(wrapper.read_bytes()).hexdigest()==sys.argv[4])",
+                "/usr/local/libexec/lowerduckpond",
+                str(int(partial)),
+                hashlib.sha256(
+                    (
+                        ROOT / "config/ansible/roles/host_recovery/files/host-restore-gate"
+                    ).read_bytes()
+                ).hexdigest(),
+                hashlib.sha256(
+                    (ROOT / "config/ansible/roles/base/files/configure-static-python").read_bytes()
+                ).hexdigest(),
+            ],
+        )
+
+        selected = (
+            self.remote("bootstrap-selection", ["readlink", INSTALL + "/current"])
+            .decode()
+            .strip()
+            .rsplit("/", 1)[-1]
+        )
+        assert selected == (self.previous_digest if partial else self.digest)
+
     def run(self, stop: str | None = None) -> list[tuple[str, bytes]]:
         attempt = Path(tempfile.mkdtemp(prefix="controller-", dir=self.directory))
         fixture = self
@@ -350,6 +402,7 @@ class Fixture:
                 self.directory / "proposals", owner=os.geteuid(), create=True
             ) as retained,
             controller(self.ssh, attempt) as session,
+            self.patch.context() as interruption,
         ):
             pair = Replica(local, session)
             proposals = RetainedProposals(retained, attempt)
@@ -366,7 +419,11 @@ class Fixture:
                         "original namespace committed before controller departure"
                     )
 
-            if stop:
+            if stop == "bootstrap":
+                self.interrupt_bootstrap(session.logs, interruption, attempt)
+                with pytest.raises(ValueError, match="production playbook failed"):
+                    workflow.run(pair, self.artifact, proposals, guard)
+            elif stop:
                 with pytest.raises(ControllerDepartureError):
                     workflow.run(pair, self.artifact, proposals, guard)
             else:

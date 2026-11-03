@@ -11,6 +11,7 @@ from typing import cast
 
 import pytest
 
+from scripts import check_m3_7_production_edge as legacy_edge
 from scripts import check_m3_10_provider as provider
 from scripts.check_m3_7_production_edge import CloudflareClient, ProductionEdgePreflightError
 
@@ -114,6 +115,8 @@ class TokenFixture:
                 resources = {"com.cloudflare.api.account.zone.*": "*"}
         elif self.defect == "audit-excess-permission":
             permissions.append("DNS Write")
+        elif self.defect == "audit-all-accounts":
+            resources = {"com.cloudflare.api.account.*": "*"}
         now = datetime.now(UTC)
         document: dict[str, object] = {
             "id": _RUNTIME if runtime else _AUDIT,
@@ -137,7 +140,7 @@ class TokenFixture:
         if not runtime and self.defect == "audit-expired":
             document["expires_on"] = (now - timedelta(hours=1)).isoformat()
         if not runtime and self.defect == "audit-too-long":
-            document["expires_on"] = (now + timedelta(days=9)).isoformat()
+            document["expires_on"] = (now + timedelta(days=92)).isoformat()
         if not runtime:
             document.update(self.audit_overrides)
         return deepcopy(document)
@@ -149,10 +152,12 @@ class TokenFixture:
         (timedelta(days=365), timedelta(seconds=1), None),
         (timedelta(days=365), timedelta(days=7, hours=12), None),
         (timedelta(days=365), timedelta(days=8), None),
-        (timedelta(days=365), timedelta(), "must expire within 8 days from now"),
-        (timedelta(days=365), timedelta(seconds=-1), "must expire within 8 days from now"),
-        (timedelta(days=365), timedelta(days=8, seconds=1), "must expire within 8 days from now"),
-        (timedelta(days=365), timedelta(days=14), "must expire within 8 days from now"),
+        (timedelta(days=365), timedelta(days=90), None),
+        (timedelta(days=365), timedelta(days=91), None),
+        (timedelta(days=365), timedelta(), "must expire within 91 days from now"),
+        (timedelta(days=365), timedelta(seconds=-1), "must expire within 91 days from now"),
+        (timedelta(days=365), timedelta(days=91, seconds=1), "must expire within 91 days from now"),
+        (timedelta(days=365), timedelta(days=92), "must expire within 91 days from now"),
         (timedelta(seconds=-1), timedelta(days=1), "issue date is in the future"),
     ],
 )
@@ -290,3 +295,77 @@ def test_cfat_runtime_and_auditor_use_account_endpoints_with_intact_bearer_token
     )
     assert ("caddy", f"/accounts/{_ACCOUNT}/tokens/verify") in fixture.calls
     assert ("audit", f"/accounts/{_ACCOUNT}/tokens/verify") in fixture.calls
+
+
+@pytest.mark.parametrize(
+    "defect", ["audit-excess-permission", "audit-all-accounts", "audit-revoked"]
+)
+def test_ninety_day_audit_token_keeps_exact_read_only_account_scope(
+    monkeypatch: pytest.MonkeyPatch, defect: str
+) -> None:
+    now = datetime(2026, 11, 3, tzinfo=UTC)
+    fixture = TokenFixture(
+        defect,
+        audit_overrides={
+            "expires_on": (now + timedelta(days=90)).isoformat(),
+            "issued_on": (now - timedelta(days=1)).isoformat(),
+        },
+    )
+    monkeypatch.setattr(provider, "CloudflareClient", fixture.client)
+    with pytest.raises(ProductionEdgePreflightError):
+        provider.check_caddy_token(
+            {
+                "CLOUDFLARE_API_TOKEN": _SECRETS["edge"],
+                "CADDY_CLOUDFLARE_API_TOKEN": _SECRETS["caddy"],
+                "M3_10_TOKEN_AUDIT_TOKEN": _SECRETS["audit"],
+                "CLOUDFLARE_ZONE_ID": "b" * 32,
+                "CLOUDFLARE_TENANT_ZONE_ID": "c" * 32,
+            },
+            account_id=_ACCOUNT,
+            now=now,
+        )
+
+
+def test_ninety_day_audit_token_cannot_start_in_the_future(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = datetime(2026, 11, 3, tzinfo=UTC)
+    fixture = TokenFixture(
+        None,
+        audit_overrides={
+            "expires_on": (now + timedelta(days=90)).isoformat(),
+            "issued_on": (now - timedelta(days=1)).isoformat(),
+            "not_before": (now + timedelta(seconds=1)).isoformat(),
+        },
+    )
+    monkeypatch.setattr(provider, "CloudflareClient", fixture.client)
+    with pytest.raises(ProductionEdgePreflightError, match="not valid yet"):
+        provider.check_caddy_token(
+            {
+                "CLOUDFLARE_API_TOKEN": _SECRETS["edge"],
+                "CADDY_CLOUDFLARE_API_TOKEN": _SECRETS["caddy"],
+                "M3_10_TOKEN_AUDIT_TOKEN": _SECRETS["audit"],
+                "CLOUDFLARE_ZONE_ID": "b" * 32,
+                "CLOUDFLARE_TENANT_ZONE_ID": "c" * 32,
+            },
+            account_id=_ACCOUNT,
+            now=now,
+        )
+
+
+def test_m3_7_audit_caller_retains_its_eight_day_default() -> None:
+    now = datetime(2026, 11, 3, tzinfo=UTC)
+    fixture = TokenFixture(
+        None,
+        audit_overrides={
+            "issued_on": (now - timedelta(days=1)).isoformat(),
+            "expires_on": (now + timedelta(days=90)).isoformat(),
+        },
+    )
+    with pytest.raises(ProductionEdgePreflightError, match="within 8 days from now"):
+        legacy_edge._require_account_token_policies(
+            audit_client=fixture.client(_SECRETS["audit"]),
+            caddy_client=fixture.client(_SECRETS["caddy"]),
+            edge_client=None,
+            account_id=_ACCOUNT,
+            zone_ids=frozenset(_ZONES),
+            now=now,
+        )
