@@ -1,0 +1,83 @@
+{
+  "all_owned_actors_stopped": true,
+  "child_secret_copies_removed": true,
+  "final_verification_at": "2026-11-01T20:22:17.431019+00:00",
+  "finalizer_exit": {
+    "exited_at": "2026-11-01T19:38:37.548662+00:00",
+    "observer_returncode": 0,
+    "run_id": "01a195d0-292c-72b5-aeb6-4e91bd60f92d"
+  },
+  "format": "lowerduckpond-m3-11-closeout-cleanup-v1",
+  "historical_archive_deletes": 0,
+  "independent": {
+    "artifacts": {
+      "authentication": {
+        "artifact_id": 13097851432,
+        "body_sha256": "3aa39479506aa6e310f92929ff2373d8aace73a496ba62af3d2092b93ecfa4c0",
+        "zip_sha256": "051c478685567def2ad6da92ad3f2840e5d1092a3c35b3f8d92e9f4dfced33dc"
+      },
+      "cleanup": {
+        "artifact_id": 13097452456,
+        "body_sha256": "1a13046d8d0faa9fe5447c8e0570c02437b854c5592ef995186025e1b3e1e58b",
+        "zip_sha256": "cf904a09a41810bd5ca22db63cb86c26d2da5e80919a65f0b7a47b9a5a078484"
+      }
+    },
+    "event": "schedule",
+    "job_id": 124954239957,
+    "manifest_sha256": "82bd8e56941963a921ecd3bdcf65193e0649e8eb55269c25edda7794e17461bf",
+    "observed_at": "2026-11-01T19:31:52.280909Z",
+    "run_id": 41342146508,
+    "status": "verified-independent-closed",
+    "url": "https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/41342146508"
+  },
+  "limits": "Historical secret-free projection of retained receipts; no provider or production queries during records preparation.",
+  "native_lease_closed": true,
+  "original_closeout_record_sha256": "dda6022a63644d6061c8fdf1231d8c40f4408acf31716eda2acf57253a686e81",
+  "original_final_result_sha256": "6ce5a71474f73ec5b474ddc0dc7f6f46e6666f9711dce35fab968a9e769448d8",
+  "owned_actor_count": 3,
+  "private_copy_absence_checks": 17,
+  "proof_selection_correction_used": false,
+  "qualification_report_sha256": "971979d193fcb2561e58aac2fada3810ace033557c7bf5c929e64b541a7abbbe",
+  "reader_copies_removed": true,
+  "remaining_run_obligations": [],
+  "roles": {
+    "archive": {
+      "created": true,
+      "negative_authentication": "denied",
+      "provider_absent": true
+    },
+    "audit": {
+      "created": true,
+      "negative_authentication": "denied",
+      "provider_absent": true
+    },
+    "backup": {
+      "created": true,
+      "negative_authentication": "denied",
+      "provider_absent": true
+    },
+    "caddy": {
+      "created": true,
+      "negative_authentication": "denied",
+      "provider_absent": true
+    },
+    "observer": {
+      "created": true,
+      "negative_authentication": "denied",
+      "provider_absent": true
+    },
+    "operator": {
+      "created": true,
+      "negative_authentication": "denied",
+      "provider_absent": true
+    },
+    "page-rules": {
+      "created": true,
+      "negative_authentication": "denied",
+      "provider_absent": true
+    }
+  },
+  "run_id": "01a195d0-292c-72b5-aeb6-4e91bd60f92d",
+  "source_revision": "a3d35834ac8a0a28bc7723be017407b58bf4a73e",
+  "status": "cleanup-verified"
+}
