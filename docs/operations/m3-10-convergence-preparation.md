@@ -76,7 +76,7 @@ uses these existing infrastructure inputs:
 | `OPENTOFU_STATE_ACCESS_KEY_ID`, `OPENTOFU_STATE_SECRET_ACCESS_KEY`, `OPENTOFU_STATE_BUCKET`, `SPACES_REGION`, `OPENTOFU_ENCRYPTION_PASSPHRASE` | Read and decrypt existing production state. |
 | `SPACES_ACCESS_KEY_ID`, `SPACES_SECRET_ACCESS_KEY` | Existing workstation Spaces operator key for read-only bucket ACL, policy, and lifecycle inspection. |
 | `CLOUDFLARE_API_TOKEN` | Existing account-owned `production-edge-opentofu` token for current edge policy checks. |
-| `M3_10_TOKEN_AUDIT_TOKEN` | Temporary account-owned token with only Account API Tokens Read on the production account, expiring within eight days from now. |
+| `M3_10_TOKEN_AUDIT_TOKEN` | Temporary account-owned token with only Account API Tokens Read on the production account, a 90-day token expiring within 91 days from now (one day of date-picker allowance). |
 | `M3_10_PAGE_RULES_TOKEN` | Separate workstation user-owned token with only Page Rules Read on both production zones; a 30-day expiry is the default, with expiry within 91 days from now permitted. |
 | `CLOUDFLARE_ZONE_ID`, `CLOUDFLARE_TENANT_ZONE_ID` | Exact production zone identities. |
 | `CLOUDFLARE_ORIGIN_PULL_CERTIFICATE_ID`, `CLOUDFLARE_TENANT_ORIGIN_PULL_CERTIFICATE_ID` | Exact accepted active origin-pull leaves. |
@@ -105,8 +105,9 @@ account API, including for legacy account tokens without the new prefix.
 
 Temporary token expiry is measured from the current check time. Rolled tokens
 may retain an old original issue/start date; there is no maximum token age or
-issue-to-expiry interval. The eight-day audit and 91-day Page Rules bounds each
-include one extra day for Cloudflare's date-based expiry selection. Expired
+issue-to-expiry interval. The audit and Page Rules bounds are both 91 days from now, permitting a
+90-day selection with one extra day for Cloudflare's date-based expiry selection.
+The separate M3.7 audit-token path retains its eight-day bound. Expired
 tokens, inactive tokens, and future issue/start dates remain invalid.
 
 [Cloudflare's account-token compatibility matrix](https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/#compatibility-matrix)

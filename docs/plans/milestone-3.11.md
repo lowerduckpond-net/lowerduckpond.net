@@ -1092,9 +1092,12 @@ and pinned Mise tools. An operator runs production convergence explicitly;
 the coder task prepares everything independently possible before that handoff.
 
 M3.11 amends the temporary operator-token expiry policy to use remaining time:
-the Account API Tokens Read token must expire within eight days from the
-current check, and the Page Rules user token within 91 days. Each bound adds
-one day to the preceding seven-/90-day limit for provider date-based expiry.
+the M3.10/M3.11 Account API Tokens Read token and Page Rules user token must
+both expire within 91 days from the current check. Each bound permits a
+90-day selection plus one day for provider date-based expiry. The separate
+M3.7 audit-token caller retains its eight-day limit. This amendment changes
+remaining validity only: the audit token still has exactly Account API Tokens
+Read on the production account, with no provider write grant.
 Rolling a token may preserve its original issue/start date; no maximum token
 age or issue-to-expiry interval applies. Active status, unexpired credentials,
 future-date checks, exact permissions and exact resource scopes remain required.

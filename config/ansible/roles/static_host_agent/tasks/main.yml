@@ -4,6 +4,10 @@
   vars:
     m3_11_production_guard_stage: "{{ m3_11_production_static_stage | default('converge') }}"
 
+- name: Install the minimal M3.11 bootstrap dependencies after phase admission
+  ansible.builtin.import_tasks: bootstrap_dependencies.yml
+  when: m3_11_production_static_stage | default('converge') == 'bootstrap'
+
 - name: Require explicit completed-candidate verification authority
   ansible.builtin.assert:
     that:

@@ -47,6 +47,7 @@ from scripts.m3_10_page_rules import PageRulesClient
 from scripts.m3_10_policy_client import make_policy_client
 from scripts.qualification_failure import record_provider_preflight_failure
 
+MAXIMUM_WORKSTATION_AUDIT_REMAINING: Final = timedelta(days=91)
 _MAXIMUM_TRUST_ANCHORS: Final = 2
 _MAXIMUM_AUTHORITY_BYTES: Final = 128 * 1024
 _PRIVATE_AUTHORITY_MODE: Final = 0o600
@@ -430,6 +431,7 @@ def check_caddy_token(
         zone_ids=frozenset(zone_id for zone_id, _ in zones),
         now=now,
         minimum_audit_remaining=minimum_audit_remaining,
+        maximum_audit_remaining=MAXIMUM_WORKSTATION_AUDIT_REMAINING,
         approved_audit=approved_audit,
     )
 

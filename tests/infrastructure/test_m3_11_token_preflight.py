@@ -91,7 +91,7 @@ def test_start_checks_remaining_time_accepting_rolled_original_dates(
         assert not any(secret in str(caught.value) for secret in _SECRETS.values())
 
 
-@pytest.mark.parametrize(("role", "days"), [("audit", 8), ("pages", 91)])
+@pytest.mark.parametrize(("role", "days"), [("audit", 91), ("pages", 91)])
 def test_start_keeps_existing_maximum_remaining_validity(
     monkeypatch: pytest.MonkeyPatch, role: str, days: int
 ) -> None:
