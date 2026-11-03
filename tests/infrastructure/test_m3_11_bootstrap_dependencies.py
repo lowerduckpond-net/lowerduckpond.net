@@ -6,13 +6,18 @@ import json
 import os
 import subprocess
 import sys
+import tarfile
+import uuid
 from pathlib import Path
 
 import pytest
 import yaml  # type: ignore[import-untyped]
+from molecule.config import Config
 
 from scripts import qualification_production_predecessor as predecessor
+from scripts.qualification_context import ARCHIVE_ENV, HOST_ENV, RUN_ENV, resource_names
 from scripts.qualification_group_case import case_configuration
+from scripts.qualification_minio import image_reference
 
 ROOT = Path(__file__).resolve().parents[2]
 CALLBACKS = ROOT / "config/ansible/molecule/m3_8/callback_plugins"
@@ -27,6 +32,40 @@ def test_actual_m3_10_source_does_not_preinstall_either_bootstrap_dependency(
     assert not (previous / "config/ansible/roles/base/files/configure-static-python").exists()
     assert not (previous / "config/ansible/roles/host_recovery/files/host-restore-gate").exists()
     assert json.loads(variables.read_text())["backup_repository"] == predecessor.REPOSITORY
+    # Only fixture plumbing may differ. In particular every historical site
+    # role, build script, dependency lock and artifact package stays exact.
+    adapted = {predecessor.SCENARIO / name for name in predecessor.HARNESS_COPIES}
+    adapted.add(predecessor.SCENARIO / "converge.yml")
+    with tarfile.open(tmp_path / "production-predecessor.tar") as source:
+        for member in source.getmembers():
+            if member.isfile() and Path(member.name) not in adapted:
+                original = source.extractfile(member)
+                assert original is not None
+                assert (previous / member.name).read_bytes() == original.read()
+    scenario = yaml.safe_load((previous / predecessor.SCENARIO / "molecule.yml").read_text())
+    host, archive = scenario["platforms"]
+    assert "LDP_QUALIFICATION_HOST" in host["name"]
+    assert "LDP_QUALIFICATION_ARCHIVE" in archive["name"]
+    assert "LDP_QUALIFICATION_SSH_PORT" in host["published_ports"][0]
+    assert "lowerduckpond.qualification.run" in host["labels"]
+    assert "lowerduckpond.qualification.run" in archive["labels"]
+    converge = yaml.safe_load((previous / predecessor.SCENARIO / "converge.yml").read_text())
+    calls = {
+        t["name"]: t.get("ansible.builtin.command", {}).get("argv", [])
+        for t in converge[0]["tasks"]
+    }
+    assert (
+        calls["Resolve the exact controller address used for operator transport"][-1]
+        == "{{ groups['hosting_nodes'] | first }}"
+    )
+    assert (
+        calls["Prepare the pinned private TLS archive fixture without removing objects"][-2]
+        == "{{ groups['archive_fixture'] | first }}"
+    )
+    for name in predecessor.HARNESS_COPIES:
+        assert (previous / predecessor.SCENARIO / name).read_bytes() == (
+            ROOT / predecessor.SCENARIO / name
+        ).read_bytes()
     # Preparation is exclusive: partial evidence cannot silently be replaced.
     with pytest.raises(FileExistsError):
         predecessor.prepare(tmp_path)
@@ -127,3 +166,33 @@ def test_only_rollout_baseline_uses_archived_source(tmp_path: Path) -> None:
     configuration, previous = case_configuration(tmp_path, tmp_path / "verify.yml", "core")
     assert previous is None
     assert "provisioner" not in configuration
+
+
+def test_historical_harness_adapter_rejects_unexpected_arguments(tmp_path: Path) -> None:
+    previous, _ = predecessor.prepare(tmp_path)
+    # Re-applying an adapter to already changed harness bytes is not a fresh baseline.
+    with pytest.raises(ValueError, match="argument changed"):
+        predecessor.adapt_harness(previous)
+
+
+def test_adapted_molecule_inventory_targets_the_exact_owned_allocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    previous, _ = predecessor.prepare(tmp_path)
+    environment = resource_names(uuid.uuid7().hex)
+    for key, value in environment.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("MOLECULE_EPHEMERAL_DIRECTORY", str(tmp_path / "molecule"))
+    # Match phase(project=previous), including the historical Ansible roles root.
+    monkeypatch.chdir(previous / "config/ansible")
+    selected = Config(str(previous / predecessor.SCENARIO / "molecule.yml"))
+    host, archive = selected.config_data["platforms"]
+    assert host["name"] == environment[HOST_ENV]
+    assert archive["name"] == environment[ARCHIVE_ENV]
+    assert archive["image"] == image_reference()
+    assert host["published_ports"] == ["0:22"]
+    for platform in [host, archive]:
+        assert platform["labels"]["lowerduckpond.qualification.run"] == environment[RUN_ENV]
+    assert selected.config_data["ansible"]["cfg"]["defaults"]["roles_path"] == str(
+        previous / "config/ansible/roles"
+    )

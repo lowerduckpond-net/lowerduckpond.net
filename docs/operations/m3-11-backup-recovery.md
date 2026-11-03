@@ -2051,7 +2051,10 @@ locks or run the broad base role. A departure between copies preserves the same
 
 The installed `production-rollout` regression first converges the actual completed
 M3.10 predecessor `22147a64e9b39e7965201cf2d96e07aeaa6d3ca1`, before any candidate
-site tasks can seed either dependency. It interrupts real Ansible after the first
+site tasks can seed either dependency. Only its fixture harness is adapted to
+the current owned container names, dynamic SSH port and pinned MinIO recipe;
+historical site roles, build scripts, lockfiles and artifact sources stay exact.
+It interrupts real Ansible after the first
 acknowledged dependency copy, checks unchanged lock inodes and old artifact
 selection, then resumes with a new SSH owner through the existing namespace,
 retained-backup, idempotence and acceptance gates. This is disposable diagnostic
