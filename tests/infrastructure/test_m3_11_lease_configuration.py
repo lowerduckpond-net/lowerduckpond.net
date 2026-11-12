@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 import dataclasses
 import hashlib
 import uuid
@@ -22,6 +23,7 @@ from scripts.m3_11_unattended.model import (
     LeasePolicy,
     LifecycleError,
     digest,
+    instant,
     stamp,
 )
 from scripts.m3_11_unattended.production import REFERENCES
@@ -30,6 +32,27 @@ from .test_m3_11_connect_auth import example, token
 from .test_m3_11_lease_inventory import TARGETS
 
 VAULTS = {"provision": "v" * 26, "cleanup": "c" * 26, "production": "p" * 26, "journal": "j" * 26}
+
+
+@pytest.mark.parametrize(
+    "timestamp",
+    ["2026-01-01T00:00:00+00:00", "2026-11-01T00:00:00+00:00", "2026-03-31T12:00:00+00:00"],
+)
+def test_synthetic_generation_precedes_same_second_replacement(
+    monkeypatch: pytest.MonkeyPatch, timestamp: str
+) -> None:
+    current = datetime.fromisoformat(timestamp)
+
+    class FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> FrozenDatetime:
+            return cls.fromtimestamp(current.timestamp(), UTC)
+
+    monkeypatch.setattr(__import__(__name__, fromlist=["datetime"]), "datetime", FrozenDatetime)
+    fixture = document()
+    roles = mapping(mapping(fixture["generations"])[str(fixture["active_generation"])])
+    generation = mapping(mapping(roles["cleanup"])["generation"])
+    assert instant(generation["introduced_at"]) < current < instant(generation["rotation_due_at"])
 
 
 def mapping(value: object) -> dict[str, object]:
@@ -84,9 +107,15 @@ def document() -> dict[str, object]:
         "SYNTHETIC-TEST-ONLY-no-live-approval",
     )
     generation_id = str(uuid.uuid7())
-    introduced = now.replace(day=1)
+    # Keep a replacement generated in the same clock second strictly newer,
+    # including at midnight on the first day of a month.
+    introduced = now - timedelta(seconds=2)
+    rotation_year = introduced.year + (introduced.month == MONTHS_PER_YEAR)
+    rotation_month = introduced.month % MONTHS_PER_YEAR + 1
     rotation = introduced.replace(
-        year=now.year + (now.month == MONTHS_PER_YEAR), month=now.month % MONTHS_PER_YEAR + 1
+        year=rotation_year,
+        month=rotation_month,
+        day=min(introduced.day, calendar.monthrange(rotation_year, rotation_month)[1]),
     )
     roles = {}
     for role in ("cleanup", "provision"):
