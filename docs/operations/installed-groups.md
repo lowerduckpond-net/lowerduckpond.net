@@ -74,7 +74,7 @@ storage fixtures before the complete run can pass.
 
 | Case | Preserved installed assertions and independent setup |
 | --- | --- |
-| `failed-retirement` | Fresh active/archived history, a protected audit snapshot and unresolved intake/export; deliberately failed private archive helper leaves the destination validated and gated. Uses the production retirement transaction with separate real MinIO archive/operator principals, rejects a foreign object and wrong approval digest, retires exact versions, and proves original failure/job/result/audit/protected-backup bytes unchanged. Retains stopped hosts, copied ext4 images and archives; no ordinary successful accounting or teardown claim. Cloudflare and Spaces-specific bindings have component coverage and remain live operator gates. |
+| `failed-retirement` | Fresh active/archived history, a protected audit snapshot and unresolved intake/export; deliberately failed private archive helper leaves the destination validated and gated. Uses the production retirement transaction with separate real MinIO archive/operator principals, rejects a foreign object and wrong approval digest, retires exact versions, and proves original failure/job/result/audit/protected-backup bytes unchanged before local disposal. It makes no ordinary successful-accounting claim. Cloudflare and Spaces-specific bindings have component coverage and remain live operator gates. |
 | `production-rollout` | Reapplies preceding main `69859cbb` with recovery/rotation disabled to an empty owned host. Pauses the fixture's reconciliation timers and drains their services for the unchanged predecessor integrity check, then restarts the timers before the actual production bootstrap, four site converges, bounded backup/private restore and acceptance over verified administrator SSH. New controllers recover after namespace initialization and after retaining backup proof before acknowledgement; completed inspection preserves original records/capture. Uses a local disposable Restic repository and synthetic qualification binding; cannot qualify a live rollout. |
 | `restore-reconstruction` | Own fenced source plus second fresh Ubuntu/ext4 destination; full-ID Restic restore, four tenant states, protected audit prefix/local tail, excluded upload/export decisions, exact archive proof, cold Caddy generation, immutable result replay and reboot. |
 | `combined-reconstruction` | One source/destination history combines actual backup/mutation contention, excluded secret canaries, two full protected audit segments, lost snapshot response and index interruption, aged ordinary retention with interrupted forget/prune, interrupted reconstruction, reboot and historical-result replay. Local controlled-CA/MinIO evidence only; live Spaces and public-CA qualification remain separate. |
@@ -154,6 +154,47 @@ MinIO buckets, then rechecks container identities and local accounting.
 
 The printed private run directory contains readable phase logs, stage receipts,
 and the [timing and failure diagnostics](qualification-diagnostics.md).
+For the local Unix-socket MinIO fixture, the launcher captures failure diagnostics
+before disposing of the run-owned containers on either success or failure. It
+checks the original daemon, run label, fixed resource names and recorded identities,
+including the separately owned native retirement test's auxiliary MinIO fixture,
+and journals exact-ID removal. It also removes the run's private `fixture/` inputs
+and the fixed local retirement disk-image copies, while preserving reports,
+receipts and phase logs. Disposal is diagnostic housekeeping: it does not turn a
+failed run into a pass or establish production accounting. Live Spaces and provider resources
+continue to use their separate retirement, accounting and authorization rules.
+
+To retain a local fixture temporarily for debugging, explicitly supply a future
+ISO 8601 timestamp with a timezone, for example:
+
+```sh
+uv run python scripts/qualification_local.py --create-only --retain-until 2030-01-01T18:00:00Z
+```
+
+The timestamp is an example; choose the actual end of the debugging session.
+For a failed local case, add `--retain-until` to its invocation. The launcher
+records the expiry and starts a local watcher that waits for the run lease before
+disposal. Hold that lease during supported interactive work. The watcher is
+best-effort: a machine or controller shutdown can stop it. If it cannot finish,
+inspect `disposable-retention-error.json` and run the following after the expiry:
+
+```sh
+uv run python -m scripts.qualification_disposable_cleanup /absolute/private/run-directory
+```
+
+On an interrupted run that did not finish capturing diagnostics, first verify
+that its controller and children have stopped; then capture and dispose under
+the original run and operation locks with:
+
+```sh
+uv run python -m scripts.qualification_disposable_cleanup --capture-interrupted /absolute/private/run-directory
+```
+
+An active lease, changed daemon or identity, unexpected owned container, missing
+diagnostic evidence, or an unavailable Docker daemon stops disposal and leaves
+the original failure intact. Inspect the private records and retry the same local
+cleanup after resolving the cause. Forced termination can require that recovery;
+the watcher cannot guarantee cleanup after the machine itself stops.
 For ordinary groups, `case.json` appears only after all required tests, fresh
 accounting and teardown succeed. The fixed failure-retention exception is
 described below. Each result is diagnostic evidence; the production qualification validator
@@ -207,7 +248,9 @@ cannot use independent fixtures. The initial ceiling provides 1.5 times a
 conservative 60-minute window while measuring the full installed case; it is
 not a claim of a measured passing duration or acceptance of a target overrun.
 The case needs the pinned predecessor commit in local Git history, as supplied
-by CI's full checkout. Failed runs keep their original diagnostics and fixture.
+by CI's full checkout. Failed runs keep their original diagnostics; their local
+disposable fixtures are removed after capture unless explicit timed debugging was
+requested.
 
 The first clean local rollout case completed in 44.22 minutes including setup,
 with original evidence, repeated completed inspection and owned teardown all
@@ -273,16 +316,14 @@ reconstruction cases, it requires the activated source's zero-change reapply
 receipt; it omits the redundant initial dark-source idempotence pass.
 
 After exact pytest setup/call/teardown completion, the controller requires the
-bound retirement receipt and original stopped container IDs. Its diagnostic
-`case.json` explicitly records `local_accounting: failed-state-retained`,
-`independent_storage_absence: archives-only-passed`, and
-`destroy: not-authorized`. CI accepts that disposition only for this case and
-rejects ordinary successful-cleanup fields in its place. Conversely, these
-retention fields cannot pass another group's gate. The test leaves its stopped
-source/destination/controlled-ACME containers, state/backup bytes, copies, and
-untouched local storage services retained. Normal ephemeral CI runner disposal
-is outside the retirement tool; local operators must preserve these resources
-until separately authorized disposal.
+bound retirement receipt and original stopped container IDs. It captures the
+failed-state and archive-only evidence, then disposes the local fixture. Its
+diagnostic `case.json` records `local_accounting: failed-state-observed`,
+`independent_storage_absence: archives-only-passed`, and `destroy: passed` only
+after disposal completes. CI accepts that disposition only for this case and
+rejects ordinary successful-accounting fields in its place. The private original
+receipts and hashes remain diagnostic evidence. Local fixture disposal does not
+authorize deletion of live resources or rewrite the failed retirement transaction.
 
 The provisional CI ceiling is 90 minutes, providing 1.5 times a conservative
 60-minute setup/restore/preservation window while obtaining normal complete
