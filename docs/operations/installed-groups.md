@@ -9,6 +9,17 @@ the fixtures share a host kernel's loop-device pool even with distinct names.
 Molecule pipelines Ansible modules through its Docker connection to reduce
 per-task transfer overhead.
 
+Normally a Unix Docker socket and the controller share loopback. If the socket
+is forwarded to a Docker daemon in a different network namespace, independently
+verify the daemon address and the source address observed by a disposable guest
+through a published port. For a run-owned local MinIO fixture only, set
+`LDP_QUALIFICATION_UNIX_PEER_ADDRESS` to that verified numeric daemon address.
+The fixture derives a single-host source CIDR from the route to that address and
+refuses a changed source or peer during later port refresh. Confirm the routed
+source equals the guest-observed source; if it does not, do not run the journey
+with this option. It does not apply to managed or live Spaces qualification and
+does not modify Docker or host firewall settings.
+
 The local MinIO fixture builds from fixed server and client commits with a pinned
 Go compiler. Its image tag and build receipt bind the complete
 [recipe](../../config/ansible/molecule/m3_8/Dockerfile.minio.j2). Matching local

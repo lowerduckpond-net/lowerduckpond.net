@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import uuid
 
 import pytest
 
@@ -10,12 +11,85 @@ from config.ansible.molecule.m3_8 import resolve_operator_transport
 
 @pytest.fixture(autouse=True)
 def published_port(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("LDP_QUALIFICATION_UNIX_PEER_ADDRESS", raising=False)
     monkeypatch.setattr(
         resolve_operator_transport, "_published_ssh_port", lambda container: "32123"
     )
 
 
 _published_ssh_port = resolve_operator_transport._published_ssh_port
+
+
+@pytest.mark.parametrize("role", ["host", "destination"])
+def test_explicit_unix_peer_uses_exact_routed_source_for_owned_minio_fixture(
+    monkeypatch: pytest.MonkeyPatch, role: str
+) -> None:
+    run_id = uuid.uuid7().hex
+    monkeypatch.setenv("LDP_QUALIFICATION_RUN_ID", run_id)
+    monkeypatch.setenv("M3_10_ARCHIVE_BACKEND", "minio")
+    monkeypatch.setenv("LDP_QUALIFICATION_UNIX_PEER_ADDRESS", "172.19.0.2")
+    monkeypatch.delenv("LDP_M3_11_MANAGED_INPUTS", raising=False)
+    monkeypatch.delenv("M3_11_COMBINED_BACKEND", raising=False)
+    monkeypatch.delenv("M3_10_INSTALLED_REPORT", raising=False)
+    calls: list[tuple[str, int]] = []
+
+    def routed(peer: object, port: int) -> str:
+        calls.append((str(peer), port))
+        return "172.19.0.3"
+
+    monkeypatch.setattr(resolve_operator_transport, "_routed_source", routed)
+    assert resolve_operator_transport.resolve_operator_transport(
+        "unix:///docker-sock/docker.sock", f"ldp-m3-{run_id}-{role}"
+    ) == {
+        "peerAddress": "172.19.0.2",
+        "sourceCidr": "172.19.0.3/32",
+        "sshPort": "32123",
+    }
+    assert calls == [("172.19.0.2", 32123)]
+
+
+@pytest.mark.parametrize(
+    "restriction", ["live", "combined", "managed", "managed-empty", "report", "unowned", "remote"]
+)
+def test_explicit_unix_peer_rejects_nonlocal_or_unowned_authority(
+    monkeypatch: pytest.MonkeyPatch, restriction: str
+) -> None:
+    run_id = uuid.uuid7().hex
+    monkeypatch.setenv("LDP_QUALIFICATION_RUN_ID", run_id)
+    monkeypatch.setenv("M3_10_ARCHIVE_BACKEND", "spaces" if restriction == "live" else "minio")
+    monkeypatch.setenv("LDP_QUALIFICATION_UNIX_PEER_ADDRESS", "172.19.0.2")
+    monkeypatch.delenv("LDP_M3_11_MANAGED_INPUTS", raising=False)
+    monkeypatch.delenv("M3_11_COMBINED_BACKEND", raising=False)
+    monkeypatch.delenv("M3_10_INSTALLED_REPORT", raising=False)
+    if restriction == "combined":
+        monkeypatch.setenv("M3_11_COMBINED_BACKEND", "spaces")
+    if restriction == "managed":
+        monkeypatch.setenv("LDP_M3_11_MANAGED_INPUTS", "/private/managed")
+    if restriction == "managed-empty":
+        monkeypatch.setenv("LDP_M3_11_MANAGED_INPUTS", "")
+    if restriction == "report":
+        monkeypatch.setenv("M3_10_INSTALLED_REPORT", "/private/report")
+    container = "unowned-host" if restriction == "unowned" else f"ldp-m3-{run_id}-host"
+    endpoint = "tcp://192.0.2.1:2375" if restriction == "remote" else "unix:///docker.sock"
+    with pytest.raises(RuntimeError, match="restricted to local MinIO"):
+        resolve_operator_transport.resolve_operator_transport(endpoint, container)
+
+
+@pytest.mark.parametrize("peer", ["0.0.0.0", "224.0.0.1", "docker", "invalid"])  # noqa: S104 - invalid test input
+def test_explicit_unix_peer_rejects_non_unicast_or_non_numeric_addresses(
+    monkeypatch: pytest.MonkeyPatch, peer: str
+) -> None:
+    run_id = uuid.uuid7().hex
+    monkeypatch.setenv("LDP_QUALIFICATION_RUN_ID", run_id)
+    monkeypatch.setenv("M3_10_ARCHIVE_BACKEND", "minio")
+    monkeypatch.setenv("LDP_QUALIFICATION_UNIX_PEER_ADDRESS", peer)
+    monkeypatch.delenv("LDP_M3_11_MANAGED_INPUTS", raising=False)
+    monkeypatch.delenv("M3_11_COMBINED_BACKEND", raising=False)
+    monkeypatch.delenv("M3_10_INSTALLED_REPORT", raising=False)
+    with pytest.raises(ValueError):
+        resolve_operator_transport.resolve_operator_transport(
+            "unix:///docker.sock", f"ldp-m3-{run_id}-host"
+        )
 
 
 def test_local_tcp_endpoint_uses_container_gateway(

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
+import re
 import socket
 import subprocess
 import sys
@@ -10,6 +12,7 @@ from urllib.parse import SplitResult, urlsplit
 
 _ARGUMENT_COUNT = 2
 _MAX_PORT = 65535
+_UNIX_PEER_ENV = "LDP_QUALIFICATION_UNIX_PEER_ADDRESS"
 
 
 def _container_gateway(container: str) -> str:
@@ -61,6 +64,14 @@ def _connected_addresses(host: str, port: int) -> tuple[str, str]:
         return connection.getsockname()[0], connection.getpeername()[0]
 
 
+def _routed_source(peer: ipaddress.IPv4Address | ipaddress.IPv6Address, port: int) -> str:
+    """Resolve the local route without sending a datagram or requiring SSH to be started."""
+    family = socket.AF_INET if isinstance(peer, ipaddress.IPv4Address) else socket.AF_INET6
+    with socket.socket(family, socket.SOCK_DGRAM) as connection:
+        connection.connect((str(peer), port))
+        return str(connection.getsockname()[0])
+
+
 def _ssh_connection_addresses(endpoint: SplitResult) -> tuple[str, str]:
     command = [
         "/usr/bin/ssh",
@@ -91,6 +102,19 @@ def _ssh_connection_addresses(endpoint: SplitResult) -> tuple[str, str]:
 
 def resolve_operator_transport(docker_host: str, container: str) -> dict[str, str]:
     endpoint = urlsplit(docker_host)
+    explicit_peer = os.environ.get(_UNIX_PEER_ENV)
+    run_id = os.environ.get("LDP_QUALIFICATION_RUN_ID", "")
+    if explicit_peer and (
+        endpoint.scheme not in {"", "unix"}
+        or os.environ.get("M3_10_ARCHIVE_BACKEND") != "minio"
+        or os.environ.get("M3_11_COMBINED_BACKEND") == "spaces"
+        or "LDP_M3_11_MANAGED_INPUTS" in os.environ
+        or os.environ.get("M3_10_INSTALLED_REPORT")
+        or re.fullmatch(r"[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}", run_id) is None
+        or container not in {f"ldp-m3-{run_id}-host", f"ldp-m3-{run_id}-destination"}
+    ):
+        raise RuntimeError("explicit Unix Docker peer is restricted to local MinIO qualification")
+    published_port = _published_ssh_port(container)
     peer: str | None
     if endpoint.scheme == "ssh":
         source, ssh_server = _ssh_connection_addresses(endpoint)
@@ -104,15 +128,24 @@ def resolve_operator_transport(docker_host: str, container: str) -> dict[str, st
         if ipaddress.ip_address(peer).is_loopback:
             source = _container_gateway(container)
     elif not endpoint.scheme or endpoint.scheme == "unix":
-        source = _container_gateway(container)
-        peer = "127.0.0.1"
+        if explicit_peer:
+            peer_address = ipaddress.ip_address(explicit_peer)
+            if peer_address.is_unspecified or peer_address.is_multicast:
+                raise ValueError("Unix Docker peer must be a unicast address")
+            peer = peer_address.compressed
+            source = _routed_source(peer_address, int(published_port))
+            if ipaddress.ip_address(source).is_loopback:
+                source = _container_gateway(container)
+        else:
+            source = _container_gateway(container)
+            peer = "127.0.0.1"
     else:
         raise RuntimeError("unsupported Docker endpoint for M3.8 transport")
 
     source_address = ipaddress.ip_address(source)
     transport = {
         "sourceCidr": f"{source_address.compressed}/{source_address.max_prefixlen}",
-        "sshPort": _published_ssh_port(container),
+        "sshPort": published_port,
     }
     if peer is not None:
         transport["peerAddress"] = ipaddress.ip_address(peer).compressed
