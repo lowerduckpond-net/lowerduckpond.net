@@ -7,9 +7,9 @@ from dataclasses import dataclass
 GROUP_REPORT_FORMAT = "lowerduckpond-installed-group-diagnostic-v1"
 RETAINED_FAILURE_CASE = "failed-retirement"
 RETAINED_FAILURE_DISPOSITION = {
-    "local_accounting": "failed-state-retained",
+    "local_accounting": "failed-state-observed",
     "independent_storage_absence": "archives-only-passed",
-    "destroy": "not-authorized",
+    "destroy": "passed",
 }
 
 ACCOUNTING = (

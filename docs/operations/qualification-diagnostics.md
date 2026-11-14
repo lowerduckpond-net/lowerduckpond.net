@@ -280,7 +280,10 @@ captured, the host stopped/disappeared, or the output is malformed, fields say
 new container with the same name. Earlier runs without this binding cannot
 retroactively acquire it through the read-only command. Ordinary reporter
 failures print a fixed message and preserve the original command result.
-Local Molecule currently destroys its fixture after a failed test. The outer
+Local Molecule normally destroys its fixture after a failed test. The local
+launcher also disposes remaining run-owned MinIO fixture containers after
+capturing diagnostics; see [local disposal and timed debugging](installed-groups.md).
+This local-only disposal is separate from live provider cleanup. The outer
 Ansible callback captures a bounded observation before that existing teardown.
 If a fresh observation is unavailable, the report may include this snapshot,
 explicitly labeled `captured-before-teardown` with its original timestamps and

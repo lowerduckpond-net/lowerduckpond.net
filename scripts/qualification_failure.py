@@ -35,6 +35,19 @@ REQUIRED_TOOLS = ("docker", "git", "rsync", "ssh", "uv")
 MAX_HELPERS = 8
 MAX_EXIT_STATUS = 255
 FORMAT = "lowerduckpond-qualification-failure-v1"
+TRANSPORT_FAILURE_REASONS = frozenset(
+    {
+        "local-authority-rejected",
+        "local-identity-mismatch",
+        "ssh-port-unavailable",
+        "ssh-port-invalid",
+        "ssh-port-ambiguous",
+        "access-boundary-changed",
+        "invalid-peer",
+        "unsupported-endpoint",
+        "resolution-failed",
+    }
+)
 CONTAINER = "lowerduckpond-ubuntu-2604"
 PHASES = frozenset(
     {
@@ -811,6 +824,27 @@ def collect(  # noqa: PLR0912, PLR0915 - validate and assemble one bounded diagn
             "filesystem_primitives": "not-tested-read-only",
         },
     }
+    transport = _optional(directory / "failure-transport.json")
+    if (
+        transport.get("format") == "lowerduckpond-transport-failure-v1"
+        and transport.get("group") == group
+        and group != UNKNOWN
+    ):
+        frames = transport.get("frames")
+        safe_frames = (
+            [
+                {"file": "resolve_operator_transport.py", "line": source_line(frame.get("line"))}
+                for frame in frames
+                if isinstance(frame, dict) and frame.get("file") == "resolve_operator_transport.py"
+            ][:8]
+            if isinstance(frames, list)
+            else []
+        )
+        report["last_transport_failure"] = {
+            "reason": label(transport.get("reason"), TRANSPORT_FAILURE_REASONS),
+            "frames": safe_frames,
+            "scope": "last-attempt-in-failed-group",
+        }
     if (directory / "restore").exists():
         from scripts.qualification_restore import observations_for  # noqa: PLC0415
 
