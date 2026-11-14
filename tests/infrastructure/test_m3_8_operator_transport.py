@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 import uuid
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +19,126 @@ def published_port(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 _published_ssh_port = resolve_operator_transport._published_ssh_port
+
+
+@pytest.mark.parametrize("role", ["host", "destination"])
+@pytest.mark.parametrize("stage", ["bootstrap", "refresh"])
+def test_owned_immutable_id_resolves_for_bootstrap_and_refresh(
+    monkeypatch: pytest.MonkeyPatch, role: str, stage: str
+) -> None:
+    run_id = uuid.uuid7().hex
+    identity = "a" * 64
+    monkeypatch.setenv("LDP_QUALIFICATION_RUN_ID", run_id)
+    monkeypatch.setenv("M3_10_ARCHIVE_BACKEND", "minio")
+    monkeypatch.setenv("LDP_QUALIFICATION_UNIX_PEER_ADDRESS", "172.19.0.2")
+    monkeypatch.delenv("LDP_M3_11_MANAGED_INPUTS", raising=False)
+    monkeypatch.delenv("M3_11_COMBINED_BACKEND", raising=False)
+    monkeypatch.delenv("M3_10_INSTALLED_REPORT", raising=False)
+
+    def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        assert command[-1] == identity
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps({"id": identity, "name": f"/ldp-m3-{run_id}-{role}", "owner": run_id}),
+            "",
+        )
+
+    monkeypatch.setattr(resolve_operator_transport.subprocess, "run", inspect)
+    monkeypatch.setattr(resolve_operator_transport, "_routed_source", lambda *args: "172.19.0.3")
+    expected = {"peerAddress": "172.19.0.2", "sourceCidr": "172.19.0.3/32", "sshPort": "32123"}
+    if stage == "bootstrap":
+        result = resolve_operator_transport.resolve_operator_transport(
+            "unix:///docker.sock", identity
+        )
+    else:
+        result = resolve_operator_transport.current_operator_transport(
+            "unix:///docker.sock", identity, expected
+        )
+    assert result == expected
+
+
+@pytest.mark.parametrize("mismatch", ["id", "name", "owner", "missing", "malformed"])
+def test_immutable_id_requires_exact_owned_inspection(
+    monkeypatch: pytest.MonkeyPatch, mismatch: str
+) -> None:
+    run_id = uuid.uuid7().hex
+    identity = "b" * 64
+    monkeypatch.setenv("LDP_QUALIFICATION_RUN_ID", run_id)
+    monkeypatch.setenv("M3_10_ARCHIVE_BACKEND", "minio")
+    monkeypatch.setenv("LDP_QUALIFICATION_UNIX_PEER_ADDRESS", "172.19.0.2")
+    monkeypatch.delenv("LDP_M3_11_MANAGED_INPUTS", raising=False)
+    monkeypatch.delenv("M3_11_COMBINED_BACKEND", raising=False)
+    monkeypatch.delenv("M3_10_INSTALLED_REPORT", raising=False)
+    details = {"id": identity, "name": f"/ldp-m3-{run_id}-destination", "owner": run_id}
+    if mismatch == "id":
+        details["id"] = "c" * 64
+    elif mismatch == "name":
+        details["name"] = f"/ldp-m3-{run_id}-acme"
+    elif mismatch == "owner":
+        details["owner"] = uuid.uuid7().hex
+
+    def inspect(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            command,
+            1 if mismatch == "missing" else 0,
+            "not-json" if mismatch == "malformed" else json.dumps(details),
+            "",
+        )
+
+    monkeypatch.setattr(resolve_operator_transport.subprocess, "run", inspect)
+    with pytest.raises(RuntimeError, match="restricted to local MinIO"):
+        resolve_operator_transport.resolve_operator_transport("unix:///docker.sock", identity)
+
+
+@pytest.mark.parametrize("restriction", ["live", "managed", "report", "remote"])
+def test_immutable_id_never_bypasses_nonlocal_restrictions(
+    monkeypatch: pytest.MonkeyPatch, restriction: str
+) -> None:
+    monkeypatch.setenv("LDP_QUALIFICATION_RUN_ID", uuid.uuid7().hex)
+    monkeypatch.setenv("M3_10_ARCHIVE_BACKEND", "spaces" if restriction == "live" else "minio")
+    monkeypatch.setenv("LDP_QUALIFICATION_UNIX_PEER_ADDRESS", "172.19.0.2")
+    monkeypatch.delenv("LDP_M3_11_MANAGED_INPUTS", raising=False)
+    monkeypatch.delenv("M3_11_COMBINED_BACKEND", raising=False)
+    monkeypatch.delenv("M3_10_INSTALLED_REPORT", raising=False)
+    if restriction == "managed":
+        monkeypatch.setenv("LDP_M3_11_MANAGED_INPUTS", "/private/managed")
+    if restriction == "report":
+        monkeypatch.setenv("M3_10_INSTALLED_REPORT", "/private/report")
+
+    def forbidden(*args: object, **kwargs: object) -> None:
+        pytest.fail("restricted authority must be rejected before Docker inspection")
+
+    monkeypatch.setattr(resolve_operator_transport.subprocess, "run", forbidden)
+    endpoint = "tcp://192.0.2.1:2375" if restriction == "remote" else "unix:///docker.sock"
+    with pytest.raises(RuntimeError, match="restricted to local MinIO"):
+        resolve_operator_transport.resolve_operator_transport(endpoint, "b" * 64)
+
+
+def test_successful_refresh_clears_previous_transport_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("LDP_QUALIFICATION_TIMING_EVENTS", str(tmp_path / "timing-events.jsonl"))
+    monkeypatch.setenv("LDP_QUALIFICATION_TIMING_GROUP", "core")
+    recorded = {"peerAddress": "127.0.0.1", "sourceCidr": "172.17.0.1/32", "sshPort": "22"}
+    monkeypatch.setattr(
+        resolve_operator_transport,
+        "resolve_operator_transport",
+        lambda *args: {**recorded, "sourceCidr": "172.17.0.2/32"},
+    )
+    with pytest.raises(RuntimeError, match="access boundary changed"):
+        resolve_operator_transport.current_operator_transport("unix:///docker.sock", "id", recorded)
+    assert json.loads((tmp_path / "failure-transport.json").read_text())["reason"] == (
+        "access-boundary-changed"
+    )
+    monkeypatch.setattr(
+        resolve_operator_transport, "resolve_operator_transport", lambda *args: recorded
+    )
+    assert (
+        resolve_operator_transport.current_operator_transport("unix:///docker.sock", "id", recorded)
+        == recorded
+    )
+    assert not (tmp_path / "failure-transport.json").exists()
 
 
 @pytest.mark.parametrize("role", ["host", "destination"])
