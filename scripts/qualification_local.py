@@ -152,10 +152,11 @@ def run(  # noqa: PLR0912, PLR0915 - distinct preflight and cleanup outcomes
         if case != "baseline":
             record_controller_stage("fixture-image")
             ensure_image(environment)
+        record_controller_stage("disposable-binding")
+        disposable.bind(directory, environment)
     except Exception as error:
         record_controller_failure(error)
         raise
-    disposable.bind(directory, environment)
     print(f"Owned local fixture: {environment[HOST_ENV]}", flush=True)
     try:
         status = execute(directory, environment, uv, create_only=create_only, case=case)

@@ -242,6 +242,54 @@ def test_missing_uv_is_classified_as_a_dependency_failure(
     }
 
 
+@pytest.mark.parametrize(
+    ("error", "category", "return_code"),
+    [
+        (
+            subprocess.CalledProcessError(125, ["docker", CANARY], stderr=CANARY),
+            "nonzero-exit",
+            125,
+        ),
+        (subprocess.TimeoutExpired(["docker", CANARY], 5, stderr=CANARY), "timeout", "unknown"),
+        (ValueError(CANARY), "validation", "unknown"),
+        (OSError(CANARY), "os-error", "unknown"),
+    ],
+)
+def test_disposable_binding_failure_retains_typed_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    category: str,
+    return_code: int | str,
+) -> None:
+    monkeypatch.setenv(timing.EVENT_ENV, str(tmp_path / "timing-events.jsonl"))
+    monkeypatch.setattr(shutil, "which", lambda value: f"/usr/bin/{value}")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0 if command[1] == "version" else 1
+        ),
+    )
+
+    def fail_binding(*args: object, **kwargs: object) -> None:
+        raise error
+
+    def forbid_execution(*args: object, **kwargs: object) -> int:
+        pytest.fail("qualification must not execute before binding succeeds")
+
+    monkeypatch.setattr(disposable, "bind", fail_binding)
+    monkeypatch.setattr(local, "execute", forbid_execution)
+    with pytest.raises(type(error)) as caught:
+        local.run(tmp_path, case="audit-rotation")
+    assert caught.value is error
+    assert (tmp_path / "fixture.json").is_file()
+    assert not (tmp_path / "disposable-cleanup-binding.json").exists()
+    expected = {"stage": "disposable-binding", "category": category, "return_code": return_code}
+    assert json.loads((tmp_path / "failure-controller.json").read_text()) == expected
+    assert failure.controller_failure(tmp_path) == expected
+
+
 def test_post_preflight_failure_is_not_reported_as_a_controller_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

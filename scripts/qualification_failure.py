@@ -164,6 +164,7 @@ CONTROLLER_STAGES = frozenset(
         "docker-daemon",
         "resource-collision",
         "fixture-image",
+        "disposable-binding",
         "full-run-deadline",
     }
 )
