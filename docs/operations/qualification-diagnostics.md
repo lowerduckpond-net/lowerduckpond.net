@@ -200,7 +200,10 @@ The report separates:
   refusal can be an expected part of a test that later passes; its source line
   alone never establishes that fact or the cause of a later terminal failure.
   Historical records without these coordinates remain unknown. The original
-  first-failure record is preserved.
+  first-failure record is preserved. The task timing summary also keeps the
+  most recent 30 failed task observations in start order. Their group, phase,
+  process and source coordinates can identify a short nested failure that
+  falls outside the longest-task list.
 - The failed phase, verification group, fixed failure category, allowlisted
   test filename/line, original exit
   status, source revision, backend, and observed selected artifact digest.
@@ -280,7 +283,10 @@ captured, the host stopped/disappeared, or the output is malformed, fields say
 new container with the same name. Earlier runs without this binding cannot
 retroactively acquire it through the read-only command. Ordinary reporter
 failures print a fixed message and preserve the original command result.
-Local Molecule currently destroys its fixture after a failed test. The outer
+Local Molecule normally destroys its fixture after a failed test. The local
+launcher also disposes remaining run-owned MinIO fixture containers after
+capturing diagnostics; see [local disposal and timed debugging](installed-groups.md).
+This local-only disposal is separate from live provider cleanup. The outer
 Ansible callback captures a bounded observation before that existing teardown.
 If a fresh observation is unavailable, the report may include this snapshot,
 explicitly labeled `captured-before-teardown` with its original timestamps and

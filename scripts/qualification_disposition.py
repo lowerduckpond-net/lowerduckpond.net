@@ -14,6 +14,7 @@ from scripts.m3_11_private_inputs import read_private
 from scripts.qualification_fence import require_unfenced
 
 DIRECTORY = "frozen-archive-retirement"
+DISPOSABLE_CLEANUP = "disposable-cleanup-intent.json"
 ORIGIN = "diagnostic-origin.json"
 
 
@@ -48,6 +49,9 @@ def require_available(run: Path) -> None:
         marker = base / DIRECTORY
         if marker.exists() or marker.is_symlink():
             raise ValueError("frozen fixture retirement permanently excludes execution")
+        marker = base / DISPOSABLE_CLEANUP
+        if marker.exists() or marker.is_symlink():
+            raise ValueError("disposable fixture cleanup permanently excludes execution")
 
 
 def require_environment(environment: Mapping[str, str]) -> None:

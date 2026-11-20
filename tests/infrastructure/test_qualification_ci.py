@@ -128,6 +128,22 @@ def test_retirement_retention_cannot_substitute_for_successful_cleanup(
         )
 
 
+def test_failed_retirement_cannot_pass_while_disposal_is_pending(tmp_path: Path) -> None:
+    path = receipt(tmp_path, CASE)
+    report = json.loads(path.read_text())
+    report["destroy"] = "pending"
+    path.write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="incomplete"):
+        ci.verify(
+            selection((CASE,), "reviewed-map"),
+            tmp_path,
+            event="pull_request",
+            matrix_result="success",
+            complete_result="skipped",
+            static_result="success",
+        )
+
+
 @pytest.mark.parametrize("fault", [None, "missing", "other-run", "size", "hash", "extra"])
 def test_full_size_result_requires_the_retained_installed_evidence(
     tmp_path: Path, fault: str | None

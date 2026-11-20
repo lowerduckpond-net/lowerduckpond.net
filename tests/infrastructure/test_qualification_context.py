@@ -12,6 +12,7 @@ import yaml  # type: ignore[import-untyped]
 from molecule.interpolation import Interpolator, TemplateWithDefaults
 
 from scripts import qualification_context as context
+from scripts import qualification_disposable_cleanup as disposable
 from scripts import qualification_failure as failure
 from scripts import qualification_group_case
 from scripts import qualification_local as local
@@ -31,6 +32,8 @@ def clean_context(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("DOCKER_HOST", "unix:///disposable/docker.sock")
     monkeypatch.setenv("M3_10_ARCHIVE_BACKEND", "minio")
     monkeypatch.setattr(local, "ensure_image", lambda _environment: "fixture-image")
+    monkeypatch.setattr(disposable, "bind", lambda *_: None)
+    monkeypatch.setattr(disposable, "cleanup", lambda *_: None)
 
 
 def test_distinct_runs_own_all_mutable_resources(tmp_path: Path) -> None:
@@ -239,6 +242,54 @@ def test_missing_uv_is_classified_as_a_dependency_failure(
     }
 
 
+@pytest.mark.parametrize(
+    ("error", "category", "return_code"),
+    [
+        (
+            subprocess.CalledProcessError(125, ["docker", CANARY], stderr=CANARY),
+            "nonzero-exit",
+            125,
+        ),
+        (subprocess.TimeoutExpired(["docker", CANARY], 5, stderr=CANARY), "timeout", "unknown"),
+        (ValueError(CANARY), "validation", "unknown"),
+        (OSError(CANARY), "os-error", "unknown"),
+    ],
+)
+def test_disposable_binding_failure_retains_typed_diagnostic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    category: str,
+    return_code: int | str,
+) -> None:
+    monkeypatch.setenv(timing.EVENT_ENV, str(tmp_path / "timing-events.jsonl"))
+    monkeypatch.setattr(shutil, "which", lambda value: f"/usr/bin/{value}")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0 if command[1] == "version" else 1
+        ),
+    )
+
+    def fail_binding(*args: object, **kwargs: object) -> None:
+        raise error
+
+    def forbid_execution(*args: object, **kwargs: object) -> int:
+        pytest.fail("qualification must not execute before binding succeeds")
+
+    monkeypatch.setattr(disposable, "bind", fail_binding)
+    monkeypatch.setattr(local, "execute", forbid_execution)
+    with pytest.raises(type(error)) as caught:
+        local.run(tmp_path, case="audit-rotation")
+    assert caught.value is error
+    assert (tmp_path / "fixture.json").is_file()
+    assert not (tmp_path / "disposable-cleanup-binding.json").exists()
+    expected = {"stage": "disposable-binding", "category": category, "return_code": return_code}
+    assert json.loads((tmp_path / "failure-controller.json").read_text()) == expected
+    assert failure.controller_failure(tmp_path) == expected
+
+
 def test_post_preflight_failure_is_not_reported_as_a_controller_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -256,6 +307,7 @@ def test_post_preflight_failure_is_not_reported_as_a_controller_failure(
         raise RuntimeError("later qualification failure")
 
     monkeypatch.setattr(qualification_group_case, "run_group", fail)
+    monkeypatch.setattr(local, "capture_and_cleanup", lambda *args, **kwargs: True)
     with pytest.raises(RuntimeError, match="later qualification failure"):
         local.run(tmp_path, case="audit-rotation")
     assert not (tmp_path / "failure-controller.json").exists()
@@ -336,9 +388,69 @@ def test_complete_and_baseline_commands_use_only_new_owned_contexts(
         return 0
 
     monkeypatch.setattr(subprocess, "call", invoke)
-    cleaned: list[dict[str, str]] = []
-    monkeypatch.setattr(local, "remove_owned_image", cleaned.append)
+    cleaned: list[Path] = []
+    monkeypatch.setattr(disposable, "cleanup", cleaned.append)
     assert local.run(tmp_path, case=case_name) == 0
     assert called[0][-1] == scenario
     assert len(cleaned) == 1
-    assert cleaned[0][context.HOST_ENV] != context.LEGACY_HOST
+    assert cleaned == [tmp_path]
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_failed_retirement_receipt_is_finalized_only_after_disposal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed: bool
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda value: f"/usr/bin/{value}")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0 if command[1] == "version" else 1
+        ),
+    )
+
+    def group(directory: Path, *_: object) -> int:
+        (directory / "case.json").write_text('{"destroy":"pending"}')
+        return 0
+
+    def cleanup(directory: Path) -> None:
+        assert json.loads((directory / "case.json").read_text())["destroy"] == "pending"
+        if failed:
+            raise ValueError("cleanup failed")
+
+    monkeypatch.setattr(qualification_group_case, "run_group", group)
+    monkeypatch.setattr(disposable, "cleanup", cleanup)
+    if failed:
+        with pytest.raises(ValueError, match="cleanup failed"):
+            local.run(tmp_path, case="failed-retirement")
+        assert (tmp_path / "disposable-cleanup-error.json").is_file()
+    else:
+        assert local.run(tmp_path, case="failed-retirement") == 0
+    assert json.loads((tmp_path / "case.json").read_text())["destroy"] == (
+        "pending" if failed else "passed"
+    )
+
+
+def test_signalled_child_keeps_conventional_status_for_failure_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(shutil, "which", lambda value: f"/usr/bin/{value}")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0 if command[1] == "version" else 1
+        ),
+    )
+    monkeypatch.setattr(local, "execute", lambda *args, **kwargs: -15)
+    statuses: list[int | None] = []
+
+    def capture(
+        _directory: Path, _environment: dict[str, str], status: int | None, **kwargs: object
+    ) -> bool:
+        statuses.append(status)
+        return True
+
+    monkeypatch.setattr(local, "capture_and_cleanup", capture)
+    assert local.run(tmp_path) == 143  # noqa: PLR2004 - SIGTERM shell status
+    assert statuses == [143]

@@ -25,6 +25,51 @@ _ARGUMENT_COUNT = 2
 _READY_ATTEMPTS = 100
 
 
+def _probe_diagnostic(stderr: bytes, returncode: int) -> str:
+    """Report known causes without emitting potentially sensitive process output."""
+    detail = stderr.lower()
+    causes = (
+        (b"connection refused", "connection refused"),
+        (b"connection reset", "connection reset"),
+        (b"certificate signed by unknown authority", "untrusted certificate"),
+        (b"certificate has expired", "expired certificate"),
+        (b"certificate is valid for", "certificate name mismatch"),
+        (b"http response to https client", "HTTP response to HTTPS request"),
+        (b"no such container", "container missing"),
+        (b"is not running", "container not running"),
+        (b"permission denied", "permission denied"),
+        (b"i/o timeout", "network timeout"),
+        (b"context deadline exceeded", "network timeout"),
+    )
+    cause = next((label for pattern, label in causes if pattern in detail), "unclassified")
+    return f"exit={returncode}, cause={cause}, stderr_sha256={hashlib.sha256(stderr).hexdigest()}"
+
+
+def _wait_for_archive(client: list[str]) -> None:
+    first = ""
+    last = ""
+    for _ in range(_READY_ATTEMPTS):
+        try:
+            probe = subprocess.run(  # noqa: S603 - dedicated disposable credentials only
+                [*client, "alias", "set", "m310", "https://127.0.0.1", _ROOT_USER, _ROOT_SECRET],
+                check=False,
+                capture_output=True,
+                timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            # TimeoutExpired includes command arguments, including the fixture secret.
+            raise RuntimeError("TLS archive readiness probe timed out") from None
+        if probe.returncode == 0:
+            return
+        last = _probe_diagnostic(probe.stderr, probe.returncode)
+        first = first or last
+        time.sleep(0.2)
+    raise RuntimeError(
+        f"TLS archive fixture did not become ready after {_READY_ATTEMPTS} attempts; "
+        f"first: {first}; last: {last}"
+    )
+
+
 def _run(arguments: list[str]) -> str:
     return subprocess.run(  # noqa: S603 - fixed commands and fixture paths
         arguments, check=True, capture_output=True, text=True, timeout=60
@@ -136,18 +181,7 @@ def prepare(container: str, root: Path) -> dict[str, str]:
         _run(["docker", "restart", "--timeout", "10", container])
     _run(["docker", "cp", str(root / "ca.crt"), f"{container}:/root/.mc/certs/CAs/m3-10.crt"])
     client = [*exec_prefix, "mc", "--config-dir", "/root/.mc", "--quiet", "--no-color"]
-    for _ in range(_READY_ATTEMPTS):
-        probe = subprocess.run(  # noqa: S603 - dedicated disposable credentials only
-            [*client, "alias", "set", "m310", "https://127.0.0.1", _ROOT_USER, _ROOT_SECRET],
-            check=False,
-            capture_output=True,
-            timeout=10,
-        )
-        if probe.returncode == 0:
-            break
-        time.sleep(0.2)
-    else:
-        raise RuntimeError("TLS archive fixture did not become ready")
+    _wait_for_archive(client)
     archive_policy = {
         "Version": "2012-10-17",
         "Statement": [

@@ -3,11 +3,13 @@ from __future__ import annotations
 import shutil
 import subprocess
 import uuid
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from scripts import qualification_case as case
+from scripts import qualification_disposable_cleanup as disposable
 from scripts import qualification_local as local
 from scripts import qualification_retirement as retirement
 from scripts.qualification_context import HOST_ENV, IMAGE_ENV, resource_names, run_lease
@@ -108,12 +110,19 @@ def test_create_only_or_failed_complete_run_preserves_the_original_result(
     monkeypatch.setattr(local, "ensure_image", lambda _environment: "fixture-image")
     monkeypatch.setattr(subprocess, "call", lambda *args, **kwargs: status)
 
-    def cleanup(environment: dict[str, str]) -> None:
-        assert not create_only, "create-only runs retain their image"
-        raise ValueError("retained fixture image must remain available")
+    monkeypatch.setattr(disposable, "bind", lambda *_: None)
+    observed: list[int | None] = []
 
-    monkeypatch.setattr(local, "remove_owned_image", cleanup)
-    assert local.run(tmp_path, create_only=create_only) == status
+    def capture(
+        _directory: Path, _environment: dict[str, str], result: int | None, **kwargs: object
+    ) -> bool:
+        observed.append(result)
+        return True
+
+    monkeypatch.setattr(local, "capture_and_cleanup", capture)
+    expiry = datetime.now(UTC) + timedelta(hours=1) if create_only else None
+    assert local.run(tmp_path, create_only=create_only, retain_until=expiry) == status
+    assert observed == [None if create_only else status]
 
 
 def test_image_only_retry_does_not_reconstruct_destroyed_fixture_proofs(

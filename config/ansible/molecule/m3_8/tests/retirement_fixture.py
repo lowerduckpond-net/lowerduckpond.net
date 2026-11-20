@@ -30,6 +30,7 @@ from scripts.m3_11_retirement_minio import observe
 from scripts.m3_11_retirement_state import ownership
 from scripts.m3_11_retirement_transaction import Retirement
 from scripts.qualification_context import ARCHIVE_ENV, ARTIFACT_ENV, RUN_ENV, resource_names
+from scripts.qualification_disposable_cleanup import complete_auxiliary, reserve_auxiliary
 from scripts.qualification_minio import image_reference
 
 
@@ -75,7 +76,15 @@ class NativeContainers(Containers):
         self.unused = cast(
             Context, SimpleNamespace(environment=environment, context=context.context)
         )
-        owned.command(
+        image = (
+            owned.command(
+                environment, "docker", "image", "inspect", "--format", "{{.Id}}", image_reference()
+            )
+            .decode("ascii")
+            .strip()
+        )
+        reserve_auxiliary(context.run, context.environment, names, image)
+        created = owned.command(
             environment,
             "docker",
             "run",
@@ -98,6 +107,7 @@ class NativeContainers(Containers):
             "--certs-dir",
             "/certs",
         )
+        complete_auxiliary(context.run, created.decode("ascii").strip())
 
     def unused_minio(self) -> dict[str, object]:
         return observe(self.unused, self.api)

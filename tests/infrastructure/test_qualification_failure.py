@@ -72,6 +72,62 @@ def observation() -> dict[str, object]:
     }
 
 
+def test_transport_subprocess_cause_reaches_failure_report_without_secrets(
+    directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from config.ansible.molecule.m3_8 import resolve_operator_transport  # noqa: PLC0415
+
+    monkeypatch.setenv(timing.CONTEXT_ENV, "combined-reconstruction")
+    monkeypatch.setenv("LDP_QUALIFICATION_RUN_ID", "01a1d6e4eabb76ad8c5404e57ee21df8")
+    monkeypatch.setenv("LDP_QUALIFICATION_UNIX_PEER_ADDRESS", "172.19.0.2")
+    monkeypatch.setenv("M3_10_ARCHIVE_BACKEND", "minio")
+    monkeypatch.delenv("LDP_M3_11_MANAGED_INPUTS", raising=False)
+    monkeypatch.delenv("M3_11_COMBINED_BACKEND", raising=False)
+    monkeypatch.delenv("M3_10_INSTALLED_REPORT", raising=False)
+    # The real helper discards child stderr and returns None on nonzero exit.
+    assert (
+        probe.bounded_command(
+            [
+                sys.executable,
+                str(Path(resolve_operator_transport.__file__)),
+                "unix:///docker.sock",
+                CANARY,
+            ],
+            environment=dict(os.environ),
+        )
+        is None
+    )
+    detail = json.loads((directory / "failure-transport.json").read_text())
+    assert detail["reason"] == "local-identity-mismatch"
+    assert detail["frames"]
+    (directory / "failure-test.json").unlink()
+    failure.record_test_failure("test-error", file="restore_fixture.py", line=512)
+    monkeypatch.setattr(failure, "bounded_command", lambda *args, **kwargs: None)
+    report = json.loads(failure.collect(directory, 2).read_text())
+    assert report["last_transport_failure"]["reason"] == "local-identity-mismatch"
+    assert report["last_transport_failure"]["scope"] == "last-attempt-in-failed-group"
+    assert CANARY not in json.dumps(detail)
+    assert CANARY not in json.dumps(report)
+
+
+def test_transport_failure_from_another_group_is_not_attributed_to_this_failure(
+    directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (directory / "failure-transport.json").write_text(
+        json.dumps(
+            {
+                "format": "lowerduckpond-transport-failure-v1",
+                "group": "core",
+                "reason": "local-identity-mismatch",
+                "frames": [],
+            }
+        )
+    )
+    monkeypatch.setattr(failure, "bounded_command", lambda *args, **kwargs: None)
+    report = json.loads(failure.collect(directory, 2).read_text())
+    assert "last_transport_failure" not in report
+
+
 def test_failure_summary_is_allowlisted_and_cannot_qualify(
     directory: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -62,6 +62,9 @@ def completion(directory: Path, environment: dict[str, str]) -> int:
             "backend": "minio",
             "status": "passed",
             **DISPOSITION,
+            # The launcher publishes the final disposition only after the
+            # separate disposable cleanup has actually completed.
+            "destroy": "pending",
         },
     )
     print(f"Installed failure-retention case passed: {directory / 'case.json'}", flush=True)
