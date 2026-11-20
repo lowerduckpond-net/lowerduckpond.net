@@ -277,6 +277,7 @@ def _summarize(directory: Path, started: int, ended: int) -> dict[str, object]:
             ):
                 raise ValueError("changed task identity")
             completed.append(event)
+    failed = [event for event in completed if event["outcome"] == "failed"]
     return {
         "status": "observed",
         "scope": "task-start-through-next-task-or-playbook-stats; overlaps-phase-spans",
@@ -289,6 +290,14 @@ def _summarize(directory: Path, started: int, ended: int) -> dict[str, object]:
                 "apt_download_seconds": e["apt_download_seconds"],
             }
             for e in sorted(completed, key=lambda e: e["elapsed_ns"], reverse=True)[:MAX_ROWS]
+        ],
+        "failed_count": len(failed),
+        "recent_failures": [
+            {
+                key: event[key]
+                for key in ("phase", "group", "action", "source", "line", "process", "start_ns")
+            }
+            for event in sorted(failed, key=lambda event: event["start_ns"])[-MAX_ROWS:]
         ],
         "unfinished_count": len(pending),
         "unfinished": [

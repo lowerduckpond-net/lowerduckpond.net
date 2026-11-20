@@ -108,7 +108,7 @@ storage fixtures before the complete run can pass.
 | `overlap-deployment` | Fresh active tenant; configuration overlap with deploy, rollback and suspend. |
 | `overlap-routing` | Fresh suspended tenant; configuration overlap with resume, rename and reconcile. |
 | `credentials` | Installed service identities, TLS, denied cross-service storage credentials, namespace masks, credential withdrawal/draining and legacy selection. |
-| `reboot-journey` | A 100-MiB/5,000-file site through supported create/deploy/export/import/archive/restore/rename/suspend, exact durable snapshot, actual reboot and startup reconciliation, restored routes/content, exact replay and a new admitted operation. |
+| `reboot-journey` | A 100-MiB/5,000-file site through supported create/deploy/export/import/archive/restore/rename/suspend, exact durable snapshot, actual reboot and startup reconciliation, restored routes/content, exact replay and a new admitted operation. Activates backup recovery and audit rotation on the populated source and verifies convergence preserves tenant state and publication. |
 
 Core, archive and transport extraction retains the original complete test entry
 points. Their ordered assertion bodies remain available in that journey. The

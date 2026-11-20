@@ -200,7 +200,10 @@ The report separates:
   refusal can be an expected part of a test that later passes; its source line
   alone never establishes that fact or the cause of a later terminal failure.
   Historical records without these coordinates remain unknown. The original
-  first-failure record is preserved.
+  first-failure record is preserved. The task timing summary also keeps the
+  most recent 30 failed task observations in start order. Their group, phase,
+  process and source coordinates can identify a short nested failure that
+  falls outside the longest-task list.
 - The failed phase, verification group, fixed failure category, allowlisted
   test filename/line, original exit
   status, source revision, backend, and observed selected artifact digest.

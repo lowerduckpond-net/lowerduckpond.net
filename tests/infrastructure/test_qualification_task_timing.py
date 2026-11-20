@@ -47,6 +47,48 @@ def test_overlapping_playbooks_preserve_completed_and_unfinished_tasks(directory
     assert CANARY not in json.dumps(report)
 
 
+def test_recent_failures_keep_nested_converge_context_after_an_expected_refusal(
+    directory: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(tasks, "MAX_ROWS", 2)
+    first = tasks.start_task("converge", "ansible.builtin.assert", f"{SOURCE}:1")
+    assert first is not None
+    failure.record_ansible_failure(
+        "ansible.builtin.assert",
+        f"{SOURCE}:1",
+        {"msg": CANARY},
+        outcome="failed",
+        task=first,
+    )
+    tasks.finish_task(first, "failed")
+
+    outer = tasks.start_task("verify", "ansible.builtin.command", f"{SOURCE}:2")
+    monkeypatch.setenv(timing.CONTEXT_ENV, "combined-reconstruction")
+    nested = tasks.start_task("converge", "ansible.builtin.command", f"{SOURCE}:3")
+    assert outer is not None and nested is not None
+    tasks.finish_task(nested, "failed")
+    tasks.finish_task(outer, "failed")
+
+    report = summary(directory)
+    expected_failure_count = 3
+    assert report["failed_count"] == expected_failure_count
+    assert report["recent_failures"] == [
+        {
+            "phase": task["phase"],
+            "group": task["group"],
+            "action": "command",
+            "source": task["source"],
+            "line": task["line"],
+            "process": task["process"],
+            "start_ns": task["start_ns"],
+        }
+        for task in (outer, nested)
+    ]
+    context = cast(dict[str, object], failure.ansible_failure(directory)["context"])
+    assert context["group"] == "core"
+    assert CANARY not in json.dumps(report)
+
+
 @pytest.mark.parametrize("group", INSTALLED_GROUPS)
 def test_installed_groups_survive_task_failure_and_timing_reports(
     directory: Path, monkeypatch: pytest.MonkeyPatch, group: str

@@ -8,6 +8,7 @@ import uuid
 from pathlib import Path
 
 import full_size_fixture as full_size
+import restore_scenarios as restore
 import test_archive_lifecycle as archives
 import test_lifecycle as support
 from independent_fixture import require_owned_fixture
@@ -158,3 +159,16 @@ def test_cross_feature_after_reboot(host: Host, tmp_path: Path) -> None:
         redirect=f"https://{context['copy_origin']}/",
     )
     assert not archives._remote_versions(host)
+
+    # Exercise the complete journey's activation on an already populated,
+    # rebooted source while keeping this group independent of reconstruction.
+    restore.activate_source(host, archived_prefix=True, existing_namespace=True)
+    for tenant, expected in (
+        (context["source_id"], context["source_manifest"]),
+        (context["copy_id"], support._manifest(resumed)),
+    ):
+        assert (
+            support._read_state(host, f"{support.STATE_ROOT}/tenants/{tenant}/desired.json")
+            == expected
+        )
+    assert host.run("%s job-issuance", support.PUBLICATION_GATE).rc == 0
