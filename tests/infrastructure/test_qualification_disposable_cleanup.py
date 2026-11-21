@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import json
+import selectors
+import signal
 import subprocess
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock, Mock
 
 import pytest
 
@@ -12,6 +16,7 @@ from scripts import qualification_disposable_cleanup as cleanup
 from scripts import qualification_disposition as disposition
 from scripts import qualification_failure as failure
 from scripts import qualification_local as local
+from scripts import qualification_probe as probe
 from scripts import qualification_retirement
 from scripts.qualification_context import ARTIFACT_ENV, HOST_ENV, RUN_ENV, resource_names, run_lease
 
@@ -42,7 +47,7 @@ def fixture_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str
         )
     )
     monkeypatch.setattr(qualification_retirement, "environment_for", lambda _: environment)
-    monkeypatch.setattr(cleanup, "daemon_id", lambda _: "original-daemon")
+    monkeypatch.setattr(cleanup, "daemon_id", lambda _environment, **_options: "original-daemon")
     monkeypatch.setattr(cleanup, "remove_owned_image", lambda _: None)
     cleanup.bind(tmp_path, environment)
     return environment
@@ -352,3 +357,75 @@ def test_cleanup_error_details_do_not_copy_arbitrary_sensitive_output() -> None:
     details = json.dumps(cleanup.error_detail(ValueError("seeded-secret-from-process-output")))
     assert "seeded-secret" not in details
     assert "unclassified" in details
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        (
+            [False],
+            [],
+            [100, 100, 105],
+            "waiting_for=first-byte elapsed_ms=5000 first_byte_ms=None eof_ms=None",
+        ),
+        (
+            [True, False],
+            [b"synthetic-private-daemon-id"],
+            [100, 100, 100.25, 100.25, 105],
+            "waiting_for=stdout-eof elapsed_ms=5000 first_byte_ms=250 eof_ms=None",
+        ),
+        (
+            [True, True],
+            [b"synthetic-private-daemon-id", b""],
+            [100, 100, 100.25, 100.25, 100.5, 105],
+            "waiting_for=process-exit elapsed_ms=5000 first_byte_ms=250 eof_ms=500",
+        ),
+    ],
+)
+def test_binding_timeout_reports_only_the_wait_milestones(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    case: tuple[list[bool], list[bytes], list[float], str],
+) -> None:
+    readable, reads, clock, details = case
+    environment = resource_names(uuid.UUID("00000000-0000-7000-8000-000000000001").hex)
+    environment["DOCKER_HOST"] = "unix:///synthetic-private-socket"
+    stdout = Mock()
+    process = Mock(pid=1000, stdout=stdout)
+
+    remaining_after_eof = 4.5
+
+    def wait(*, timeout: float | None = None) -> int:
+        if timeout is not None:
+            assert timeout == remaining_after_eof
+            raise subprocess.TimeoutExpired(
+                ["synthetic-private-command"], timeout, stderr=b"synthetic-private-stderr"
+            )
+        return 0
+
+    process.wait.side_effect = wait
+    popen = Mock(return_value=process)
+    ready = MagicMock()
+    ready.__enter__.return_value.select.side_effect = readable
+    monotonic = Mock(side_effect=clock)
+    monkeypatch.setattr(probe, "time", SimpleNamespace(monotonic=monotonic))
+    monkeypatch.setattr(probe, "shutil", SimpleNamespace(which=lambda name: name))
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    monkeypatch.setattr(selectors, "DefaultSelector", lambda: ready)
+    kill_group = Mock()
+    monkeypatch.setattr(
+        probe, "os", SimpleNamespace(read=Mock(side_effect=reads), killpg=kill_group)
+    )
+
+    with pytest.raises(subprocess.TimeoutExpired):
+        cleanup.bind(tmp_path, environment)
+
+    captured = capsys.readouterr()
+    assert captured.err == f"Disposable identity probe timeout: {details}\n"
+    assert captured.out == ""
+    assert not (tmp_path / "disposable-cleanup-binding.json").exists()
+    popen.assert_called_once()
+    assert ready.__enter__.return_value.select.call_args_list[0].args == (5.0,)
+    kill_group.assert_called_once_with(process.pid, signal.SIGKILL)
+    stdout.close.assert_called_once()
