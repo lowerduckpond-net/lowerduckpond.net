@@ -87,9 +87,8 @@ class CommandPublicationGate:
                 close_fds=True,
                 cwd="/",
                 env={"LANG": "C.UTF-8"},
-                timeout=5,
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
+        except OSError as error:
             raise IssuanceError("publication gate failed closed") from error
         if completed.returncode == 0:
             return
@@ -99,6 +98,17 @@ class CommandPublicationGate:
         ):
             raise PublicationDisabledError("publication_disabled")
         raise IssuanceError("publication gate failed closed")
+
+    def require_unfenced(self) -> None:
+        """Check the native fence again while the admission transaction is held."""
+        from lowerduckpond_static_host_agent.successor_rollback import (  # noqa: PLC0415
+            require_unfenced_publication,
+        )
+
+        try:
+            require_unfenced_publication()
+        except (OSError, RuntimeError, ValueError) as error:
+            raise PublicationDisabledError("publication_disabled") from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,7 +195,16 @@ class AuthorizationIssuer:
             # Reserve the longest spelling before acceptance. Retirement only
             # shrinks this job and never consumes another authorization record.
             candidate["exportDelivery"] = "unacknowledged"
-        resolution = self._admission.resolve(candidate, now=accepted_at, blocking=blocking)
+        resolution = self._admission.resolve(
+            candidate,
+            now=accepted_at,
+            blocking=blocking,
+            before_commit=(
+                self._gate.require_unfenced
+                if isinstance(self._gate, CommandPublicationGate)
+                else None
+            ),
+        )
         return _issued(resolution)
 
     def require_enabled(self) -> None:

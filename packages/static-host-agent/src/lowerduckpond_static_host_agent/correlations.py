@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -136,6 +137,7 @@ class CorrelationAdmission:
         *,
         now: datetime,
         blocking: bool = False,
+        before_commit: Callable[[], None] | None = None,
     ) -> CorrelationResolution:
         """Return an exact retry or durably admit one new pending job."""
 
@@ -147,6 +149,8 @@ class CorrelationAdmission:
             mode=LockMode.EXCLUSIVE,
             blocking=blocking,
         ) as transaction:
+            if before_commit is not None:
+                before_commit()
             inventory = transaction.measure_authorization_records(limits=self._limits)
             correlations, repaired_records = _reconcile_pairs(
                 transaction,

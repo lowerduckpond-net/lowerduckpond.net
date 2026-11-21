@@ -58,6 +58,7 @@ def helper_bundle() -> tuple[bytes, str]:
                 "m3_11_production_probe.py",
                 "m3_11_production_records.py",
                 "m3_11_production_remote.py",
+                "m3_12_installed_root.py",
             )
         },
     }

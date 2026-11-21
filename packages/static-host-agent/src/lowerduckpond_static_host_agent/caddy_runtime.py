@@ -493,6 +493,12 @@ class CaddyRuntime:
         finally:
             active.generation.close()
 
+    def sync_active(self, expected: str) -> None:
+        """Complete a previously published selector without replacing its inode."""
+        if self.read_active() != _canonical_generation_id(expected):
+            raise CaddyRuntimeError("active Caddy generation differs from the retained decision")
+        os.fsync(self._root_fd)
+
     def select_active(
         self,
         generation_id: str,

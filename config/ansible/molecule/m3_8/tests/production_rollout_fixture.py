@@ -44,7 +44,13 @@ class ControllerDepartureError(Exception):
 
 
 class Fixture:
-    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        source_root: Path = ROOT,
+        source_revision: str | None = None,
+    ) -> None:
         require_owned_fixture()
         self.environment = dict(os.environ)
         self.identities = owned_containers(self.environment)
@@ -54,8 +60,10 @@ class Fixture:
         self.directory.mkdir(mode=0o700)
         self.logs = Logs(self.directory)
         self.artifact = self.directory / "candidate.tar"
+        self.source_revision = source_revision
         self.command(
-            "candidate-build", [str(ROOT / "scripts/build-static-host-agent"), str(self.artifact)]
+            "candidate-build",
+            [str(source_root / "scripts/build-static-host-agent"), str(self.artifact)],
         )
         self.artifact.chmod(0o400)
         self.digest = hashlib.sha256(self.artifact.read_bytes()).hexdigest()
@@ -246,7 +254,7 @@ class Fixture:
             ["bash", "-s", "--", "inspect"],
             (ROOT / "scripts/m3-10-convergence-state").read_bytes(),
         ).decode()
-        revision = (
+        revision = self.source_revision or (
             self.command("source-revision", ["git", "-C", str(ROOT), "rev-parse", "HEAD"])
             .decode()
             .strip()
