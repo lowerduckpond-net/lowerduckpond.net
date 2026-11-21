@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import uuid
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -24,10 +25,12 @@ from scripts import m3_11_production_journal as previous_journal
 from scripts import m3_11_production_records as previous_records
 from scripts import production_qualification_inputs as inputs
 from scripts.m3_11_production_session import Session, controller
+from scripts.m3_12_audit_failure import validated
 from scripts.m3_12_contracts import COMMON_SLOTS, Document, digest, encode
 from scripts.m3_12_diagnostic_store import publish, read
 from scripts.m3_12_installed import (
     APPLY_STAGE_ENV,
+    PROGRESS_DIRECTORY,
     PROGRESS_ROOT_ENV,
     predecessor_progress,
     recheck_installed,
@@ -274,6 +277,28 @@ class Rollout:
     def complete(self, name: str, observation: str) -> None:
         self.seal(name + ".complete", {"stage": name, "observationSha256": observation})
 
+    def audit_observation(self, mode: str) -> bytes:
+        return self.remote(
+            "audit-repeat-" + mode,
+            [PYTHON, "-I", "-B", "-", mode, self.session.token],
+            data=(ROOT / "scripts/m3_12_audit_failure.py").read_bytes(),
+        )
+
+    def retain_audit_failure(self) -> None:
+        directory = self.origin / PROGRESS_DIRECTORY
+        report = read(directory, "enabled-repeat-ansible-failure.json")
+        if report.get("auditInitialization") is True:
+            evidence = validated(json.loads(self.audit_observation("collect")))
+            publish(
+                directory,
+                "enabled-repeat-audit-unit.json",
+                {
+                    "format": "lowerduckpond-m3-12-successor-audit-unit-v1",
+                    "authority": "diagnostic-only",
+                    **evidence,
+                },
+            )
+
     def converge(self, stage: str, *, enabled: bool, repeated: bool = False) -> str:
         self.start(stage)
         variables = converge._variables(
@@ -306,6 +331,9 @@ class Rollout:
         assert recheck_installed(self.origin, self.fixture.environment) == self.allocation
         executable = shutil.which("uv")
         assert executable is not None
+        if stage == "enabled-repeat":
+            with suppress(AssertionError, OSError, ValueError):
+                self.audit_observation("mark")
         result = subprocess.run(  # noqa: S603 - fixed playbook and leased owned target
             [
                 executable,
@@ -324,6 +352,9 @@ class Rollout:
             stderr=subprocess.DEVNULL,
             check=False,
         )
+        if result.returncode and stage == "enabled-repeat":
+            with suppress(AssertionError, OSError, ValueError):
+                self.retain_audit_failure()
         assert result.returncode == 0, f"Leased successor convergence failed at {stage}"
         observed, _ = converge.recap(
             recap, context, idempotent=repeated, expected_host=INSTALLED_HOST

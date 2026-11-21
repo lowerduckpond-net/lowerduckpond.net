@@ -13,6 +13,7 @@ from ansible.plugins.callback import CallbackBase  # type: ignore[import-untyped
 # Callback discovery may execute outside the checkout's Python import root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
 from scripts.m3_11_production_converge import COUNTERS
+from scripts.m3_12_audit_failure import SOURCE, UNIT
 from scripts.m3_12_diagnostic_store import publish
 from scripts.m3_12_installed import (
     APPLY_STAGE_ENV,
@@ -90,9 +91,17 @@ class CallbackModule(CallbackBase):  # type: ignore[misc]
             if values.get("stderr") in LAUNCH_DENIAL
             else ansible_failure_category(full_action, values, outcome)
         )
+        audit_initialization = (
+            outcome == "failed"
+            and action == "systemd_service"
+            and source == SOURCE
+            and result._task.args.get("name") == UNIT
+            and result._task.args.get("state") == "started"
+        )
         self._failure_retained = self._retain(
             "failure",
             {
+                **({"auditInitialization": True} if audit_initialization else {}),
                 "task": {
                     "source": source,
                     "line": line,
@@ -100,7 +109,7 @@ class CallbackModule(CallbackBase):  # type: ignore[misc]
                     if action in ACTIONS | {"assert", "fail", "systemd_service"}
                     else "other",
                     "category": category,
-                }
+                },
             },
         )
 
