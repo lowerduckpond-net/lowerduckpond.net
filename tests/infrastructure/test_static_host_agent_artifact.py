@@ -155,6 +155,12 @@ def test_host_agent_artifact_is_locked_reproducible_and_installable(
     create_selection_lock(install_root)
     state_root = tmp_path / "state"
     verifier = verifier_for_test(tmp_path)
+    staged = run(INSTALLER, first, digest, install_root, verifier, state_root, "--stage-only")
+    assert staged.returncode == 0, staged.stderr
+    assert staged.stdout == "changed\n"
+    assert (install_root / digest).is_dir()
+    assert not os.path.lexists(install_root / "current")
+
     installed = run(INSTALLER, first, digest, install_root, verifier, state_root)
     assert installed.returncode == 0, installed.stderr
     assert installed.stdout == "changed\n"

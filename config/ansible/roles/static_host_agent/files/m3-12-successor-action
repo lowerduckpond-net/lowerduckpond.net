@@ -1,0 +1,70 @@
+#!/usr/bin/python3 -I
+"""Dispatch only the hash-pinned, separately staged successor controller."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path("/var/lib/lowerduckpond/convergence/m3-12")
+INSTALL = Path("/opt/lowerduckpond/static-host-agent")
+VERIFIER = "/usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact"
+MAX_CANDIDATE = 4096
+
+
+def main() -> int:
+    try:
+        if os.geteuid() != 0 or os.path.lexists("/.dockerenv"):
+            raise ValueError("production native action requires its enrolled root host")
+        parent = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            directory = os.fstat(parent)
+            if directory.st_uid != 0 or stat.S_IMODE(directory.st_mode) != 0o700:  # noqa: PLR2004
+                raise ValueError("native authority directory is not protected")
+            fd = os.open(
+                "candidate.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent
+            )
+            with os.fdopen(fd, "rb") as stream:
+                metadata = os.fstat(stream.fileno())
+                if (
+                    not stat.S_ISREG(metadata.st_mode)
+                    or metadata.st_uid != 0
+                    or stat.S_IMODE(metadata.st_mode) != 0o600  # noqa: PLR2004
+                    or metadata.st_nlink != 1
+                    or not 0 < metadata.st_size <= MAX_CANDIDATE
+                ):
+                    raise ValueError("native candidate is not protected")
+                candidate = json.loads(stream.read(MAX_CANDIDATE + 1))
+        finally:
+            os.close(parent)
+        digest = candidate["hostAgentSha256"]
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValueError("invalid native candidate artifact")
+        artifact = INSTALL / digest
+        if artifact.resolve(strict=True) != artifact:
+            raise ValueError("invalid native candidate path")
+        result = subprocess.run(  # noqa: S603 - fixed verifier and protected candidate
+            [VERIFIER, str(artifact)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if result.returncode:
+            raise ValueError("native candidate verification failed")
+        sys.path.insert(0, str(artifact / "site-packages"))
+        from scripts.m3_12_native import main as action  # noqa: PLC0415
+
+        return action()
+    except Exception:
+        print("m3_12_successor_action_refused", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

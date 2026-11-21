@@ -272,3 +272,78 @@ def launch(token: str, raw: bytes) -> bytes:
             observe,
         )
     )
+
+
+def physical(token: str, action: str, *, stop_after_selection: bool = False) -> bytes:
+    """Exercise the same physical primitive on the original owned installed guest."""
+    from lowerduckpond_static_host_agent.caddy_startup import CaddyStartupStore  # noqa: PLC0415
+    from lowerduckpond_static_host_agent.durable import DurableDirectory  # noqa: PLC0415
+    from lowerduckpond_static_host_agent.entrypoints import (  # noqa: PLC0415
+        _open_caddy_control_runtime,
+    )
+    from lowerduckpond_static_host_agent.platform_launch import verify_launch  # noqa: PLC0415
+    from lowerduckpond_static_host_agent.successor_rollback import PhysicalRollback  # noqa: PLC0415
+
+    from scripts.m3_12_contracts import digest, encode, require  # noqa: PLC0415
+
+    lease_check(token)
+    local = enrollment()
+    require(
+        local["predecessor"] == predecessor_digest()
+        and SELECTION.resolve(strict=True) == SELECTION.parent / local["artifact"]
+        and os.path.lexists(ROOT / "enabled-repeat.complete")
+        and action in {"restore-platform-only", "reactivate-same-policy"}
+        and (not stop_after_selection or action == "restore-platform-only"),
+        "installed-rollback-enrollment-changed",
+    )
+    receipt = verify_launch(STATIC, ROOT)
+    require(receipt["binding"]["targetKind"] == "installed-fixture", "installed-rollback-purpose")
+    predecessor = json.loads(private(ROOT / "preceding-generation.json"))
+    decision = {
+        "format": "lowerduckpond-m3-12-installed-physical-decision-v1",
+        "action": action,
+        "authorizationSha256": digest(local),
+        "precedingGenerationSha256": predecessor["manifestSha256"],
+        "retainedLaunchSha256": receipt["launchRecordSha256"],
+        "retainedIntentSha256": receipt["intentSha256"],
+    }
+
+    def restart() -> None:
+        subprocess.run(
+            ["/usr/bin/systemctl", "restart", "caddy.service"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+
+    with (
+        DurableDirectory.open(ROOT, expected_owner=0, expected_directory_mode=0o700) as root,
+        _open_caddy_control_runtime() as runtime,
+        CaddyStartupStore.open(Path("/etc/caddy/intents"), expected_owner=0) as startup,
+    ):
+        engine = PhysicalRollback(
+            STATIC,
+            ROOT,
+            PUBLICATION,
+            runtime,
+            require_lease=lambda: lease_check(token),
+            restart=restart,
+            startup=startup,
+        )
+        raw = encode(
+            engine.reconcile(
+                decision, after_selection=interrupt_installed if stop_after_selection else None
+            )
+        )
+        key = ("installed-" + action + "-effect.json",)
+        if not os.path.lexists(ROOT.joinpath(*key)):
+            root.create_immutable(key, raw)
+        else:
+            require(private(ROOT.joinpath(*key)) == raw, "installed-rollback-effect-changed")
+        return raw
+
+
+def interrupt_installed() -> None:
+    """Leave the owned test action after the durable selector handoff."""
+    raise SystemExit(75)

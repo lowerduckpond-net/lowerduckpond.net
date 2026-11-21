@@ -69,9 +69,17 @@ def require_successor_launch() -> None:
         return
     sys.path.insert(0, str(INSTALLATION))
     try:
-        from lowerduckpond_static_host_agent.platform_launch import verify_launch  # noqa: PLC0415
+        from lowerduckpond_static_host_agent.platform_launch import (  # noqa: PLC0415
+            require_local_launch_binding,
+            verify_launch,
+        )
+        from lowerduckpond_static_host_agent.successor_rollback import (  # noqa: PLC0415
+            require_unfenced_publication,
+        )
 
-        verify_launch(STATE, SUCCESSOR)
+        require_unfenced_publication(SUCCESSOR)
+        receipt = verify_launch(STATE, SUCCESSOR)
+        require_local_launch_binding(SUCCESSOR, receipt, disposable=os.path.lexists("/.dockerenv"))
     except Exception:
         fail("launch_authority_unavailable", 78)
 

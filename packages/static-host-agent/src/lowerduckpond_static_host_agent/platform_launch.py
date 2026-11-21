@@ -127,7 +127,17 @@ def initialize_launch(  # noqa: PLR0913 - explicit authority, host and durabilit
         state.open_descendant(("platform",)) as platform,
     ):
         context = observe()
-        admission = validate_admission(admission_raw, context, evidence)
+        fresh = validate_admission(admission_raw, context, evidence)
+        original_raw = _optional(authority, ADMISSION, owner)
+        admission = fresh if original_raw is None else decode(original_raw, "admission")
+        require(
+            all(
+                admission[name] == fresh[name]
+                for name in ("binding", "target", "candidate", "platform", "authoritySha256")
+            ),
+            "launch-original-admission-changed",
+        )
+        admission_raw = admission_raw if original_raw is None else original_raw
         namespace = transaction.read(NAMESPACE).document
         require(
             digest(namespace) == admission["platform"]["namespaceSha256"]
@@ -156,7 +166,7 @@ def initialize_launch(  # noqa: PLR0913 - explicit authority, host and durabilit
             "launch-history-or-work",
         )
         intended = context.now.astimezone(UTC).replace(microsecond=0)
-        require(intended >= instant(admission["preparedAt"]), "launch-time-before-preparation")
+        require(intended >= instant(fresh["preparedAt"]), "launch-time-before-preparation")
         intent = (
             {
                 "format": "lowerduckpond-m3-12-launch-intent-v1",
@@ -207,3 +217,32 @@ def verify_launch(state_path: Path, authority_path: Path, *, owner: int = 0) -> 
             "launch-namespace-changed",
         )
         return receipt
+
+
+def require_local_launch_binding(
+    authority_path: Path, receipt: Document, *, disposable: bool, owner: int = 0
+) -> None:
+    """Reject receipts copied from a different target or native transaction."""
+    with DurableDirectory.open(
+        authority_path, expected_owner=owner, expected_directory_mode=0o700
+    ) as authority:
+        binding = receipt["binding"]
+        transaction_raw = _optional(authority, ("transaction.json",), owner)
+        if transaction_raw is not None:
+            transaction = decode(transaction_raw, "transaction")
+            require(
+                not disposable
+                and binding["targetKind"] == "production-host"
+                and binding["purpose"] == "production"
+                and binding == transaction["binding"],
+                "native-publication-binding-changed",
+            )
+            return
+        require(disposable, "installed-publication-requires-disposable")
+        target = decode(_read(authority, ("installed-target.json",), owner), "target")
+        require(
+            binding["targetKind"] == target["targetKind"] == "installed-fixture"
+            and binding["purpose"] == target["purpose"] == "installed-test"
+            and binding["targetSha256"] == digest(target),
+            "installed-publication-binding-changed",
+        )

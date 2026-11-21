@@ -351,6 +351,17 @@ def runtime_fixture(tmp_path: Path) -> RuntimeFixture:
     )
 
 
+def test_sync_existing_selector_preserves_its_inode(runtime_fixture: RuntimeFixture) -> None:
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+        reference = runtime_fixture.root / CADDY_ACTIVE_REFERENCE_NAME
+        before = reference.stat().st_ino
+        runtime.sync_active(GENERATION_A)
+        assert reference.stat().st_ino == before
+        with pytest.raises(CaddyRuntimeError, match="retained decision"):
+            runtime.sync_active(GENERATION_B)
+
+
 def test_selection_requires_the_publication_lock(
     runtime_fixture: RuntimeFixture,
 ) -> None:

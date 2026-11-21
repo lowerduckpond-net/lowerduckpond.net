@@ -128,8 +128,30 @@ class Rollout:
             assert result.returncode == 0, "Reviewed candidate component prerequisites failed."
         return sha(self.artifact.read_bytes())
 
+    def capture_predecessor_generation(self) -> None:
+        raw = self.remote(
+            "retain-original-platform-generation",
+            [
+                PYTHON,
+                "-I",
+                "-B",
+                "-c",
+                "import hashlib,json,sys;sys.path.insert(0,"
+                "'/opt/lowerduckpond/static-host-agent/current/site-packages');"
+                "from lowerduckpond_static_host_agent import entrypoints;"
+                "r=entrypoints._open_caddy_control_runtime();c=r.locked();c.__enter__();"
+                "g=r.open_verified_generation(r.read_active());m=g.manifest;"
+                "print(json.dumps({'generation':m.generation_id,"
+                "'manifestSha256':hashlib.sha256(m.to_bytes()).hexdigest()},sort_keys=True));"
+                "g.close();c.__exit__(None,None,None);r.close()",
+            ],
+        )
+        self.preceding_generation = json.loads(raw)
+        self.seal("preceding-generation.json", self.preceding_generation)
+
     def setup(self) -> None:
         self.observe("component", self.build)
+        self.capture_predecessor_generation()
         revision = inputs.git(ROOT, "rev-parse", "HEAD").decode("ascii").strip()
         revocations = inputs.current_candidate(ROOT, revision)
         artifact = self.measurements["component"][2]
@@ -373,6 +395,26 @@ class Rollout:
         self.complete("durable-launch", sha(original))
         return original
 
+    def physical(self, action: str, *, interrupt: bool = False) -> Document:
+        command = [
+            PYTHON,
+            "-I",
+            "-B",
+            "-c",
+            "import sys;"
+            "sys.path.insert(0,'/opt/lowerduckpond/static-host-agent/current/site-packages');"
+            "from scripts.m3_12_installed_root import physical;"
+            "sys.stdout.buffer.write(physical(sys.argv[1],sys.argv[2],"
+            "stop_after_selection=sys.argv[3]=='interrupt'))",
+            self.session.token,
+            action,
+            "interrupt" if interrupt else "reconcile",
+        ]
+        if interrupt:
+            assert not self.remote("interrupt-installed-rollback", command, expect=75)
+            return {}
+        return json.loads(self.remote("installed-" + action, command))  # type: ignore[no-any-return]
+
 
 def test_installed_m3_12_successor_from_accepted_m3_11(
     host: Host,
@@ -402,6 +444,21 @@ def test_installed_m3_12_successor_from_accepted_m3_11(
         launch = rollout.launch()
         rollout.converge("enabled-convergence", enabled=True)
         rollout.converge("enabled-repeat", enabled=True, repeated=True)
+        rollout.physical("restore-platform-only", interrupt=True)
+        rollout.remote("interrupted-issuance-fenced", [GATE, "job-issuance"], expect=78)
+        original_lease = sha(session.token.encode())
+
+    recovery = directory / "rollback-recovery"
+    recovery.mkdir(mode=0o700)
+    with controller(fixture.ssh, recovery) as session:
+        assert sha(session.token.encode()) != original_lease
+        rollout.session = session
+        restored = rollout.physical("restore-platform-only")
+        assert restored["desired"] == rollout.preceding_generation
+        rollout.health(enabled=False)
+        reactivated = rollout.physical("reactivate-same-policy")
+        assert reactivated["desired"] == restored["source"]
+        rollout.health(enabled=True)
         assert rollout.remote(
             "verify-accepted-predecessor-unchanged",
             [PYTHON, "-I", "-B", session.helper, "journal", session.token, "read"],
@@ -421,6 +478,10 @@ def test_installed_m3_12_successor_from_accepted_m3_11(
                 "predecessorSha256": rollout.predecessor,
                 "launchReceiptSha256": sha(launch),
                 "launchRecordSha256": json.loads(launch)["launchRecordSha256"],
+                "rollbackEffectSha256": digest(restored),
+                "reactivationEffectSha256": digest(reactivated),
+                "rollbackResumedAfterHandoff": True,
+                "rollbackSelectorChanged": restored["source"] != restored["desired"],
             },
         )
 

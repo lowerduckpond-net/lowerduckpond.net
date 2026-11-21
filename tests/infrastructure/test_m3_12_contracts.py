@@ -11,8 +11,13 @@ import pytest
 from jsonschema import Draft202012Validator
 from lowerduckpond_static_contracts import decode_json_object
 from lowerduckpond_static_host_agent.durable import DurabilityBoundary, DurableDirectory
-from lowerduckpond_static_host_agent.platform_launch import initialize_launch, verify_launch
+from lowerduckpond_static_host_agent.platform_launch import (
+    initialize_launch,
+    require_local_launch_binding,
+    verify_launch,
+)
 
+from scripts import m3_12_native as native
 from scripts.m3_12_contracts import (
     COMMON_SLOTS,
     DISPOSABLE,
@@ -886,10 +891,25 @@ def test_native_launch_retry_keeps_the_original_intent(
     with pytest.raises(FileNotFoundError):
         verify_launch(state, authority, owner=owner)
     original = (authority / "launch-intent.json").read_bytes()
-    resumed = replace(context, now=context.now + timedelta(hours=1))
-    result = initialize_launch(state, authority, raw, evidence, lambda: resumed, owner=owner)
+    resumed = replace(
+        context,
+        now=context.now + timedelta(hours=1),
+        invocation_id=uuid(31),
+        lease_sha256=proof("fresh-lease"),
+    )
+    fresh = deepcopy(admission)
+    fresh["invocationId"] = resumed.invocation_id
+    fresh["leaseSha256"] = resumed.lease_sha256
+    fresh["preparedAt"] = fixture_time(148)
+    fresh["prerequisites"]["targetSafety"] = retain(
+        records, receipt(fresh, "target-safety", 145, 146)
+    )
+    result = initialize_launch(
+        state, authority, encode(fresh), evidence, lambda: resumed, owner=owner
+    )
     assert result["launchedAt"] == fixture_time(89)
     assert (authority / "launch-intent.json").read_bytes() == original
+    assert (authority / "admission.json").read_bytes() == raw
     assert verify_launch(state, authority, owner=owner) == result
     record_path.write_bytes(encode({**namespace, "initializedAt": fixture_time(6)}))
     with pytest.raises(ValidationError, match="launch-namespace-changed"):
@@ -958,3 +978,144 @@ def test_prepare_reopens_only_the_pinned_production_configuration(tmp_path: Path
         candidate.write(encode({**admission["candidate"], "revision": "b" * 40}))
     with pytest.raises(ValidationError, match="successor-proposal-binding-changed"):
         preview(location)
+
+
+def test_native_successor_accepts_only_the_distinct_action_unit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    unit = tmp_path / "cgroup"
+    unit.write_text("0::/system.slice/lowerduckpond-m3-11-action.service\n")
+    monkeypatch.setattr(native, "REQUIRE_CGROUP", unit)
+    directory = tmp_path / "production-proposal"
+    directory.mkdir(mode=0o700)
+    owner = os.geteuid()
+    with DurableDirectory.open(
+        directory, expected_owner=owner, expected_directory_mode=0o700
+    ) as records:
+        journal = SuccessorJournal(records, owner)
+        with pytest.raises(ValidationError, match="native-successor-outside-action"):
+            native.dispatch(journal, ["gate", "a" * 64])
+
+
+def test_publication_requires_launch_bound_to_this_target(tmp_path: Path) -> None:
+    directory = tmp_path / "local-launch"
+    directory.mkdir(mode=0o700)
+    owner = os.geteuid()
+    admission, _, _ = enroll(INSTALLED)
+    receipt = {"binding": admission["binding"]}
+    transaction, _ = production_transaction()
+    with DurableDirectory.open(
+        directory, expected_owner=owner, expected_directory_mode=0o700
+    ) as records:
+        records.create_immutable(("installed-target.json",), encode(admission["target"]))
+        require_local_launch_binding(directory, receipt, disposable=True, owner=owner)
+        with pytest.raises(ValidationError, match="installed-publication-requires-disposable"):
+            require_local_launch_binding(directory, receipt, disposable=False, owner=owner)
+        records.create_immutable(("transaction.json",), encode(transaction))
+        with pytest.raises(ValidationError, match="native-publication-binding-changed"):
+            require_local_launch_binding(directory, receipt, disposable=False, owner=owner)
+        production = {"binding": transaction["binding"]}
+        require_local_launch_binding(directory, production, disposable=False, owner=owner)
+        with pytest.raises(ValidationError, match="native-publication-binding-changed"):
+            require_local_launch_binding(directory, production, disposable=True, owner=owner)
+
+
+def test_native_phase_refuses_an_observation_from_a_different_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transaction, context = production_transaction()
+    directory = tmp_path / "native-phases"
+    directory.mkdir(mode=0o700)
+    owner = os.geteuid()
+    with DurableDirectory.open(
+        directory, expected_owner=owner, expected_directory_mode=0o700
+    ) as records:
+        journal = SuccessorJournal(records, owner)
+        journal.pin(encode(transaction))
+        monkeypatch.setattr(
+            native,
+            "read_authority",
+            lambda *_: native.NativeAuthority(
+                context, transaction["predecessorSha256"], {}, {}, {}
+            ),
+        )
+        observed = {"originalPreconditions": True}
+        key = digest(observed)
+        journal.immutable("evidence-" + key + ".json", encode(observed))
+        proposal = record(
+            "native-phase-readback",
+            transactionSha256=digest(transaction),
+            priorHeadSha256=None,
+            phase="preparation",
+            invocationId=uuid(90),
+            leaseSha256=context.lease_sha256,
+            readbackSha256=key,
+            outcome="not-applied",
+            processDrained=True,
+            originalPreconditions=True,
+            configurationSha256=proof("native-config"),
+        )
+        journal.immutable("phase-readback.json", encode(proposal))
+        with pytest.raises(ValidationError, match="native-successor-readback-changed"):
+            native.phase(journal, "start", "a" * 64)
+        assert not journal.snapshot().history.pending
+        original = directory / "phase-readback.json"
+        original.write_bytes(encode({**proposal, "invocationId": context.invocation_id}))
+        assert native.phase(journal, "start", "a" * 64)["transition"] == "started"
+        assert journal.snapshot().history.pending
+
+
+def test_native_durable_launch_requires_resume_after_the_intent_is_pinned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transaction, context = production_transaction()
+    directory = tmp_path / "native-launch"
+    directory.mkdir(mode=0o700)
+    owner = os.geteuid()
+    with DurableDirectory.open(
+        directory, expected_owner=owner, expected_directory_mode=0o700
+    ) as records:
+        journal = SuccessorJournal(records, owner)
+        journal.pin(encode(transaction))
+        head = None
+        for index, (phase, transition) in enumerate(
+            [(name, state) for name in PHASES[:5] for state in ("started", "committed")]
+            + [("durable-launch", "started")]
+        ):
+            link = phase_link(transaction, context, head, phase, transition)
+            journal.immutable(f"phase-{index:010}.json", encode(link))
+            head = digest(link)
+        monkeypatch.setattr(native, "ROOT", directory)
+        monkeypatch.setattr(
+            native,
+            "read_authority",
+            lambda *_: native.NativeAuthority(
+                context, transaction["predecessorSha256"], {}, {}, {}
+            ),
+        )
+        observed = {"originalPreconditions": True}
+        key = digest(observed)
+        journal.immutable(f"evidence-{key}.json", encode(observed))
+        journal.immutable("launch-intent.json", b"original intent\n")
+        journal.immutable(
+            "phase-readback.json",
+            encode(
+                record(
+                    "native-phase-readback",
+                    transactionSha256=digest(transaction),
+                    priorHeadSha256=head,
+                    phase="durable-launch",
+                    invocationId=context.invocation_id,
+                    leaseSha256=context.lease_sha256,
+                    readbackSha256=key,
+                    outcome="not-applied",
+                    processDrained=True,
+                    originalPreconditions=True,
+                    configurationSha256=proof("stage-view"),
+                )
+            ),
+        )
+        with pytest.raises(ValidationError, match="native-successor-launch-resume-required"):
+            native.phase(journal, "reconcile", "a" * 64)
+        assert journal.snapshot().history.head_sha256 == head
+        assert journal.snapshot().history.pending
