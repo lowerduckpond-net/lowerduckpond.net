@@ -14,6 +14,7 @@ import pytest
 
 from scripts import m3_12_diagnostic_transport as transport
 from scripts import m3_12_diagnostics as diagnostics
+from scripts import m3_12_installed as installed
 from scripts import qualification_disposable_cleanup as disposable
 from scripts import qualification_local as local
 from scripts.m3_12_contracts import decode, validate_diagnostic
@@ -28,6 +29,7 @@ from scripts.m3_12_diagnostic_store import (
     encode,
     failure,
     publish,
+    read,
 )
 from scripts.qualification_case import phase, private_document
 from scripts.qualification_context import HOST_ENV, RUN_ENV, run_lease
@@ -109,6 +111,66 @@ with attempt.lock("controller.lock"):
     assert not (attempt.directory / "original.json").exists()
     assert diagnostics.collect(attempt)["omissionCount"] == 1
     assert not (attempt.directory / "summary.json").exists()
+
+
+def test_installed_successor_progress_survives_interruption(tmp_path: Path) -> None:
+    installed.predecessor_progress(tmp_path, "rotation-enabled.started")
+    installed.predecessor_progress(tmp_path, "rotation-enabled")
+    code = """
+import signal
+import sys
+from pathlib import Path
+from scripts.m3_12_installed import successor_stage
+
+with successor_stage(Path(sys.argv[1]), "dark-staging"):
+    print("ready", flush=True)
+    signal.pause()
+"""
+    with subprocess.Popen(  # noqa: S603 - fixed local interruption fixture
+        [sys.executable, "-c", code, str(tmp_path)], cwd=ROOT, stdout=subprocess.PIPE, text=True
+    ) as observer:
+        try:
+            assert observer.stdout is not None
+            assert observer.stdout.readline() == "ready\n"
+        finally:
+            observer.kill()
+
+    progress = tmp_path / installed.PROGRESS_DIRECTORY
+    assert {path.name for path in progress.iterdir()} == {
+        "m3-11-rotation-enabled-started.json",
+        "m3-11-rotation-enabled-completed.json",
+        "dark-staging-started.json",
+    }
+    completed = read(progress, "m3-11-rotation-enabled-completed.json")
+    interrupted = read(progress, "dark-staging-started.json")
+    assert interrupted == {
+        "format": "lowerduckpond-m3-12-successor-progress-v1",
+        "authority": "diagnostic-only",
+        "stage": "dark-staging",
+        "state": "started",
+        "utc": interrupted["utc"],
+        "monotonicMs": interrupted["monotonicMs"],
+    }
+    assert interrupted["monotonicMs"] >= completed["monotonicMs"]
+    with (
+        pytest.raises(ValueError, match="invalid installed successor progress label"),
+        installed.successor_stage(tmp_path, CANARY),
+    ):
+        pytest.fail("unrecognized diagnostic label was accepted")
+
+
+def test_successor_progress_failure_preserves_the_original_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(installed, "publish", Mock(side_effect=OSError(CANARY)))
+    original = RuntimeError("original fixture error")
+    with (
+        pytest.raises(RuntimeError) as observed,
+        installed.successor_stage(tmp_path, "dark-repeat"),
+    ):
+        raise original
+    assert observed.value is original
+    assert capsys.readouterr().err == "Installed successor progress unavailable.\n"
 
 
 def test_collection_conflict_preserves_original(tmp_path: Path) -> None:

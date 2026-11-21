@@ -26,7 +26,7 @@ from scripts import production_qualification_inputs as inputs
 from scripts.m3_11_production_session import Session, controller
 from scripts.m3_12_contracts import COMMON_SLOTS, Document, digest, encode
 from scripts.m3_12_diagnostic_store import publish, read
-from scripts.m3_12_installed import recheck_installed
+from scripts.m3_12_installed import predecessor_progress, recheck_installed, successor_stage
 from scripts.m3_12_installed_root import PUBLICATION
 from scripts.qualification_context import ARTIFACT_ENV
 from scripts.qualification_production_predecessor import ACCEPTED_M3_11
@@ -418,9 +418,12 @@ def test_installed_m3_12_successor_from_accepted_m3_11(
     host: Host,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert host.run("systemctl is-active caddy.service").rc == 0
-    fixture = Fixture(monkeypatch, source_revision=ACCEPTED_M3_11)
-    original = fixture.run()
+    origin = Path(os.environ[ARTIFACT_ENV]).parent.parent
+    with successor_stage(origin, "predecessor-preparation"):
+        assert host.run("systemctl is-active caddy.service").rc == 0
+        fixture = Fixture(monkeypatch, source_revision=ACCEPTED_M3_11)
+    with successor_stage(origin, "predecessor-rollout"):
+        original = fixture.run(on_receipt=lambda name: predecessor_progress(origin, name))
     state = previous_journal.validate(original)
     assert state["phase"] == "complete"
     assert json.loads(original[0][1])["candidate"]["source_revision"] == ACCEPTED_M3_11
@@ -428,31 +431,40 @@ def test_installed_m3_12_successor_from_accepted_m3_11(
     directory = fixture.directory / "successor"
     directory.mkdir(mode=0o700)
     with controller(fixture.ssh, directory) as session:
-        rollout = Rollout(fixture, session, directory, original)
-        rollout.setup()
-        rollout.observe("darkStage", lambda: rollout.converge("dark-staging", enabled=False))
-        rollout.observe(
-            "darkRepeat", lambda: rollout.converge("dark-repeat", enabled=False, repeated=True)
-        )
-        rollout.observe("targetSafety", lambda: rollout.health(enabled=False))
-        launch = rollout.launch()
-        rollout.converge("enabled-convergence", enabled=True)
-        rollout.converge("enabled-repeat", enabled=True, repeated=True)
-        rollout.physical("restore-platform-only", interrupt=True)
-        rollout.remote("interrupted-issuance-fenced", [GATE, "job-issuance"], expect=78)
+        with successor_stage(origin, "candidate-preparation"):
+            rollout = Rollout(fixture, session, directory, original)
+            rollout.setup()
+        with successor_stage(origin, "dark-staging"):
+            rollout.observe("darkStage", lambda: rollout.converge("dark-staging", enabled=False))
+        with successor_stage(origin, "dark-repeat"):
+            rollout.observe(
+                "darkRepeat", lambda: rollout.converge("dark-repeat", enabled=False, repeated=True)
+            )
+        with successor_stage(origin, "durable-launch"):
+            rollout.observe("targetSafety", lambda: rollout.health(enabled=False))
+            launch = rollout.launch()
+        with successor_stage(origin, "enabled-convergence"):
+            rollout.converge("enabled-convergence", enabled=True)
+        with successor_stage(origin, "enabled-repeat"):
+            rollout.converge("enabled-repeat", enabled=True, repeated=True)
+        with successor_stage(origin, "rollback-handoff"):
+            rollout.physical("restore-platform-only", interrupt=True)
+            rollout.remote("interrupted-issuance-fenced", [GATE, "job-issuance"], expect=78)
         original_lease = sha(session.token.encode())
 
     recovery = directory / "rollback-recovery"
     recovery.mkdir(mode=0o700)
     with controller(fixture.ssh, recovery) as session:
-        assert sha(session.token.encode()) != original_lease
-        rollout.session = session
-        restored = rollout.physical("restore-platform-only")
-        assert restored["desired"] == rollout.preceding_generation
-        rollout.health(enabled=False)
-        reactivated = rollout.physical("reactivate-same-policy")
-        assert reactivated["desired"] == restored["source"]
-        rollout.health(enabled=True)
+        with successor_stage(origin, "rollback-resume"):
+            assert sha(session.token.encode()) != original_lease
+            rollout.session = session
+            restored = rollout.physical("restore-platform-only")
+            assert restored["desired"] == rollout.preceding_generation
+            rollout.health(enabled=False)
+        with successor_stage(origin, "same-policy-reactivation"):
+            reactivated = rollout.physical("reactivate-same-policy")
+            assert reactivated["desired"] == restored["source"]
+            rollout.health(enabled=True)
         assert rollout.remote(
             "verify-accepted-predecessor-unchanged",
             [PYTHON, "-I", "-B", session.helper, "journal", session.token, "read"],
@@ -482,26 +494,28 @@ def test_installed_m3_12_successor_from_accepted_m3_11(
 
 def test_installed_m3_12_successor_survives_reboot_and_backup(host: Host) -> None:
     fixture = Path(os.environ[ARTIFACT_ENV]).parent.parent
-    proof = read(fixture, "m3-12-successor-before-reboot.json")
-    result = host.run("%s job-issuance", GATE)
-    assert result.rc == 0, "Publication authority was not restored after reboot."
     launch_path = "/var/lib/lowerduckpond/static/platform/launch.json"
-    assert sha(host.file(launch_path).content) == proof["launchRecordSha256"]
-    assert (
-        sha(host.file(str(AUTHORITY / "launch-receipt.json")).content)
-        == proof["launchReceiptSha256"]
-    )
-    listing = "snapshots --json --tag lowerduckpond-static-backup"
-    before = {item["id"] for item in json.loads(backup._restic(host, listing))}
-    status = host.run("systemctl start %s", captures.BACKUP_UNIT)
-    assert status.rc == 0, "Installed successor backup did not complete."
-    after = {item["id"] for item in json.loads(backup._restic(host, listing))}
-    (snapshot,) = after - before
-    assert len(snapshot) == 64 and all(c in "0123456789abcdef" for c in snapshot)  # noqa: PLR2004
-    assert (
-        sha(backup._restic(host, f"dump {snapshot} {launch_path}").encode())
-        == proof["launchRecordSha256"]
-    )
+    with successor_stage(fixture, "post-reboot"):
+        proof = read(fixture, "m3-12-successor-before-reboot.json")
+        result = host.run("%s job-issuance", GATE)
+        assert result.rc == 0, "Publication authority was not restored after reboot."
+        assert sha(host.file(launch_path).content) == proof["launchRecordSha256"]
+        assert (
+            sha(host.file(str(AUTHORITY / "launch-receipt.json")).content)
+            == proof["launchReceiptSha256"]
+        )
+    with successor_stage(fixture, "backup-readback"):
+        listing = "snapshots --json --tag lowerduckpond-static-backup"
+        before = {item["id"] for item in json.loads(backup._restic(host, listing))}
+        status = host.run("systemctl start %s", captures.BACKUP_UNIT)
+        assert status.rc == 0, "Installed successor backup did not complete."
+        after = {item["id"] for item in json.loads(backup._restic(host, listing))}
+        (snapshot,) = after - before
+        assert len(snapshot) == 64 and all(c in "0123456789abcdef" for c in snapshot)  # noqa: PLR2004
+        assert (
+            sha(backup._restic(host, f"dump {snapshot} {launch_path}").encode())
+            == proof["launchRecordSha256"]
+        )
     publish(
         fixture,
         "m3-12-successor-proof.json",

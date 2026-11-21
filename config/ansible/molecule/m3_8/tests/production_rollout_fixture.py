@@ -15,7 +15,7 @@ import shutil
 import tarfile
 import tempfile
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -410,7 +410,9 @@ class Fixture:
         )
         assert selected == (self.previous_digest if partial else self.digest)
 
-    def run(self, stop: str | None = None) -> list[tuple[str, bytes]]:
+    def run(
+        self, stop: str | None = None, *, on_receipt: Callable[[str], None] | None = None
+    ) -> list[tuple[str, bytes]]:
         attempt = Path(tempfile.mkdtemp(prefix="controller-", dir=self.directory))
         fixture = self
 
@@ -423,6 +425,8 @@ class Fixture:
                         "original verified backup retained before acknowledgement"
                     )
                 super().publish(pair, name, raw)
+                if on_receipt is not None:
+                    on_receipt(name)
 
         with (
             journal.locked(self.directory / "journal", owner=os.geteuid(), create=True) as local,

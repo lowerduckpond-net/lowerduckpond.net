@@ -22,6 +22,22 @@ Each converge uses the verified SSH
 transport to the same owned Docker fixture. The installed admission has no
 authority for a Droplet or production host.
 
+The hosted successor uses the 90-minute runner resource tier shared with
+`production-rollout`. In the same CI run, the production rollout completed in
+40 minutes 42 seconds, and the successor reached its former 45-minute ceiling
+inside the before-reboot witness. Two measured converge/idempotence phases on
+that runner took about six minutes together. The successor adds two such
+pairs, launch and rollback checks, reboot, and Restic readback after the
+predecessor flow. The runner ceiling leaves room for that work and fixture
+accounting. It does not participate in any readiness or acceptance decision.
+[Measured CI run](https://github.com/lowerduckpond-net/lowerduckpond.net/actions/runs/44925792356)
+
+The installed diagnostics include `m3-12-successor-progress/*.json` with fixed
+stage names, timestamps, and started or completed status. A started record
+without completion identifies the last observed operation and leaves its
+result unresolved. The files contain no command output or credentials and
+carry no qualification authority.
+
 The initializer uses the canonical pre-enablement admission, same original
 intent, and existing descriptor-relative publication primitives. Publication
 on a successor requires the independently reopened launch and namespace.

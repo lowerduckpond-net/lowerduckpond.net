@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import json
 import re
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import cast
 from uuid import UUID
 
+from scripts.m3_11_production_journal import PHASES, RECORDS
 from scripts.m3_12_contracts import Document, digest, require
-from scripts.m3_12_diagnostic_store import publish
+from scripts.m3_12_diagnostic_store import clock, publish
 from scripts.qualification_context import ARCHIVE_ENV, HOST_ENV, RUN_ENV, host_name
 from scripts.qualification_disposable_cleanup import BINDING_IDENTITY_TIMEOUT_SECONDS, FORMAT
 from scripts.qualification_probe import bounded_command, document
@@ -20,6 +24,64 @@ SHA256 = re.compile(r"[0-9a-f]{64}", re.ASCII)
 DAEMON = ("ID", "Name", "DockerRootDir", "ServerVersion")
 MAX_DAEMON_FIELD = 1024
 ROLES = {"host": HOST_ENV, "archive": ARCHIVE_ENV}
+PROGRESS_DIRECTORY = "m3-12-successor-progress"
+PROGRESS_STAGES = frozenset(
+    {
+        "predecessor-preparation",
+        "predecessor-rollout",
+        "m3-11-original",
+        "candidate-preparation",
+        "dark-staging",
+        "dark-repeat",
+        "durable-launch",
+        "enabled-convergence",
+        "enabled-repeat",
+        "rollback-handoff",
+        "rollback-resume",
+        "same-policy-reactivation",
+        "post-reboot",
+        "backup-readback",
+        *(f"m3-11-{phase}" for phase in PHASES),
+    }
+)
+
+
+def _successor_progress(directory: Path, stage: str, state: str) -> None:
+    if stage not in PROGRESS_STAGES or state not in {"started", "completed"}:
+        raise ValueError("invalid installed successor progress label")
+    target = directory / PROGRESS_DIRECTORY
+    utc, monotonic_ms = clock()
+    try:
+        target.mkdir(mode=0o700, exist_ok=True)
+        publish(
+            target,
+            f"{stage}-{state}.json",
+            {
+                "format": "lowerduckpond-m3-12-successor-progress-v1",
+                "authority": "diagnostic-only",
+                "stage": stage,
+                "state": state,
+                "utc": utc,
+                "monotonicMs": monotonic_ms,
+            },
+        )
+    except OSError, ValueError:
+        with suppress(OSError):
+            print("Installed successor progress unavailable.", file=sys.stderr, flush=True)
+
+
+def predecessor_progress(directory: Path, receipt: str) -> None:
+    if receipt not in RECORDS:
+        raise ValueError("invalid installed predecessor progress label")
+    phase = receipt.removesuffix(".started")
+    _successor_progress(directory, f"m3-11-{phase}", "completed" if receipt == phase else "started")
+
+
+@contextmanager
+def successor_stage(directory: Path, stage: str) -> Iterator[None]:
+    _successor_progress(directory, stage, "started")
+    yield
+    _successor_progress(directory, stage, "completed")
 
 
 def _docker(environment: dict[str, str], *arguments: str, identity: bool = False) -> bytes:
