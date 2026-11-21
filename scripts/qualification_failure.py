@@ -319,7 +319,7 @@ def record_accounting_check(group: str, check: str) -> None:
             print("Qualification accounting context unavailable.", file=sys.stderr)
 
 
-def _ansible_category(action: str, result: dict[str, object], outcome: str) -> str:
+def ansible_failure_category(action: str, result: dict[str, object], outcome: str) -> str:
     if action in {"ansible.builtin.assert", "assert"}:
         return "assertion"
     text = " ".join(
@@ -395,7 +395,7 @@ def record_ansible_failure(
                 "action": action_name,
                 "source": {"path": path, "line": line},
                 "category": label(
-                    _ansible_category(action_name, values, outcome), ANSIBLE_FAILURES
+                    ansible_failure_category(action_name, values, outcome), ANSIBLE_FAILURES
                 ),
                 "return_code": (
                     rc if type(rc) is int and -MAX_EXIT_STATUS <= rc <= MAX_EXIT_STATUS else UNKNOWN

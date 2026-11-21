@@ -26,7 +26,13 @@ from scripts import production_qualification_inputs as inputs
 from scripts.m3_11_production_session import Session, controller
 from scripts.m3_12_contracts import COMMON_SLOTS, Document, digest, encode
 from scripts.m3_12_diagnostic_store import publish, read
-from scripts.m3_12_installed import predecessor_progress, recheck_installed, successor_stage
+from scripts.m3_12_installed import (
+    APPLY_STAGE_ENV,
+    PROGRESS_ROOT_ENV,
+    predecessor_progress,
+    recheck_installed,
+    successor_stage,
+)
 from scripts.m3_12_installed_root import PUBLICATION
 from scripts.qualification_context import ARTIFACT_ENV
 from scripts.qualification_production_predecessor import ACCEPTED_M3_11
@@ -291,10 +297,11 @@ class Rollout:
         environment.update(
             ANSIBLE_CONFIG=str(ROOT / "config/ansible/ansible.cfg"),
             ANSIBLE_CALLBACK_PLUGINS=str(ROOT / "config/ansible/plugins/callback"),
-            ANSIBLE_CALLBACKS_ENABLED="ldp_m3_11_receipt",
+            ANSIBLE_CALLBACKS_ENABLED="ldp_m3_11_receipt,ldp_m3_12_successor",
             LDP_M3_11_PLAYBOOK_CONTEXT=context,
             LDP_M3_11_PLAYBOOK_RECEIPT=str(recap),
         )
+        environment.update({APPLY_STAGE_ENV: stage, PROGRESS_ROOT_ENV: str(self.origin)})
         self.session.require_owner()
         assert recheck_installed(self.origin, self.fixture.environment) == self.allocation
         executable = shutil.which("uv")

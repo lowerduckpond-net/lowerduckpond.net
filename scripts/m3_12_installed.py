@@ -25,17 +25,17 @@ DAEMON = ("ID", "Name", "DockerRootDir", "ServerVersion")
 MAX_DAEMON_FIELD = 1024
 ROLES = {"host": HOST_ENV, "archive": ARCHIVE_ENV}
 PROGRESS_DIRECTORY = "m3-12-successor-progress"
+APPLY_STAGES = frozenset({"dark-staging", "dark-repeat", "enabled-convergence", "enabled-repeat"})
+APPLY_STAGE_ENV = "LDP_M3_12_SUCCESSOR_APPLY_STAGE"
+PROGRESS_ROOT_ENV = "LDP_M3_12_SUCCESSOR_PROGRESS_ROOT"
 PROGRESS_STAGES = frozenset(
     {
         "predecessor-preparation",
         "predecessor-rollout",
         "m3-11-original",
         "candidate-preparation",
-        "dark-staging",
-        "dark-repeat",
+        *APPLY_STAGES,
         "durable-launch",
-        "enabled-convergence",
-        "enabled-repeat",
         "rollback-handoff",
         "rollback-resume",
         "same-policy-reactivation",

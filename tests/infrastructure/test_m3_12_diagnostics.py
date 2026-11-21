@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import stat
@@ -37,6 +38,7 @@ from scripts.qualification_context import HOST_ENV, RUN_ENV, run_lease
 CANARY = "M3-12-SYNTHETIC-EXCLUDED-OUTPUT"
 SETUP_STATUS = 7
 CANCELLED = 130
+ANSIBLE_FAILED = 2
 
 
 def test_attempt_exists_before_setup_and_exports_original_failure(
@@ -171,6 +173,81 @@ def test_successor_progress_failure_preserves_the_original_error(
         raise original
     assert observed.value is original
     assert capsys.readouterr().err == "Installed successor progress unavailable.\n"
+
+
+def test_nested_successor_ansible_failure_retains_only_category_and_counts(tmp_path: Path) -> None:
+    playbook = tmp_path / f"{CANARY}.yml"
+    playbook.write_text(
+        json.dumps(
+            [
+                {
+                    "hosts": "all",
+                    "gather_facts": False,
+                    "tasks": [
+                        {
+                            "name": CANARY,
+                            "ansible.builtin.command": {
+                                "argv": [
+                                    sys.executable,
+                                    "-c",
+                                    "import sys;"
+                                    f"print({CANARY!r});"
+                                    "sys.stderr.write('launch_authority_unavailable\\n');"
+                                    "sys.exit(78)",
+                                ],
+                            },
+                            "changed_when": False,
+                        }
+                    ],
+                }
+            ]
+        )
+    )
+    result = subprocess.run(  # noqa: S603 - fixed localhost controller, no host changes
+        [
+            str(Path(sys.executable).with_name("ansible-playbook")),
+            "-i",
+            f"{CANARY},",
+            "-c",
+            "local",
+            str(playbook),
+        ],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "ANSIBLE_CONFIG": str(ROOT / "config/ansible/ansible.cfg"),
+            "ANSIBLE_CALLBACK_PLUGINS": str(ROOT / "config/ansible/plugins/callback"),
+            "ANSIBLE_CALLBACKS_ENABLED": "ldp_m3_12_successor",
+            "ANSIBLE_LOCAL_TEMP": str(tmp_path / "local"),
+            "ANSIBLE_REMOTE_TEMP": str(tmp_path / "remote"),
+            installed.APPLY_STAGE_ENV: "enabled-repeat",
+            installed.PROGRESS_ROOT_ENV: str(tmp_path),
+        },
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    assert result.returncode == ANSIBLE_FAILED
+    progress = tmp_path / installed.PROGRESS_DIRECTORY
+    failure = read(progress, "enabled-repeat-ansible-failure.json")
+    recap = read(progress, "enabled-repeat-ansible-recap.json")
+    assert failure["task"] == {
+        "action": "command",
+        "category": "launch-authority-unavailable",
+        "line": 0,
+        "source": "unknown",
+    }
+    assert recap["counts"] == {
+        "ok": 0,
+        "changed": 0,
+        "failures": 1,
+        "unreachable": 0,
+        "rescued": 0,
+        "ignored": 0,
+        "skipped": 0,
+    }
+    for artifact in progress.iterdir():
+        assert CANARY.encode() not in artifact.read_bytes()
 
 
 def test_collection_conflict_preserves_original(tmp_path: Path) -> None:

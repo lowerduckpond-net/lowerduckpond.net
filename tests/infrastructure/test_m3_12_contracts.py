@@ -1,15 +1,19 @@
 """Synthetic contract vectors. These records confer no real execution authority."""
 
+import fcntl
 import os
+import sys
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from runpy import run_path
 from uuid import UUID
 
 import pytest
 from jsonschema import Draft202012Validator
 from lowerduckpond_static_contracts import decode_json_object
+from lowerduckpond_static_host_agent import platform_launch
 from lowerduckpond_static_host_agent.durable import DurabilityBoundary, DurableDirectory
 from lowerduckpond_static_host_agent.platform_launch import (
     initialize_launch,
@@ -914,6 +918,83 @@ def test_native_launch_retry_keeps_the_original_intent(
     record_path.write_bytes(encode({**namespace, "initializedAt": fixture_time(6)}))
     with pytest.raises(ValidationError, match="launch-namespace-changed"):
         verify_launch(state, authority, owner=owner)
+
+
+def test_enabled_successor_gate_reads_original_launch_with_tenant_lock_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    state, authority = tmp_path / "static", tmp_path / "successor"
+    state.mkdir(mode=0o700)
+    for path in (authority, state / "locks", state / "platform"):
+        path.mkdir(mode=0o700)
+    lock = state / "locks/tenant-state.lock"
+    lock.touch(mode=0o600)
+    namespace = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "PlatformNamespace",
+        "tenantOriginSuffix": SUFFIX,
+        "initializedAt": fixture_time(5),
+    }
+    admission, _, _ = enroll(INSTALLED)
+    admission["platform"]["namespaceSha256"] = digest(namespace)
+    admission["binding"]["platformSha256"] = digest(admission["platform"])
+    intent, launch, receipt = launch_records(admission, 89)
+    for path, value in (
+        (state / "platform/namespace.json", namespace),
+        (state / "platform/launch.json", launch),
+        (authority / "admission.json", admission),
+        (authority / "launch-intent.json", intent),
+        (authority / "launch-receipt.json", receipt),
+        (authority / "installed-target.json", admission["target"]),
+    ):
+        path.write_bytes(encode(value))
+        path.chmod(0o600)
+
+    gate = Path(__file__).parents[2] / (
+        "config/ansible/roles/static_host_agent/files/static-publication-gate"
+    )
+    main = run_path(str(gate))["main"]
+    main.__globals__.update(
+        STATE=state,
+        SUCCESSOR=authority,
+        INSTALLATION=tmp_path,
+        require_restore_admission=lambda: None,
+    )
+    owner = os.geteuid()
+    monkeypatch.setattr(
+        platform_launch, "verify_launch", lambda s, a: verify_launch(s, a, owner=owner)
+    )
+    monkeypatch.setattr(
+        platform_launch,
+        "require_local_launch_binding",
+        lambda a, r, **_: require_local_launch_binding(a, r, disposable=True, owner=owner),
+    )
+    monkeypatch.setattr(sys, "path", sys.path.copy())
+    monkeypatch.setattr(sys, "argv", [str(gate), "caddy-generation", "0"])
+    main.__globals__["publication_enabled"] = lambda: True
+    main()
+    with lock.open("rb") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        main()
+
+        launch_path = state / "platform/launch.json"
+        launch_path.write_bytes(encode({**launch, "launchedAt": fixture_time(90)}))
+        with pytest.raises(SystemExit, match="78"):
+            main()
+        assert capsys.readouterr().err == "launch_authority_unavailable\n"
+        launch_path.write_bytes(encode(launch))
+
+        (state / "platform/namespace.json").write_bytes(
+            encode({**namespace, "initializedAt": fixture_time(6)})
+        )
+        with pytest.raises(SystemExit, match="78"):
+            main()
+        assert capsys.readouterr().err == "launch_authority_unavailable\n"
+    (state / "platform/namespace.json").write_bytes(encode(namespace))
+    lock.unlink()
+    with pytest.raises(SystemExit, match="78"):
+        main()
+    assert capsys.readouterr().err == "launch_authority_unavailable\n"
 
 
 def test_native_successor_reconciles_after_departure_without_replaying(

@@ -7,9 +7,11 @@ from collections.abc import Callable
 from datetime import UTC
 from pathlib import Path
 
+from lowerduckpond_static_contracts import MAX_CANONICAL_BYTES, decode_contract
+
 from lowerduckpond_static_host_agent.audit import has_tenant_audit_history
 from lowerduckpond_static_host_agent.durable import DurableDirectory, FailureHook
-from lowerduckpond_static_host_agent.locks import LockMode
+from lowerduckpond_static_host_agent.locks import LockName
 from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
 from scripts.m3_12_contracts import (
     MAX_RECORD_BYTES,
@@ -194,26 +196,44 @@ def initialize_launch(  # noqa: PLR0913 - explicit authority, host and durabilit
 
 
 def verify_launch(state_path: Path, authority_path: Path, *, owner: int = 0) -> Document:
-    """Reopen the native launch, retained admission, and backed-up namespace."""
+    """Verify the immutable launch chain, including from a locked lifecycle action."""
     with (
         DurableDirectory.open(
             authority_path, expected_owner=owner, expected_directory_mode=0o700
         ) as authority,
-        StateRepository(state_path, expected_owner=owner) as repository,
-        repository.transaction(mode=LockMode.SHARED) as transaction,
+        DurableDirectory.open(
+            state_path, expected_owner=owner, expected_directory_mode=0o700
+        ) as state,
     ):
+        # Issuance and lifecycle publication may call the gate from a child of
+        # the tenant-state lock owner. Verify that lock's protected inode and
+        # the digest-bound immutable records without taking a second flock.
+        state.read_regular(
+            ("locks", LockName.TENANT_STATE.filename),
+            expected_owner=owner,
+            expected_mode=0o600,
+            maximum_bytes=0,
+        )
         admission_raw = _read(authority, ADMISSION, owner)
         admission = decode(admission_raw, "admission")
-        launch = transaction.read(StateRecordPath.platform_launch()).document
         receipt = validate_launch(
             admission_raw,
             _read(authority, INTENT, owner),
-            encode(launch),
+            state.read_regular(
+                LAUNCH, expected_owner=owner, expected_mode=0o600, maximum_bytes=MAX_CANONICAL_BYTES
+            ),
             _read(authority, RECEIPT, owner),
         )
-        namespace = transaction.read(NAMESPACE).document
+        raw = state.read_regular(
+            NAMESPACE.components,
+            expected_owner=owner,
+            expected_mode=0o600,
+            maximum_bytes=MAX_CANONICAL_BYTES,
+        )
+        namespace = decode_contract(raw, expected_kind=NAMESPACE.contract_kind)
         require(
-            digest(namespace) == admission["platform"]["namespaceSha256"],
+            encode(namespace) == raw
+            and digest(namespace) == admission["platform"]["namespaceSha256"],
             "launch-namespace-changed",
         )
         return receipt
