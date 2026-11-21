@@ -385,6 +385,11 @@ remaining M3.10 remote-service work identified explicitly.
 map through private remote services, durable lifecycle and administrator
 recovery, effective installed isolation, and outstanding live convergence gates.
 
+[M3.12 publication evidence](m3-12-evidence.md) traces exact target and
+receipt binding, activation and rollback authority, and permitted diagnostics.
+It tracks the outstanding installed, Droplet, restore, browser, and production
+proof against each source requirement.
+
 ## Residual risks
 
 - A vulnerability in Cloudflare configuration, the root activator, Caddy,

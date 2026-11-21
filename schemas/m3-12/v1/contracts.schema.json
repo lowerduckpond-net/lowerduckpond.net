@@ -1,0 +1,1679 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.lowerduckpond.net/m3-12/v1/contracts.schema.json",
+  "title": "M3.12 transaction and evidence contracts",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/receipt"
+    },
+    {
+      "$ref": "#/$defs/admission"
+    },
+    {
+      "$ref": "#/$defs/launch-intent"
+    },
+    {
+      "$ref": "#/$defs/launch-receipt"
+    },
+    {
+      "$ref": "#/$defs/seal"
+    },
+    {
+      "$ref": "#/$defs/report"
+    },
+    {
+      "$ref": "#/$defs/transaction"
+    },
+    {
+      "$ref": "#/$defs/phase-receipt"
+    },
+    {
+      "$ref": "#/$defs/rollback"
+    },
+    {
+      "$ref": "#/$defs/requirement-proof"
+    },
+    {
+      "$ref": "#/$defs/diagnostic"
+    },
+    {
+      "$ref": "#/$defs/diagnostic-summary"
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
+    },
+    "uuid7": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
+    },
+    "uuid7Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}(?![\\s\\S])"
+    },
+    "time": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z(?![\\s\\S])",
+      "format": "date-time"
+    },
+    "transport": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": [
+            "docker-exec",
+            "ssh"
+          ]
+        },
+        "identitySha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "required": [
+        "kind",
+        "identitySha256"
+      ],
+      "additionalProperties": false
+    },
+    "container": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/sha256"
+        },
+        "image": {
+          "$ref": "#/$defs/sha256"
+        },
+        "runLabel": {
+          "$ref": "#/$defs/uuid7Hex"
+        }
+      },
+      "required": [
+        "id",
+        "image",
+        "runLabel"
+      ],
+      "additionalProperties": false
+    },
+    "target": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "targetKind": {
+              "const": "installed-fixture"
+            },
+            "purpose": {
+              "const": "installed-test"
+            },
+            "enrollmentSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "allocationSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "leaseDomainSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "inventorySha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "stateSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "addressSetSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "transactionNamespaceSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "transport": {
+              "$ref": "#/$defs/transport"
+            },
+            "docker": {
+              "type": "object",
+              "properties": {
+                "endpointSha256": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "daemonObservationSha256": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "ownerManifestSha256": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "runLabel": {
+                  "$ref": "#/$defs/uuid7Hex"
+                },
+                "drainedAllocationSha256": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "roles": {
+                  "type": "object",
+                  "properties": {
+                    "host": {
+                      "$ref": "#/$defs/container"
+                    },
+                    "archive": {
+                      "$ref": "#/$defs/container"
+                    }
+                  },
+                  "required": [
+                    "host",
+                    "archive"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "required": [
+                "endpointSha256",
+                "daemonObservationSha256",
+                "ownerManifestSha256",
+                "runLabel",
+                "drainedAllocationSha256",
+                "roles"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "targetKind",
+            "purpose",
+            "enrollmentSha256",
+            "allocationSha256",
+            "leaseDomainSha256",
+            "inventorySha256",
+            "stateSha256",
+            "addressSetSha256",
+            "transactionNamespaceSha256",
+            "transport",
+            "docker"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "targetKind": {
+              "const": "disposable-droplet"
+            },
+            "purpose": {
+              "const": "disposable-qualification"
+            },
+            "enrollmentSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "allocationSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "leaseDomainSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "inventorySha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "stateSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "addressSetSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "transactionNamespaceSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "transport": {
+              "$ref": "#/$defs/transport"
+            },
+            "droplet": {
+              "type": "object",
+              "properties": {
+                "projectIdSha256": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "dropletId": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "providerIdentitySha256": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "metadataIdentitySha256": {
+                  "$ref": "#/$defs/sha256"
+                }
+              },
+              "required": [
+                "projectIdSha256",
+                "dropletId",
+                "providerIdentitySha256",
+                "metadataIdentitySha256"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "targetKind",
+            "purpose",
+            "enrollmentSha256",
+            "allocationSha256",
+            "leaseDomainSha256",
+            "inventorySha256",
+            "stateSha256",
+            "addressSetSha256",
+            "transactionNamespaceSha256",
+            "transport",
+            "droplet"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "targetKind": {
+              "const": "production-host"
+            },
+            "purpose": {
+              "const": "production"
+            },
+            "enrollmentSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "allocationSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "leaseDomainSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "inventorySha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "stateSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "addressSetSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "transactionNamespaceSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "transport": {
+              "$ref": "#/$defs/transport"
+            },
+            "droplet": {
+              "type": "object",
+              "properties": {
+                "projectIdSha256": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "dropletId": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "providerIdentitySha256": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "metadataIdentitySha256": {
+                  "$ref": "#/$defs/sha256"
+                }
+              },
+              "required": [
+                "projectIdSha256",
+                "dropletId",
+                "providerIdentitySha256",
+                "metadataIdentitySha256"
+              ],
+              "additionalProperties": false
+            },
+            "predecessorSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "successorProposalSha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "required": [
+            "targetKind",
+            "purpose",
+            "enrollmentSha256",
+            "allocationSha256",
+            "leaseDomainSha256",
+            "inventorySha256",
+            "stateSha256",
+            "addressSetSha256",
+            "transactionNamespaceSha256",
+            "transport",
+            "droplet",
+            "predecessorSha256",
+            "successorProposalSha256"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "binding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "targetKind": {
+              "const": "installed-fixture"
+            },
+            "purpose": {
+              "const": "installed-test"
+            },
+            "runId": {
+              "$ref": "#/$defs/uuid7"
+            },
+            "targetSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "candidateSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "platformSha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "required": [
+            "targetKind",
+            "purpose",
+            "runId",
+            "targetSha256",
+            "candidateSha256",
+            "platformSha256"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "targetKind": {
+              "const": "disposable-droplet"
+            },
+            "purpose": {
+              "const": "disposable-qualification"
+            },
+            "runId": {
+              "$ref": "#/$defs/uuid7"
+            },
+            "targetSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "candidateSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "platformSha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "required": [
+            "targetKind",
+            "purpose",
+            "runId",
+            "targetSha256",
+            "candidateSha256",
+            "platformSha256"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "targetKind": {
+              "const": "production-host"
+            },
+            "purpose": {
+              "const": "production"
+            },
+            "runId": {
+              "$ref": "#/$defs/uuid7"
+            },
+            "targetSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "candidateSha256": {
+              "$ref": "#/$defs/sha256"
+            },
+            "platformSha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "required": [
+            "targetKind",
+            "purpose",
+            "runId",
+            "targetSha256",
+            "candidateSha256",
+            "platformSha256"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "candidate": {
+      "type": "object",
+      "properties": {
+        "revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}(?![\\s\\S])"
+        },
+        "inputPolicySha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "inputFingerprintSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "hostAgentSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "toolchainSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "requirementsSha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "required": [
+        "revision",
+        "inputPolicySha256",
+        "inputFingerprintSha256",
+        "hostAgentSha256",
+        "toolchainSha256",
+        "requirementsSha256"
+      ],
+      "additionalProperties": false
+    },
+    "platform": {
+      "type": "object",
+      "properties": {
+        "namespaceSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "storageTargetSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "storageBackend": {
+          "enum": [
+            "minio",
+            "spaces"
+          ]
+        },
+        "cloudflareNetworkSetSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "trustedPlatformDomain": {
+          "const": "lowerduckpond.net"
+        },
+        "aliasSuffix": {
+          "const": "lowerduckpond.com"
+        },
+        "tenantOriginSuffix": {
+          "const": "lowerduckpond.com"
+        },
+        "cookiePolicyVersion": {
+          "const": "lowerduckpond-cookie-policy-v1"
+        },
+        "edgePolicyVersion": {
+          "const": "lowerduckpond-edge-policy-v1"
+        }
+      },
+      "required": [
+        "namespaceSha256",
+        "storageTargetSha256",
+        "storageBackend",
+        "cloudflareNetworkSetSha256",
+        "trustedPlatformDomain",
+        "aliasSuffix",
+        "tenantOriginSuffix",
+        "cookiePolicyVersion",
+        "edgePolicyVersion"
+      ],
+      "additionalProperties": false
+    },
+    "prerequisites": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "component": {
+              "$ref": "#/$defs/sha256"
+            },
+            "transportBootstrap": {
+              "$ref": "#/$defs/sha256"
+            },
+            "darkStage": {
+              "$ref": "#/$defs/sha256"
+            },
+            "darkRepeat": {
+              "$ref": "#/$defs/sha256"
+            },
+            "targetSafety": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "required": [
+            "component",
+            "transportBootstrap",
+            "darkStage",
+            "darkRepeat",
+            "targetSafety"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "component": {
+              "$ref": "#/$defs/sha256"
+            },
+            "transportBootstrap": {
+              "$ref": "#/$defs/sha256"
+            },
+            "darkStage": {
+              "$ref": "#/$defs/sha256"
+            },
+            "darkRepeat": {
+              "$ref": "#/$defs/sha256"
+            },
+            "targetSafety": {
+              "$ref": "#/$defs/sha256"
+            },
+            "livePreflight": {
+              "$ref": "#/$defs/sha256"
+            },
+            "predecessor": {
+              "$ref": "#/$defs/sha256"
+            },
+            "successor": {
+              "$ref": "#/$defs/sha256"
+            },
+            "backupRestore": {
+              "$ref": "#/$defs/sha256"
+            },
+            "completeDisposable": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "required": [
+            "component",
+            "transportBootstrap",
+            "darkStage",
+            "darkRepeat",
+            "targetSafety",
+            "livePreflight",
+            "predecessor",
+            "successor",
+            "backupRestore",
+            "completeDisposable"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "receipt": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-m3-12-receipt-v1"
+        },
+        "binding": {
+          "$ref": "#/$defs/binding"
+        },
+        "invocationId": {
+          "$ref": "#/$defs/uuid7"
+        },
+        "kind": {
+          "enum": [
+            "component",
+            "transport-bootstrap",
+            "dark-stage",
+            "dark-repeat",
+            "target-safety",
+            "live-preflight",
+            "accepted-predecessor",
+            "successor-lease",
+            "final-backup-restore",
+            "functional",
+            "accounting",
+            "teardown",
+            "canary",
+            "acceptance"
+          ]
+        },
+        "startedAt": {
+          "$ref": "#/$defs/time"
+        },
+        "finishedAt": {
+          "$ref": "#/$defs/time"
+        },
+        "oldestSupportingAt": {
+          "$ref": "#/$defs/time"
+        },
+        "observationSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "outcome": {
+          "const": "passed"
+        }
+      },
+      "required": [
+        "format",
+        "binding",
+        "invocationId",
+        "kind",
+        "startedAt",
+        "finishedAt",
+        "oldestSupportingAt",
+        "observationSha256",
+        "outcome"
+      ],
+      "additionalProperties": false
+    },
+    "admission": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-m3-12-admission-v1"
+        },
+        "binding": {
+          "$ref": "#/$defs/binding"
+        },
+        "target": {
+          "$ref": "#/$defs/target"
+        },
+        "candidate": {
+          "$ref": "#/$defs/candidate"
+        },
+        "platform": {
+          "$ref": "#/$defs/platform"
+        },
+        "invocationId": {
+          "$ref": "#/$defs/uuid7"
+        },
+        "authoritySha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "leaseSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "preparedAt": {
+          "$ref": "#/$defs/time"
+        },
+        "prerequisites": {
+          "$ref": "#/$defs/prerequisites"
+        }
+      },
+      "required": [
+        "format",
+        "binding",
+        "target",
+        "candidate",
+        "platform",
+        "invocationId",
+        "authoritySha256",
+        "leaseSha256",
+        "preparedAt",
+        "prerequisites"
+      ],
+      "additionalProperties": false
+    },
+    "launch-intent": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-m3-12-launch-intent-v1"
+        },
+        "binding": {
+          "$ref": "#/$defs/binding"
+        },
+        "admissionSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "invocationId": {
+          "$ref": "#/$defs/uuid7"
+        },
+        "leaseSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "intendedAt": {
+          "$ref": "#/$defs/time"
+        }
+      },
+      "required": [
+        "format",
+        "binding",
+        "admissionSha256",
+        "invocationId",
+        "leaseSha256",
+        "intendedAt"
+      ],
+      "additionalProperties": false
+    },
+    "launch-receipt": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-m3-12-launch-receipt-v1"
+        },
+        "binding": {
+          "$ref": "#/$defs/binding"
+        },
+        "admissionSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "intentSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "launchRecordSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "launchedAt": {
+          "$ref": "#/$defs/time"
+        }
+      },
+      "required": [
+        "format",
+        "binding",
+        "admissionSha256",
+        "intentSha256",
+        "launchRecordSha256",
+        "launchedAt"
+      ],
+      "additionalProperties": false
+    },
+    "completion": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "installed-diagnostic"
+            },
+            "binding": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/binding"
+                },
+                {
+                  "properties": {
+                    "targetKind": {
+                      "const": "installed-fixture"
+                    },
+                    "purpose": {
+                      "const": "installed-test"
+                    }
+                  }
+                }
+              ]
+            },
+            "receipts": {
+              "type": "object",
+              "properties": {
+                "functional": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "accounting": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "teardown": {
+                  "$ref": "#/$defs/sha256"
+                }
+              },
+              "required": [
+                "functional",
+                "accounting",
+                "teardown"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "kind",
+            "binding",
+            "receipts"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "complete-disposable"
+            },
+            "binding": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/binding"
+                },
+                {
+                  "properties": {
+                    "targetKind": {
+                      "const": "disposable-droplet"
+                    },
+                    "purpose": {
+                      "const": "disposable-qualification"
+                    }
+                  }
+                }
+              ]
+            },
+            "receipts": {
+              "type": "object",
+              "properties": {
+                "functional": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "accounting": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "teardown": {
+                  "$ref": "#/$defs/sha256"
+                }
+              },
+              "required": [
+                "functional",
+                "accounting",
+                "teardown"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "kind",
+            "binding",
+            "receipts"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "const": "production-acceptance"
+            },
+            "binding": {
+              "allOf": [
+                {
+                  "$ref": "#/$defs/binding"
+                },
+                {
+                  "properties": {
+                    "targetKind": {
+                      "const": "production-host"
+                    },
+                    "purpose": {
+                      "const": "production"
+                    }
+                  }
+                }
+              ]
+            },
+            "receipts": {
+              "type": "object",
+              "properties": {
+                "canary": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "accounting": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "acceptance": {
+                  "$ref": "#/$defs/sha256"
+                }
+              },
+              "required": [
+                "canary",
+                "accounting",
+                "acceptance"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "kind",
+            "binding",
+            "receipts"
+          ],
+          "additionalProperties": false
+        }
+      ]
+    },
+    "seal": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-m3-12-seal-v1"
+        },
+        "completion": {
+          "$ref": "#/$defs/completion"
+        },
+        "admissionSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "launchReceiptSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "oldestEvidenceAt": {
+          "$ref": "#/$defs/time"
+        },
+        "finishedAt": {
+          "$ref": "#/$defs/time"
+        },
+        "sealedAt": {
+          "$ref": "#/$defs/time"
+        }
+      },
+      "required": [
+        "format",
+        "completion",
+        "admissionSha256",
+        "launchReceiptSha256",
+        "oldestEvidenceAt",
+        "finishedAt",
+        "sealedAt"
+      ],
+      "additionalProperties": false
+    },
+    "report": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-m3-12-report-v1"
+        },
+        "completion": {
+          "$ref": "#/$defs/completion"
+        },
+        "sealSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "packagedAt": {
+          "$ref": "#/$defs/time"
+        }
+      },
+      "required": [
+        "format",
+        "completion",
+        "sealSha256",
+        "packagedAt"
+      ],
+      "additionalProperties": false
+    },
+    "phase": {
+      "enum": [
+        "preparation",
+        "dark-staging",
+        "dark-repeat",
+        "final-backup-verification",
+        "activation-preparation",
+        "durable-launch",
+        "enabled-convergence",
+        "enabled-repeat",
+        "canary",
+        "accounting",
+        "acceptance"
+      ]
+    },
+    "transaction": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-m3-12-transaction-v1"
+        },
+        "binding": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/binding"
+            },
+            {
+              "properties": {
+                "targetKind": {
+                  "const": "production-host"
+                },
+                "purpose": {
+                  "const": "production"
+                }
+              }
+            }
+          ]
+        },
+        "transactionId": {
+          "$ref": "#/$defs/uuid7"
+        },
+        "predecessorSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "originalProposalSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "leaseDomainSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "authorizationSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "createdAt": {
+          "$ref": "#/$defs/time"
+        }
+      },
+      "required": [
+        "format",
+        "binding",
+        "transactionId",
+        "predecessorSha256",
+        "originalProposalSha256",
+        "leaseDomainSha256",
+        "authorizationSha256",
+        "createdAt"
+      ],
+      "additionalProperties": false
+    },
+    "phase-receipt": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-m3-12-phase-receipt-v1"
+        },
+        "transactionSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "previousSha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "phase": {
+          "$ref": "#/$defs/phase"
+        },
+        "transition": {
+          "enum": [
+            "started",
+            "committed",
+            "not-applied"
+          ]
+        },
+        "stageConfigurationSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "publicationView": {
+          "enum": [
+            "predecessor",
+            "dark",
+            "enabled"
+          ]
+        },
+        "invocationId": {
+          "$ref": "#/$defs/uuid7"
+        },
+        "leaseSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "recordedAt": {
+          "$ref": "#/$defs/time"
+        },
+        "evidenceSha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "required": [
+        "format",
+        "transactionSha256",
+        "previousSha256",
+        "phase",
+        "transition",
+        "stageConfigurationSha256",
+        "publicationView",
+        "invocationId",
+        "leaseSha256",
+        "recordedAt",
+        "evidenceSha256"
+      ],
+      "additionalProperties": false
+    },
+    "rollback": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-m3-12-rollback-v1"
+        },
+        "transactionSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "priorHeadSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "authorizationSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "invocationId": {
+          "$ref": "#/$defs/uuid7"
+        },
+        "leaseSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "readbackSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "precedingGenerationSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "decidedAt": {
+          "$ref": "#/$defs/time"
+        },
+        "action": {
+          "enum": [
+            "restore-platform-only",
+            "reactivate-same-policy"
+          ]
+        },
+        "retainedLaunchSha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "retainedIntentSha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "format",
+        "transactionSha256",
+        "priorHeadSha256",
+        "authorizationSha256",
+        "invocationId",
+        "leaseSha256",
+        "readbackSha256",
+        "precedingGenerationSha256",
+        "decidedAt",
+        "action",
+        "retainedLaunchSha256",
+        "retainedIntentSha256"
+      ],
+      "additionalProperties": false
+    },
+    "requirement-proof": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-m3-12-requirement-proof-v1"
+        },
+        "inventorySha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "binding": {
+          "$ref": "#/$defs/binding"
+        },
+        "invocationId": {
+          "$ref": "#/$defs/uuid7"
+        },
+        "slot": {
+          "type": "string",
+          "pattern": "^(?:ADR0022|M3)-[0-9]{3}/[a-z-]{1,24}(?![\\s\\S])"
+        },
+        "nodes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^(?:packages|tests|config)/[a-z_0-9/-]{1,240}\\.py::test_[a-z0-9_]{1,128}(?![\\s\\S])"
+          },
+          "minItems": 1,
+          "maxItems": 64
+        },
+        "startedAt": {
+          "$ref": "#/$defs/time"
+        },
+        "finishedAt": {
+          "$ref": "#/$defs/time"
+        },
+        "originalEvidenceSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "outcome": {
+          "const": "passed"
+        }
+      },
+      "required": [
+        "format",
+        "inventorySha256",
+        "binding",
+        "invocationId",
+        "slot",
+        "nodes",
+        "startedAt",
+        "finishedAt",
+        "originalEvidenceSha256",
+        "outcome"
+      ],
+      "additionalProperties": false
+    },
+    "diagnostic": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-m3-12-diagnostic-v1"
+        },
+        "runId": {
+          "$ref": "#/$defs/uuid7"
+        },
+        "invocationId": {
+          "$ref": "#/$defs/uuid7"
+        },
+        "transactionId": {
+          "$ref": "#/$defs/uuid7"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "stage": {
+          "enum": [
+            "allocation",
+            "dependencies",
+            "source-validation",
+            "provisioning",
+            "bootstrap",
+            "preparation",
+            "dark-staging",
+            "dark-repeat",
+            "final-backup-verification",
+            "activation-preparation",
+            "durable-launch",
+            "enabled-convergence",
+            "enabled-repeat",
+            "canary",
+            "accounting",
+            "acceptance",
+            "cleanup",
+            "packaging",
+            "inspection"
+          ]
+        },
+        "operation": {
+          "enum": [
+            "git",
+            "controller",
+            "ssh",
+            "docker",
+            "ansible",
+            "systemd",
+            "dns",
+            "tls",
+            "provider",
+            "storage",
+            "filesystem",
+            "collector",
+            "lease"
+          ]
+        },
+        "sourceSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "helperSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "artifactSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "startedAt": {
+          "$ref": "#/$defs/time"
+        },
+        "finishedAt": {
+          "$ref": "#/$defs/time"
+        },
+        "startedMonotonicMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "finishedMonotonicMs": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "terminalEvidence": {
+          "enum": [
+            "recorded",
+            "missing"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "known",
+            "uncertain",
+            "interrupted",
+            "not-submitted"
+          ]
+        },
+        "result": {
+          "enum": [
+            "passed",
+            "failed",
+            "unknown"
+          ]
+        },
+        "process": {
+          "type": "object",
+          "properties": {
+            "exit": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 255
+            },
+            "signal": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 127
+            }
+          },
+          "required": [],
+          "additionalProperties": false
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "failures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "role": {
+                "enum": [
+                  "primary",
+                  "collection",
+                  "transfer",
+                  "cleanup",
+                  "lease-release",
+                  "finalization"
+                ]
+              },
+              "category": {
+                "enum": [
+                  "prerequisite",
+                  "dependencies",
+                  "transport",
+                  "provider",
+                  "process",
+                  "controller",
+                  "authority",
+                  "integrity",
+                  "capacity",
+                  "interrupted",
+                  "unknown"
+                ]
+              },
+              "prerequisite": {
+                "enum": [
+                  "source",
+                  "toolchain",
+                  "ownership",
+                  "lease",
+                  "binding",
+                  "health",
+                  "storage",
+                  "edge",
+                  "admission",
+                  "terminal-evidence",
+                  "other"
+                ]
+              },
+              "causes": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "enum": [
+                        "timeout",
+                        "connection",
+                        "process",
+                        "protocol",
+                        "schema",
+                        "permission",
+                        "integrity",
+                        "conflict",
+                        "unsafe-state",
+                        "capacity",
+                        "missing",
+                        "unexpected"
+                      ]
+                    },
+                    "operation": {
+                      "enum": [
+                        "git",
+                        "controller",
+                        "ssh",
+                        "docker",
+                        "ansible",
+                        "systemd",
+                        "dns",
+                        "tls",
+                        "provider",
+                        "storage",
+                        "filesystem",
+                        "collector",
+                        "lease"
+                      ]
+                    },
+                    "errno": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 4095
+                    },
+                    "httpStatus": {
+                      "type": "integer",
+                      "minimum": 100,
+                      "maximum": 599
+                    },
+                    "frames": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "sourceSha256": {
+                            "$ref": "#/$defs/sha256"
+                          },
+                          "symbolId": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 65535
+                          },
+                          "line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 1000000
+                          }
+                        },
+                        "required": [
+                          "sourceSha256",
+                          "symbolId",
+                          "line"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "minItems": 0,
+                      "maxItems": 32
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "operation",
+                    "frames"
+                  ],
+                  "additionalProperties": false
+                },
+                "minItems": 1,
+                "maxItems": 32
+              }
+            },
+            "required": [
+              "role",
+              "category",
+              "prerequisite",
+              "causes"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 0,
+          "maxItems": 32
+        },
+        "omissions": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "forbidden-source",
+              "unavailable",
+              "limit",
+              "unsafe-value",
+              "no-terminal-evidence"
+            ]
+          },
+          "minItems": 0,
+          "maxItems": 16
+        },
+        "inspection": {
+          "enum": [
+            "status",
+            "inspect",
+            "collect"
+          ]
+        }
+      },
+      "required": [
+        "format",
+        "runId",
+        "invocationId",
+        "sequence",
+        "stage",
+        "operation",
+        "startedAt",
+        "startedMonotonicMs",
+        "terminalEvidence",
+        "outcome",
+        "result",
+        "attempts",
+        "failures",
+        "omissions",
+        "inspection"
+      ],
+      "additionalProperties": false
+    },
+    "diagnostic-summary": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-m3-12-diagnostic-summary-v1"
+        },
+        "runId": {
+          "$ref": "#/$defs/uuid7"
+        },
+        "invocationId": {
+          "$ref": "#/$defs/uuid7"
+        },
+        "stage": {
+          "enum": [
+            "allocation",
+            "dependencies",
+            "source-validation",
+            "provisioning",
+            "bootstrap",
+            "preparation",
+            "dark-staging",
+            "dark-repeat",
+            "final-backup-verification",
+            "activation-preparation",
+            "durable-launch",
+            "enabled-convergence",
+            "enabled-repeat",
+            "canary",
+            "accounting",
+            "acceptance",
+            "cleanup",
+            "packaging",
+            "inspection"
+          ]
+        },
+        "outcome": {
+          "enum": [
+            "known",
+            "uncertain",
+            "interrupted",
+            "not-submitted"
+          ]
+        },
+        "result": {
+          "enum": [
+            "passed",
+            "failed",
+            "unknown"
+          ]
+        },
+        "category": {
+          "enum": [
+            "prerequisite",
+            "dependencies",
+            "transport",
+            "provider",
+            "process",
+            "controller",
+            "authority",
+            "integrity",
+            "capacity",
+            "interrupted",
+            "unknown"
+          ]
+        },
+        "checkpoint": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "omissionCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2147483647
+        },
+        "inspection": {
+          "enum": [
+            "status",
+            "inspect",
+            "collect"
+          ]
+        }
+      },
+      "required": [
+        "format",
+        "runId",
+        "invocationId",
+        "stage",
+        "outcome",
+        "result",
+        "checkpoint",
+        "omissionCount",
+        "inspection"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

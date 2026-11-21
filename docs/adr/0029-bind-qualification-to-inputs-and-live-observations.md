@@ -123,6 +123,21 @@ implementation, collect that proof with the final changed harness rather than
 performing redundant intermediate production deployments. Local tests and CI
 validate the policy machinery; they do not manufacture live-provider evidence.
 
+### M3.12 sealed completion
+
+The versioned M3.12 report may be packaged later from a durable seal of the
+original complete functional, accounting and teardown evidence. Production
+acceptance retains the original canary, accounting and acceptance observations.
+The seal binds original admission, launch, candidate and exact target, with
+original times and five-minute future-clock tolerance. Retain seven-day live
+consumption measured from the oldest supporting observation, current
+revocation and same-invocation checks. Installed evidence remains installed;
+only complete disposable evidence can support later production admission.
+Failed, partial or diagnostically mutated runs cannot be promoted. An attended
+pause retains actual scope, provider/token limits and cleanup obligations.
+Existing report creation and approval limits continue to govern their legacy
+formats. See the [M3.12 report contract](../operations/m3-12-contracts.md#reports-provenance-and-time).
+
 ## Consequences
 
 ### Managed M3.11 credentials

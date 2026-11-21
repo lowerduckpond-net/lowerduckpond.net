@@ -19,6 +19,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 UNKNOWN = "unknown"
 MAX_BYTES = 1024 * 1024
@@ -230,6 +231,12 @@ def _command_failure(error: BaseException, *, check: bool) -> bytes | None:
     return None
 
 
+class CommandTimeoutProgress(NamedTuple):
+    elapsed_ms: int
+    first_byte_ms: int | None
+    eof_ms: int | None
+
+
 def bounded_command(  # noqa: PLR0913 - independent command, time, input and output bounds
     arguments: list[str],
     *,
@@ -238,6 +245,7 @@ def bounded_command(  # noqa: PLR0913 - independent command, time, input and out
     environment: dict[str, str] | None = None,
     check: bool = False,
     maximum: int = MAX_COMMAND_BYTES,
+    timeout_progress: list[CommandTimeoutProgress] | None = None,
 ) -> bytes | None:
     """Bound time and captured bytes, always discarding stderr and sensitive output."""
     if type(maximum) is not int or not 0 < maximum <= MAX_BYTES:
@@ -260,20 +268,24 @@ def bounded_command(  # noqa: PLR0913 - independent command, time, input and out
         except OSError as error:
             return _command_failure(error, check=check)
         assert process.stdout is not None  # noqa: S101 - PIPE established above
+        started = None
+        first_byte_ms = None
+        eof_ms = None
         try:
             with selectors.DefaultSelector() as ready:
                 ready.register(process.stdout, selectors.EVENT_READ)
-                deadline = time.monotonic() + timeout
+                started = time.monotonic()
+                deadline = started + timeout
                 output = bytearray()
                 while True:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0 or not ready.select(remaining):
-                        return _command_failure(
-                            subprocess.TimeoutExpired(arguments, timeout), check=check
-                        )
+                        raise subprocess.TimeoutExpired(arguments, timeout)
                     block = os.read(process.stdout.fileno(), 4096)
                     if not block:
-                        remaining = max(0.001, deadline - time.monotonic())
+                        eof = time.monotonic()
+                        eof_ms = int((eof - started) * 1000)
+                        remaining = max(0.001, deadline - eof)
                         status = process.wait(timeout=remaining)
                         return (
                             bytes(output)
@@ -282,12 +294,22 @@ def bounded_command(  # noqa: PLR0913 - independent command, time, input and out
                                 subprocess.CalledProcessError(status, arguments), check=check
                             )
                         )
+                    if timeout_progress is not None and first_byte_ms is None:
+                        first_byte_ms = int((time.monotonic() - started) * 1000)
                     output.extend(block)
                     if len(output) > maximum:
                         return _command_failure(
                             ValueError("command output exceeded diagnostic limit"), check=check
                         )
-        except (OSError, subprocess.TimeoutExpired) as error:
+        except subprocess.TimeoutExpired as error:
+            if timeout_progress is not None and started is not None:
+                timeout_progress.append(
+                    CommandTimeoutProgress(
+                        int((time.monotonic() - started) * 1000), first_byte_ms, eof_ms
+                    )
+                )
+            return _command_failure(error, check=check)
+        except OSError as error:
             return _command_failure(error, check=check)
         finally:
             # Kill the command group, including helper grandchildren retaining its pipe.

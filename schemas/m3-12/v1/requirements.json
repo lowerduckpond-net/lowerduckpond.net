@@ -1,0 +1,1678 @@
+{
+  "format": "lowerduckpond-m3-12-requirements-v1",
+  "requirements": [
+    {
+      "id": "ADR0022-001",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "3cda7d8d960941c66697945647f2f9f2efaef99cca1aa04aab4f6aac754b9042",
+      "proofs": [
+        {
+          "environment": "installed",
+          "slot": "ADR0022-001/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-001/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-002",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "2ebf6aade7d2ce413f01993664e8450937e53306371def62bab5a0cba8001bd1",
+      "proofs": [
+        {
+          "environment": "installed",
+          "slot": "ADR0022-002/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-002/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-003",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "41a71b716d8ed277ff4aa351f5093394aca3316854a6f93733d14fb52c13a3a7",
+      "proofs": [
+        {
+          "environment": "installed",
+          "slot": "ADR0022-003/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-003/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-004",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "5e737d98afa19f20c31628d93d65050af09f75b0edebf4632be7274a1dada22e",
+      "proofs": [
+        {
+          "environment": "installed",
+          "slot": "ADR0022-004/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-004/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-005",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "6f9a56845ffc2814f93344d3cc58c521a98715292fa9ae93306c63001f2c1aec",
+      "proofs": [
+        {
+          "environment": "installed",
+          "slot": "ADR0022-005/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-005/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-006",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "04d2fd679e46060dbd1a74cf063445f7c0ec8927cf5cde8792e948e9d7b4622d",
+      "proofs": [
+        {
+          "environment": "installed",
+          "slot": "ADR0022-006/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-006/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-007",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "ab79c75edc41428d283a1f9ae4c89f7897469749791b06deb1d94d62a893127a",
+      "proofs": [
+        {
+          "environment": "installed",
+          "slot": "ADR0022-007/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-007/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-008",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "d21c5bb494d6f5e593b5886f7ea6714582d970bc9017aa2e634792e1e1911074",
+      "proofs": [
+        {
+          "environment": "installed",
+          "slot": "ADR0022-008/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-008/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-009",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "9a1746aac994b8b3eb4681380253d692aae64b4b3920fc142b8b805d3b4c8c1d",
+      "proofs": [
+        {
+          "environment": "installed",
+          "slot": "ADR0022-009/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-009/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-010",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "72ebc15f7b1c856e15d5f6e45b84c3b60a14143b9d9cd4781416299cb9486257",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-010/component",
+          "state": "mapped",
+          "nodes": [
+            "packages/static-domain/tests/test_identity.py::test_uuidv7_generator_matches_committed_vectors"
+          ]
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-010/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-010/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-011",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "a2a2400a132dbc67a62a0b4dfd777d8ea498299ca7c17a900272933861bd2dae",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-011/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-011/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-011/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-012",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "e8b270c39a558540f4b11d8515bf434cdcc7012db3a9ae38171e016c039e5d42",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-012/component",
+          "state": "mapped",
+          "nodes": [
+            "packages/static-contracts/tests/test_vectors_and_client.py::test_client_yaml_rejects_duplicate_or_unknown_fields",
+            "packages/static-contracts/tests/test_contracts.py::test_duplicate_members_are_rejected_before_schema_or_correlation_work",
+            "packages/static-contracts/tests/test_identifiers.py::test_committed_slug_vectors_and_reservations",
+            "packages/static-contracts/tests/test_identifiers.py::test_committed_uuidv7_vectors"
+          ]
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-012/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-012/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-013",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "e4172c1c23377c84620b987c0a715ff780782155eff4e1ea52782c3e0dc454c8",
+      "proofs": [
+        {
+          "environment": "installed",
+          "slot": "ADR0022-013/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-013/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-014",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "3b17fcbde0ca5ff5ccf47a9749c2bacd5e678bd400cbe1c2822a3ca00412471e",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-014/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-014/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-014/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-015",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "6ec7469809a9e0d6517bb595353989fc767f1bb963567d1477a5e23a24da21dd",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-015/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-015/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-015/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-016",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "034b32d77369b7cd24191f7278d07be0cf5844a59229c60ae05f452cedd81963",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-016/component",
+          "state": "mapped",
+          "nodes": [
+            "packages/static-host-agent/tests/test_caddy_startup.py::test_ordinary_start_is_fenced_to_one_target_and_three_attempts"
+          ]
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-016/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-016/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-017",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "3227c7bb256270fdd82a8946dde27c96cbe5cc0689157eeb91f90844ca838a2b",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-017/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-017/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-017/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-018",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "48787b4d34c12ceea09d6e0e1795a0bc6aacbc327c1be45279b6d06b66afadbc",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-018/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-018/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-018/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-019",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "f74be70455d611e06c1c1f82310a092a0f62b1da5433384b94141e615db2dcb2",
+      "proofs": [
+        {
+          "environment": "installed",
+          "slot": "ADR0022-019/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-019/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-020",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "6ceab57d1973974bb8b9f02465eb912e93c6aba28163627a56362c82a1c31f04",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-020/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-020/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-020/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-021",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "aa655376210130e3f0cad8625aa4faeb660a29bb669b34133af4c03db150ea16",
+      "proofs": [
+        {
+          "environment": "installed",
+          "slot": "ADR0022-021/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-021/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-022",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "54ed9bfb8fb0286309a0832e2c28d4dec138c25fc36ad4e061a72fd4518bddf6",
+      "proofs": [
+        {
+          "environment": "installed",
+          "slot": "ADR0022-022/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-022/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-023",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "89e2bd3724d4590812e24abe3afa59920c54abff0aa6f45d0046fa768ef2b3d0",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-023/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-023/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-023/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-024",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "bd0d557d589d4a0844eed119432b9757fe793426473baac9c79c0ea035b4ee2e",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-024/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-024/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-024/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-025",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "3626e45274b9935fc62164641602bceb622f659e66eb0dc529ca2fad7c6e6d0c",
+      "proofs": [
+        {
+          "environment": "installed",
+          "slot": "ADR0022-025/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-025/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-026",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "24a3784745c3e90f99d7e8be7da8ee13c3fd1e1d6f0e8444583a871dc84006a0",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-026/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-026/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-026/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-027",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "ee1f31a877d55f2fe1afc86af07811b5284c8759e736bbc5ccf77f2296031bc7",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-027/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-027/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-027/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-028",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "54737a67cfccc91287ae09b15deec327c2ff52ce310ede1f4142df5aab2c9dd6",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-028/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-028/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-028/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-029",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "30f1ae716063726e87b4410d8b7e4035f5a0be24133fd559ee3381bbf905749a",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-029/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-029/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-029/droplet",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "restore-target",
+          "slot": "ADR0022-029/restore-target",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-030",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "04616492373a34059f764709d359ce0e210b8d344e640d9742702549b7b0305d",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-030/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-030/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-030/droplet",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "restore-target",
+          "slot": "ADR0022-030/restore-target",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-031",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "19f7e378b19f9b026bec73cbcc8894e5a303b854d6ebc6de301eb3b063b84b74",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-031/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-031/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-031/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-032",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "2194c19a09c495af7ada3d421a432a4bd517ccfc7cd227b96bb66a1d8474e0ff",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-032/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-032/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-032/droplet",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "restore-target",
+          "slot": "ADR0022-032/restore-target",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-033",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "59df417cddd7d2747951aa87469717c64228c533e91fbd38b8113474dbf29405",
+      "proofs": [
+        {
+          "environment": "installed",
+          "slot": "ADR0022-033/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-033/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-034",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "35bd0cb61b57f7c58cac8b01d17d0f86ef2f3a749fdd959c09f588b4b558e153",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-034/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-034/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-034/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-035",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "0ad18b16564ee0dbf7b74bb4f0a39810511c3d1bcabdde3fcf59baf45d36cd8d",
+      "proofs": [
+        {
+          "environment": "browser",
+          "slot": "ADR0022-035/browser",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-035/droplet",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "production-read-only",
+          "slot": "ADR0022-035/production-read-only",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-036",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "919fdfc4274a78d1a2ae82653ec433da59c49741f9707fb24724d54b43a46b6e",
+      "proofs": [
+        {
+          "environment": "browser",
+          "slot": "ADR0022-036/browser",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-036/droplet",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "production-read-only",
+          "slot": "ADR0022-036/production-read-only",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-037",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "b328e1af6aa1db563af812c9ea6800964533b1f57f98fc5d1f69624cd3eaacdf",
+      "proofs": [
+        {
+          "environment": "browser",
+          "slot": "ADR0022-037/browser",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-037/droplet",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "production-read-only",
+          "slot": "ADR0022-037/production-read-only",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-038",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "fa733685e1bd8e4d7f8412c489184c2431ca257a030a75cb18b4c4b3b996d543",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-038/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-038/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-038/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-039",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "6bc0268d36542fdfc6a6cbd1bff43887e81b026707145ffc99e5400e4f746db6",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-039/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-039/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-039/droplet",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "browser",
+          "slot": "ADR0022-039/browser",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "production-canary",
+          "slot": "ADR0022-039/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-040",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "c8bee12fcf0946db6db76f258f7eeec534330ea8be47597c46003dac245e8a3f",
+      "proofs": [
+        {
+          "environment": "installed",
+          "slot": "ADR0022-040/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-040/droplet",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "browser",
+          "slot": "ADR0022-040/browser",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "production-canary",
+          "slot": "ADR0022-040/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-041",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "b14bc5914cb1f4177211fa08ea74887a64d31c3f3364b170119b64cfe6e522d1",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-041/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-041/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-041/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-042",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "fba6fce528423537cb9344774306691c825721a6853e3783a6a105dc6679adde",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-042/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-042/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-042/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-043",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "d3bc1a9f55f56ca0e786791551677aa977f19031606cbaa8eeb165de4fab00af",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-043/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-043/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-043/droplet",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "restore-target",
+          "slot": "ADR0022-043/restore-target",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-044",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "7cd9984a896941a70b76b948d2167e96c742ec642efcc03840a451d467523fbf",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-044/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-044/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-044/droplet",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "restore-target",
+          "slot": "ADR0022-044/restore-target",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-045",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "6f800d219ebbe472427b88d6b6126a74641b7d3ef494aa60943463927ba9b0b7",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-045/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-045/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-045/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-046",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "f446b65b4111ed118e984dfe78b7fa7f001ac19c9b8eca7ac84275f31803a85c",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-046/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-046/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-046/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-047",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "6e33c8002cda0d53407015b5b03c9cdf7d9aa159416b26706dc0cd42ec8d2bad",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-047/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-047/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-047/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-048",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "1e3b66f7bdd8a53b3bbcc4c4e393e87e30dd717076d17dcf2a92b50106d8d120",
+      "proofs": [
+        {
+          "environment": "component",
+          "slot": "ADR0022-048/component",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "installed",
+          "slot": "ADR0022-048/installed",
+          "state": "pending",
+          "slice": "P3"
+        },
+        {
+          "environment": "droplet",
+          "slot": "ADR0022-048/droplet",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "restore-target",
+          "slot": "ADR0022-048/restore-target",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-049",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Decision",
+      "sha256": "af74fec6ac0ae8c8c0fcfd0f8827c49f1aa0bdc2210081736e167f3b7603c41c",
+      "proofs": [
+        {
+          "environment": "production-canary",
+          "slot": "ADR0022-049/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-050",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Consequences",
+      "sha256": "ace057b609e3a2d50abf32b36a37c39b04f96e17a6132224bea7684c20063201",
+      "proofs": [
+        {
+          "environment": "production-canary",
+          "slot": "ADR0022-050/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "ADR0022-051",
+      "source": "docs/adr/0022-test-static-publication-as-a-security-boundary.md",
+      "section": "Consequences",
+      "sha256": "6e890829d519e527c42d90ba3bf91e3d0b1830fbf3028782cb7b64d1403fe841",
+      "proofs": [
+        {
+          "environment": "production-read-only",
+          "slot": "ADR0022-051/production-read-only",
+          "state": "pending",
+          "slice": "P6"
+        },
+        {
+          "environment": "production-canary",
+          "slot": "ADR0022-051/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-001",
+      "source": "docs/plans/milestone-3.md",
+      "section": "M3.12: qualify and enable production",
+      "sha256": "26c624c7bdece87ab182f555ae5f27d7dc6cb161e5bb86edbd97e9dc396399f3",
+      "proofs": [
+        {
+          "environment": "droplet",
+          "slot": "M3-001/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "M3-002",
+      "source": "docs/plans/milestone-3.md",
+      "section": "M3.12: qualify and enable production",
+      "sha256": "e6f817cbb58606c29900dc82a65dc94891c9ee6d6b761499c504f11f89bb26d8",
+      "proofs": [
+        {
+          "environment": "droplet",
+          "slot": "M3-002/droplet",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "M3-003",
+      "source": "docs/plans/milestone-3.md",
+      "section": "M3.12: qualify and enable production",
+      "sha256": "02636d861fc3691d9455ac7f4b4e4ae5a225a7d1bf90e1cb1ab48bf6173dcd64",
+      "proofs": [
+        {
+          "environment": "droplet",
+          "slot": "M3-003/droplet",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "production-read-only",
+          "slot": "M3-003/production-read-only",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-004",
+      "source": "docs/plans/milestone-3.md",
+      "section": "M3.12: qualify and enable production",
+      "sha256": "763f7b6f6f3c7fe8608832c1cef5e82782130ef1da80f55a7955166752d2b30f",
+      "proofs": [
+        {
+          "environment": "browser",
+          "slot": "M3-004/browser",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "droplet",
+          "slot": "M3-004/droplet",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "production-read-only",
+          "slot": "M3-004/production-read-only",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-005",
+      "source": "docs/plans/milestone-3.md",
+      "section": "M3.12: qualify and enable production",
+      "sha256": "c9d3e67fad1c99c1e0069d1d89d5d47ba08a0c8b696a70bae899f9506c03f749",
+      "proofs": [
+        {
+          "environment": "droplet",
+          "slot": "M3-005/droplet",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "production-read-only",
+          "slot": "M3-005/production-read-only",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-006",
+      "source": "docs/plans/milestone-3.md",
+      "section": "M3.12: qualify and enable production",
+      "sha256": "a5b8a0f439afa25b8516095b28dace21344f3cd89e1682f9049382597d62a77c",
+      "proofs": [
+        {
+          "environment": "production-read-only",
+          "slot": "M3-006/production-read-only",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-007",
+      "source": "docs/plans/milestone-3.md",
+      "section": "M3.12: qualify and enable production",
+      "sha256": "ceae22a6843c916a12ea16d521d810b11120113a974088b068cf235a2d0d396f",
+      "proofs": [
+        {
+          "environment": "production-read-only",
+          "slot": "M3-007/production-read-only",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-008",
+      "source": "docs/plans/milestone-3.md",
+      "section": "M3.12: qualify and enable production",
+      "sha256": "0af4e7592b3ffe49c50c3fac563252e8629180b26d2a2de1c5adc8bc8596e9fa",
+      "proofs": [
+        {
+          "environment": "production-read-only",
+          "slot": "M3-008/production-read-only",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-009",
+      "source": "docs/plans/milestone-3.md",
+      "section": "M3.12: qualify and enable production",
+      "sha256": "8d05a24e712baf379eb89211dd9907de0c201f50c7f56b0b898762dc45ebd282",
+      "proofs": [
+        {
+          "environment": "production-read-only",
+          "slot": "M3-009/production-read-only",
+          "state": "pending",
+          "slice": "P6"
+        },
+        {
+          "environment": "restore-target",
+          "slot": "M3-009/restore-target",
+          "state": "pending",
+          "slice": "P4"
+        }
+      ]
+    },
+    {
+      "id": "M3-010",
+      "source": "docs/plans/milestone-3.md",
+      "section": "M3.12: qualify and enable production",
+      "sha256": "968b9ecd1e506bc3f81afffcfe4decdba9287b7ae93b0b67b6ceffd86ffcd2a7",
+      "proofs": [
+        {
+          "environment": "restore-target",
+          "slot": "M3-010/restore-target",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "droplet",
+          "slot": "M3-010/droplet",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "production-canary",
+          "slot": "M3-010/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-011",
+      "source": "docs/plans/milestone-3.md",
+      "section": "M3.12: qualify and enable production",
+      "sha256": "7b4836275d2931a35c40eea0380700934c1a8ca1e464d48f8af2388c376ba840",
+      "proofs": [
+        {
+          "environment": "production-canary",
+          "slot": "M3-011/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-012",
+      "source": "docs/plans/milestone-3.md",
+      "section": "M3.12: qualify and enable production",
+      "sha256": "ba0434319b31cc40aed41623e801949cbb6d5c04a73951698d4d2ee26263d88a",
+      "proofs": [
+        {
+          "environment": "droplet",
+          "slot": "M3-012/droplet",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "production-canary",
+          "slot": "M3-012/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-013",
+      "source": "docs/plans/milestone-3.md",
+      "section": "10. Milestone completion evidence",
+      "sha256": "2b62d98e28935a3fd7718a845611425e236aae124bbfa4ee723b2f3f6eb6c3b8",
+      "proofs": [
+        {
+          "environment": "production-canary",
+          "slot": "M3-013/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-014",
+      "source": "docs/plans/milestone-3.md",
+      "section": "10. Milestone completion evidence",
+      "sha256": "e11fb25c6e555fd51173b8767c6b60ddd4fa3aa4100fbd9e64ea18fc9ee3cd4f",
+      "proofs": [
+        {
+          "environment": "production-canary",
+          "slot": "M3-014/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-015",
+      "source": "docs/plans/milestone-3.md",
+      "section": "10. Milestone completion evidence",
+      "sha256": "2461eb907161a63e33c22d2300c2440826d2420a64032483ad446bef9c77fe2b",
+      "proofs": [
+        {
+          "environment": "production-canary",
+          "slot": "M3-015/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-016",
+      "source": "docs/plans/milestone-3.md",
+      "section": "10. Milestone completion evidence",
+      "sha256": "45fadfcf260acc0fe774f425c9bc9b267f0899e127df7cdf5e275ce37b479f9b",
+      "proofs": [
+        {
+          "environment": "production-canary",
+          "slot": "M3-016/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-017",
+      "source": "docs/plans/milestone-3.md",
+      "section": "10. Milestone completion evidence",
+      "sha256": "ecc3260283e2931869c67c9a3b9dadf828429f9a9242a07f46c336c8e2dfd530",
+      "proofs": [
+        {
+          "environment": "production-canary",
+          "slot": "M3-017/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-018",
+      "source": "docs/plans/milestone-3.md",
+      "section": "10. Milestone completion evidence",
+      "sha256": "f244967c70f4feeb41a68d118a60b68825cb3f5ed58f5ef546a68082e795baf7",
+      "proofs": [
+        {
+          "environment": "production-canary",
+          "slot": "M3-018/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-019",
+      "source": "docs/plans/milestone-3.md",
+      "section": "10. Milestone completion evidence",
+      "sha256": "8ca6f1f0351d2c2c345bf447f1ebfff40c3ec6b3e26a431ff8a3159979ee428b",
+      "proofs": [
+        {
+          "environment": "production-canary",
+          "slot": "M3-019/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-020",
+      "source": "docs/plans/milestone-3.md",
+      "section": "10. Milestone completion evidence",
+      "sha256": "f6584b64b9dc2dc81817c21fbdd4d88069e83bec7735f4b1988a4a98e8c70087",
+      "proofs": [
+        {
+          "environment": "production-canary",
+          "slot": "M3-020/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-021",
+      "source": "docs/plans/milestone-3.md",
+      "section": "10. Milestone completion evidence",
+      "sha256": "8c72ede314a3e670be4fd5a88e17473c858522a7c64d9d36accdb9a93c702319",
+      "proofs": [
+        {
+          "environment": "production-canary",
+          "slot": "M3-021/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-022",
+      "source": "docs/plans/milestone-3.md",
+      "section": "10. Milestone completion evidence",
+      "sha256": "dc3494eb6958923a64912d234799bf5be167bb92b4a64a6aabeae64967350782",
+      "proofs": [
+        {
+          "environment": "restore-target",
+          "slot": "M3-022/restore-target",
+          "state": "pending",
+          "slice": "P4"
+        },
+        {
+          "environment": "production-canary",
+          "slot": "M3-022/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-023",
+      "source": "docs/plans/milestone-3.md",
+      "section": "10. Milestone completion evidence",
+      "sha256": "c5302889e95fb14856559d5abff41d71903c36500e9dd4cc1ecd084e8f2112ba",
+      "proofs": [
+        {
+          "environment": "production-canary",
+          "slot": "M3-023/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-024",
+      "source": "docs/plans/milestone-3.md",
+      "section": "10. Milestone completion evidence",
+      "sha256": "e7fd228b1b3680b286119aa01ba93ae3b6896994fba5d2ab5711102c86e9c93d",
+      "proofs": [
+        {
+          "environment": "production-canary",
+          "slot": "M3-024/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    },
+    {
+      "id": "M3-025",
+      "source": "docs/plans/milestone-3.md",
+      "section": "10. Milestone completion evidence",
+      "sha256": "23d714372ac20f8194905009db6ea2330f2538061300ce2cc837ad97239d80b5",
+      "proofs": [
+        {
+          "environment": "production-canary",
+          "slot": "M3-025/production-canary",
+          "state": "pending",
+          "slice": "P6"
+        }
+      ]
+    }
+  ]
+}

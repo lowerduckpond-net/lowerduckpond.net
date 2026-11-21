@@ -8,6 +8,7 @@ this entry point; Docker identities and the original daemon are checked again.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import fcntl
 import json
 import os
@@ -30,10 +31,11 @@ from scripts.qualification_context import (
 )
 from scripts.qualification_disposition import DISPOSABLE_CLEANUP
 from scripts.qualification_mutation import ownership
-from scripts.qualification_probe import bounded_command, document
+from scripts.qualification_probe import CommandTimeoutProgress, bounded_command, document
 
 FORMAT = "lowerduckpond-disposable-cleanup-v1"
 LABEL = "lowerduckpond.qualification.run"
+BINDING_IDENTITY_TIMEOUT_SECONDS = 60
 ROLES = ("destination", "acme", "host", "archive")
 CLEANUP_ROLES = (*ROLES, "unused-archive")
 RETAIN_FORMAT = "lowerduckpond-disposable-retention-v1"
@@ -87,12 +89,38 @@ def error_detail(error: Exception) -> dict[str, str]:
     return {"category": type(error).__name__, "reason": reason}
 
 
-def daemon_id(environment: dict[str, str]) -> str:
+def _report_binding_timeout(progress: CommandTimeoutProgress) -> None:
+    waiting_for = "first-byte"
+    if progress.eof_ms is not None:
+        waiting_for = "process-exit"
+    elif progress.first_byte_ms is not None:
+        waiting_for = "stdout-eof"
+    with contextlib.suppress(OSError):
+        print(
+            f"Disposable identity probe timeout: waiting_for={waiting_for} "
+            f"elapsed_ms={progress.elapsed_ms} first_byte_ms={progress.first_byte_ms} "
+            f"eof_ms={progress.eof_ms}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def daemon_id(environment: dict[str, str], *, initial_binding: bool = False) -> str:
     if not environment.get("DOCKER_HOST", "").startswith("unix:///"):
         raise ValueError("disposable cleanup requires the original local Docker socket")
-    output = bounded_command(
-        ["docker", "info", "--format", "{{.ID}}"], environment=environment, check=True
-    )
+    progress: list[CommandTimeoutProgress] = []
+    try:
+        output = bounded_command(
+            ["docker", "info", "--format", "{{.ID}}"],
+            environment=environment,
+            check=True,
+            timeout=BINDING_IDENTITY_TIMEOUT_SECONDS if initial_binding else 5,
+            timeout_progress=progress if initial_binding else None,
+        )
+    except subprocess.TimeoutExpired:
+        if progress:
+            _report_binding_timeout(progress[0])
+        raise
     if output is None:
         raise ValueError("Docker identity is unavailable")
     result = output.decode("ascii").strip()
@@ -111,7 +139,7 @@ def bind(directory: Path, environment: dict[str, str]) -> None:
             "format": FORMAT,
             "run_id": environment[RUN_ENV],
             "endpoint": environment["DOCKER_HOST"],
-            "daemon_id": daemon_id(environment),
+            "daemon_id": daemon_id(environment, initial_binding=True),
         },
     )
 

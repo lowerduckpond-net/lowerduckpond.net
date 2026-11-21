@@ -72,6 +72,20 @@ network-set digest, and acceptance-evidence digest.
 Reconciliation requires that launch record once tenant history exists; it
 cannot infer launch authority merely from a configuration boolean.
 
+### M3.12 launch admission
+
+The existing launch record binds the exact versioned, immutable
+pre-enablement admission with `lowerduckpond-m3-acceptance-v1`. The same
+initializer admits only the independently enrolled installed test, owned
+disposable Droplet or enrolled production host under its matching purpose.
+Installed and Droplet admission contain their pre-launch checks. Production
+also consumes prior complete disposable qualification and current live
+preflight. Later reports link the exact admission and durable launch.
+An original intent and launch time survive exact retry and pre-tenant rollback.
+Current history, selected generation and pending work govern rollback, including
+after tenants have been removed. See the [M3.12 stage and rollback
+contracts](../operations/m3-12-contracts.md).
+
 ## Consequences
 
 Most implementation and host migration can land dark while the existing HTTPS

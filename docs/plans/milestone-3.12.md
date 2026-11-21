@@ -834,6 +834,11 @@ under `docs/records/`. Example secrets are fake. Private reports/transcripts and
 execution proposals remain outside Git; sanitized original evidence and digests
 may enter the existing records locations after review.
 
+The [P1 publication contracts](../operations/m3-12-contracts.md) define the
+target-bound admission, stage configuration, launch, report lifecycle and
+rollback rules. The [requirement inventory](../threat-model/m3-12-evidence.md)
+tracks each source requirement and the evidence left to deliver in P2–P6.
+
 ## 9. Test strategy and acceptance criteria
 
 Add tests at meaningful boundaries rather than snapshots of implementation:
@@ -939,8 +944,8 @@ for credentials or a production window:
 | Decision or fact | Resolution point |
 | --- | --- |
 | Refreshed Dependabot mergeability, shared generation-test failure and the #255/#254 overlap | P0; inspect current main/heads and exact solver graph, then validate the dependency baseline before M3.12 feature work. No update is applied by this planning task. |
-| Kind/purpose/target-bound admission, launch acceptance-bundle representation and crash/rollback semantics | P1 ADR/schema review, using the acyclic same-initializer design for owned Docker, real Droplet and production targets, with mandatory receipt/target crossover rejection tests in section 3.3. |
-| New M3.12 packaging/attended-session policy versus legacy report/approval limits | P1 narrow ADR 0029/operations amendment; leave old validators unchanged and test both formats. |
+| Kind/purpose/target-bound admission, launch acceptance-bundle representation and crash/rollback semantics | Defined by the [P1 contracts](../operations/m3-12-contracts.md#prerequisites-launch-and-later-completion) and hermetic crossover tests. Real initializer, write barriers and rollback confirmation remain P3/P4. |
+| New M3.12 packaging/attended-session policy versus legacy report/approval limits | Defined by [ADR 0029’s M3.12 amendment](../adr/0029-bind-qualification-to-inputs-and-live-observations.md#m312-sealed-completion). Legacy validators and limits remain in force for legacy formats. |
 | Exact full-stack Droplet inventory/transport adapters, names and restore-target layout | P4 review against every installed test's real requirements; enumerate shared-zone and storage ownership. |
 | Final automatic execution budgets and startup credential coverage | P4/P6 from comparable whole-path measurements and actual credential/cleanup policy; do not invent a number in this plan. |
 | Present production selection, integrity, resources, journals and archive emptiness | Read-only trusted-workstation preparation immediately before the future live operation; source records alone cannot establish current state. |
