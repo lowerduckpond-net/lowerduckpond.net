@@ -9,6 +9,8 @@ import stat
 import subprocess
 import sys
 
+sys.dont_write_bytecode = True
+
 CONFIGURATION = pathlib.Path("/etc/lowerduckpond/static-publication.json")
 EXPECTED_KEYS = {"format", "static_publication_enabled"}
 PROTECTED_FILE_MODE = 0o400

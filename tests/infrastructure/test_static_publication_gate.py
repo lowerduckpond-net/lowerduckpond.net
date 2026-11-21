@@ -112,3 +112,38 @@ def test_recovery_gate_precedes_even_the_empty_generation_exception(
     with pytest.raises(SystemExit, match="78"):
         gate.main()
     assert capsys.readouterr().err.strip() == "host_restore_pending"
+
+
+def test_successor_launch_check_does_not_write_into_the_selected_artifact(tmp_path: Path) -> None:
+    installation = tmp_path / "site-packages"
+    package = installation / "lowerduckpond_static_host_agent"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "platform_launch.py").write_text(
+        "def verify_launch(state, authority):\n"
+        "    return 'verified-launch'\n"
+        "def require_local_launch_binding(authority, receipt, *, disposable):\n"
+        "    assert receipt == 'verified-launch'\n"
+    )
+    (package / "successor_rollback.py").write_text(
+        "def require_unfenced_publication(authority):\n    assert authority.is_dir()\n"
+    )
+
+    subprocess.run(  # noqa: S603 - real gate in a fresh isolated interpreter and owned test paths
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "from pathlib import Path; from runpy import run_path; import sys; "
+            "gate = run_path(sys.argv[1])['main']; fixture = Path(sys.argv[2]); "
+            "gate.__globals__.update(INSTALLATION=fixture / 'site-packages', "
+            "STATE=fixture, SUCCESSOR=fixture, publication_enabled=lambda: True, "
+            "require_restore_admission=lambda: None); "
+            "sys.argv = [sys.argv[1], 'job-issuance']; gate()",
+            str(GATE),
+            str(tmp_path),
+        ],
+        check=True,
+    )
+
+    assert not list(installation.rglob("__pycache__"))
