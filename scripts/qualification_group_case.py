@@ -55,7 +55,7 @@ def case_configuration(
         "ansible": {"playbooks": {"verify": str(verify)}},
     }
     previous = None
-    if case == "production-rollout":
+    if case in {"production-rollout", "successor-rollout"}:
         previous, variables = predecessor.prepare(directory)
         configuration["provisioner"] = {"ansible_args": ["--extra-vars", "@" + str(variables)]}
     return configuration, previous
@@ -112,6 +112,10 @@ def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) 
             if name == "create":
                 try:
                     identities = record_created_containers(directory, environment, status)
+                    if not status and case == "successor-rollout":
+                        from scripts.m3_12_installed import pin_installed  # noqa: PLC0415
+
+                        pin_installed(directory, environment)
                 except Exception:
                     if not status:
                         raise

@@ -351,6 +351,38 @@ def deployment_audit_history_tenant_ids(  # noqa: PLR0913
     return frozenset(matches)
 
 
+def has_tenant_audit_history(
+    root: DurableDirectory,
+    *,
+    expected_owner: int,
+    expected_directory_mode: int,
+    expected_record_mode: int,
+    limits: AuditLimits = DEFAULT_AUDIT_LIMITS,
+) -> bool:
+    """Read original tenant history across validated local and archived audit."""
+    with root.open_descendant(("audit",)) as directory:
+        segments = _read_segments(
+            directory,
+            root=root,
+            expected_owner=expected_owner,
+            expected_directory_mode=expected_directory_mode,
+            expected_record_mode=expected_record_mode,
+            limits=limits,
+            read_only=True,
+        )
+    _validate_chain(segments, limits=limits)
+    for segment in segments:
+        for line in segment.data.splitlines(keepends=True):
+            entry = decode_json_object(line, maximum_bytes=MAX_CANONICAL_BYTES)
+            if (
+                entry["tenantId"] is not None
+                and entry["resultStatus"] == "succeeded"
+                and entry["operation"] in _TENANT_STATE_TRANSITIONS
+            ):
+                return True
+    return False
+
+
 def tenant_has_creation_audit_history(  # noqa: PLR0913 - complete trusted audit storage
     root: DurableDirectory,
     tenant_id: object,

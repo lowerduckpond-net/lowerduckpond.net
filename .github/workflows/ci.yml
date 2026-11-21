@@ -418,6 +418,7 @@ jobs:
             ${{ runner.temp }}/ldp-installed/timing-interrupted.json
             ${{ runner.temp }}/ldp-installed/failure.json
             ${{ runner.temp }}/ldp-installed/m3-12-installed-diagnostic-proof.json
+            ${{ runner.temp }}/ldp-installed/m3-12-successor-proof.json
           if-no-files-found: ignore
           retention-days: 30
 

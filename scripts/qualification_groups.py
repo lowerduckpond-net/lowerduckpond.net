@@ -65,6 +65,12 @@ GROUPS = {
         protected_history=True,
         retained_failure=True,
     ),
+    "successor-rollout": Group(
+        (node("m3_12_successor", "installed_m3_12_successor_from_accepted_m3_11"),),
+        after_reboot=(
+            node("m3_12_successor", "installed_m3_12_successor_survives_reboot_and_backup"),
+        ),
+    ),
     "production-rollout": Group(
         (node("production_rollout", "installed_production_rollout_preserves_original_evidence"),)
     ),

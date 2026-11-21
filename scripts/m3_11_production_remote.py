@@ -14,6 +14,7 @@ from scripts import m3_11_production_initialize as initialize
 from scripts import m3_11_production_lease as lease
 from scripts import m3_11_production_observe as observe
 from scripts import m3_11_production_records as records
+from scripts import m3_12_installed_root as successor
 
 ROOT = Path("/run/lowerduckpond-m3-11")
 LEASE = ROOT / "lease"
@@ -42,6 +43,14 @@ def drain() -> None:
         raise ValueError("production action descendants remain")
 
 
+def gate_phase(raw: bytes, token: str) -> str:
+    if len(raw) > gate.MAX_BYTES:
+        raise ValueError("production configuration exceeds its bound")
+    if os.path.lexists(successor.ENROLLMENT):
+        return successor.require_stage(raw, token)
+    return gate.require(records.ROOT, raw, owner=0)
+
+
 def main() -> int:  # noqa: PLR0911,PLR0912 - fixed root-only wire operations
     try:
         if os.geteuid() != 0:
@@ -60,7 +69,7 @@ def main() -> int:  # noqa: PLR0911,PLR0912 - fixed root-only wire operations
             raise ValueError("production action is outside its tracked unit")
         if len(arguments) == 2 and arguments[0] == "gate":  # noqa: PLR2004 - operation and token
             lease.require_action(LEASE, owner=0, token=arguments[1])
-            print(gate.require(records.ROOT, sys.stdin.buffer.read(gate.MAX_BYTES + 1), owner=0))
+            print(gate_phase(sys.stdin.buffer.read(gate.MAX_BYTES + 1), arguments[1]))
             return 0
         if len(arguments) == 2 and arguments[0] == "drain":  # noqa: PLR2004 - operation and token
             lease.require_action(LEASE, owner=0, token=arguments[1])

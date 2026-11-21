@@ -312,6 +312,7 @@ def cli(arguments: Sequence[str]) -> int:
         "action",
         choices=(
             "status",
+            "prepare",
             "inspect",
             "collect",
             "debug",
@@ -331,6 +332,11 @@ def cli(arguments: Sequence[str]) -> int:
         raise ValueError("guest readback requires collection")
     if args.shell and args.action != "debug":
         raise ValueError("shell is available only for debugging")
+    if args.action == "prepare":
+        from scripts.m3_12_successor import preview  # noqa: PLC0415
+
+        emit(preview(args.directory.absolute()))
+        return 0
     attempt = Attempt(args.directory.absolute())
     if args.action == "status":
         emit(status(attempt))
