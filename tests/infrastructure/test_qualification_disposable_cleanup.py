@@ -365,43 +365,61 @@ def test_cleanup_error_details_do_not_copy_arbitrary_sensitive_output() -> None:
         (
             [False],
             [],
-            [100, 100, 105],
-            "waiting_for=first-byte elapsed_ms=5000 first_byte_ms=None eof_ms=None",
+            [100, 100, 160],
+            "timeout",
+            "waiting_for=first-byte elapsed_ms=60000 first_byte_ms=None eof_ms=None",
         ),
         (
             [True, False],
             [b"synthetic-private-daemon-id"],
-            [100, 100, 100.25, 100.25, 105],
-            "waiting_for=stdout-eof elapsed_ms=5000 first_byte_ms=250 eof_ms=None",
+            [100, 100, 120.25, 120.25, 160],
+            "timeout",
+            "waiting_for=stdout-eof elapsed_ms=60000 first_byte_ms=20250 eof_ms=None",
         ),
         (
             [True, True],
             [b"synthetic-private-daemon-id", b""],
-            [100, 100, 100.25, 100.25, 100.5, 105],
-            "waiting_for=process-exit elapsed_ms=5000 first_byte_ms=250 eof_ms=500",
+            [100, 100, 120.25, 120.25, 120.5, 160],
+            "timeout",
+            "waiting_for=process-exit elapsed_ms=60000 first_byte_ms=20250 eof_ms=20500",
+        ),
+        (
+            [True, True],
+            [b"synthetic-private-daemon-id\n", b""],
+            [100, 100, 120.25, 120.25, 120.5],
+            "bound",
+            None,
+        ),
+        (
+            [True, True],
+            [b"invalid daemon id\n", b""],
+            [100, 100, 120.25, 120.25, 120.5],
+            "invalid",
+            None,
         ),
     ],
 )
-def test_binding_timeout_reports_only_the_wait_milestones(
+def test_binding_probe_preserves_identity_checks_and_safe_wait_milestones(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
-    case: tuple[list[bool], list[bytes], list[float], str],
+    case: tuple[list[bool], list[bytes], list[float], str, str | None],
 ) -> None:
-    readable, reads, clock, details = case
+    readable, reads, clock, outcome, details = case
     environment = resource_names(uuid.UUID("00000000-0000-7000-8000-000000000001").hex)
     environment["DOCKER_HOST"] = "unix:///synthetic-private-socket"
     stdout = Mock()
     process = Mock(pid=1000, stdout=stdout)
 
-    remaining_after_eof = 4.5
+    remaining_after_eof = 39.5
 
     def wait(*, timeout: float | None = None) -> int:
         if timeout is not None:
             assert timeout == remaining_after_eof
-            raise subprocess.TimeoutExpired(
-                ["synthetic-private-command"], timeout, stderr=b"synthetic-private-stderr"
-            )
+            if outcome == "timeout":
+                raise subprocess.TimeoutExpired(
+                    ["synthetic-private-command"], timeout, stderr=b"synthetic-private-stderr"
+                )
         return 0
 
     process.wait.side_effect = wait
@@ -418,14 +436,41 @@ def test_binding_timeout_reports_only_the_wait_milestones(
         probe, "os", SimpleNamespace(read=Mock(side_effect=reads), killpg=kill_group)
     )
 
-    with pytest.raises(subprocess.TimeoutExpired):
+    if outcome == "timeout":
+        with pytest.raises(subprocess.TimeoutExpired):
+            cleanup.bind(tmp_path, environment)
+    elif outcome == "invalid":
+        with pytest.raises(ValueError, match="Docker identity is invalid"):
+            cleanup.bind(tmp_path, environment)
+    else:
         cleanup.bind(tmp_path, environment)
 
     captured = capsys.readouterr()
-    assert captured.err == f"Disposable identity probe timeout: {details}\n"
+    assert captured.err == (f"Disposable identity probe timeout: {details}\n" if details else "")
     assert captured.out == ""
-    assert not (tmp_path / "disposable-cleanup-binding.json").exists()
+    binding = tmp_path / "disposable-cleanup-binding.json"
+    if outcome == "bound":
+        assert json.loads(binding.read_text())["daemon_id"] == "synthetic-private-daemon-id"
+    else:
+        assert not binding.exists()
     popen.assert_called_once()
-    assert ready.__enter__.return_value.select.call_args_list[0].args == (5.0,)
+    assert ready.__enter__.return_value.select.call_args_list[0].args == (60.0,)
     kill_group.assert_called_once_with(process.pid, signal.SIGKILL)
     stdout.close.assert_called_once()
+
+
+def test_cleanup_identity_recheck_keeps_five_second_ceiling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    environment = {"DOCKER_HOST": "unix:///synthetic-private-socket"}
+    command = Mock(return_value=b"synthetic-private-daemon-id\n")
+    monkeypatch.setattr(cleanup, "bounded_command", command)
+
+    assert cleanup.daemon_id(environment) == "synthetic-private-daemon-id"
+    command.assert_called_once_with(
+        ["docker", "info", "--format", "{{.ID}}"],
+        environment=environment,
+        check=True,
+        timeout=5,
+        timeout_progress=None,
+    )

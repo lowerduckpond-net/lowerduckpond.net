@@ -35,6 +35,7 @@ from scripts.qualification_probe import CommandTimeoutProgress, bounded_command,
 
 FORMAT = "lowerduckpond-disposable-cleanup-v1"
 LABEL = "lowerduckpond.qualification.run"
+BINDING_IDENTITY_TIMEOUT_SECONDS = 60
 ROLES = ("destination", "acme", "host", "archive")
 CLEANUP_ROLES = (*ROLES, "unused-archive")
 RETAIN_FORMAT = "lowerduckpond-disposable-retention-v1"
@@ -104,7 +105,7 @@ def _report_binding_timeout(progress: CommandTimeoutProgress) -> None:
         )
 
 
-def daemon_id(environment: dict[str, str], *, observe_wait: bool = False) -> str:
+def daemon_id(environment: dict[str, str], *, initial_binding: bool = False) -> str:
     if not environment.get("DOCKER_HOST", "").startswith("unix:///"):
         raise ValueError("disposable cleanup requires the original local Docker socket")
     progress: list[CommandTimeoutProgress] = []
@@ -113,7 +114,8 @@ def daemon_id(environment: dict[str, str], *, observe_wait: bool = False) -> str
             ["docker", "info", "--format", "{{.ID}}"],
             environment=environment,
             check=True,
-            timeout_progress=progress if observe_wait else None,
+            timeout=BINDING_IDENTITY_TIMEOUT_SECONDS if initial_binding else 5,
+            timeout_progress=progress if initial_binding else None,
         )
     except subprocess.TimeoutExpired:
         if progress:
@@ -137,7 +139,7 @@ def bind(directory: Path, environment: dict[str, str]) -> None:
             "format": FORMAT,
             "run_id": environment[RUN_ENV],
             "endpoint": environment["DOCKER_HOST"],
-            "daemon_id": daemon_id(environment, observe_wait=True),
+            "daemon_id": daemon_id(environment, initial_binding=True),
         },
     )
 
