@@ -145,7 +145,10 @@ GROUPS = {
         )
     ),
     "transport-recovery": Group(
-        (node("recovery_independent", "admission_transport_and_caddy_failure_recovery"),)
+        (
+            node("recovery_independent", "admission_transport_and_caddy_failure_recovery"),
+            node("m3_12_diagnostics", "m3_12_installed_diagnostic_boundaries"),
+        )
     ),
     "overlap-deployment": Group(
         (node("recovery_independent", "configuration_overlap_with_deploy_rollback_and_suspend"),)
