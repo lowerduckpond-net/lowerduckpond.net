@@ -16,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from scripts import qualification_disposable_cleanup as disposable  # noqa: E402
+from scripts.m3_12_diagnostic_store import ATTEMPT_ENV  # noqa: E402
 from scripts.qualification_case import private_document  # noqa: E402
 from scripts.qualification_context import (  # noqa: E402 - standalone controller entry point
     ARCHIVE_ENV,
@@ -67,6 +68,8 @@ def create_environment(directory: Path) -> dict[str, str]:
         and key not in {"MOLECULE_EPHEMERAL_DIRECTORY", "M3_10_INSTALLED_REPORT"}
     }
     endpoint = docker_endpoint(environment)
+    if environment.get(ATTEMPT_ENV) == str(directory) and not endpoint.startswith("unix:///"):
+        raise ValueError("M3.12 installed diagnostics require a local Docker endpoint")
     environment.pop("DOCKER_CONTEXT", None)
     environment["DOCKER_HOST"] = endpoint
     directory = directory.resolve(strict=True)
@@ -156,6 +159,10 @@ def run(  # noqa: PLR0912, PLR0915 - distinct preflight and cleanup outcomes
         disposable.bind(directory, environment)
     except Exception as error:
         record_controller_failure(error)
+        if os.environ.get(ATTEMPT_ENV) == str(directory):
+            from scripts.m3_12_diagnostic_transport import checkpoint  # noqa: PLC0415
+
+            checkpoint("controller", 2, stage="dependencies", error=error)
         raise
     print(f"Owned local fixture: {environment[HOST_ENV]}", flush=True)
     try:
@@ -229,6 +236,8 @@ def capture_and_cleanup(
                 "diagnostics": "captured",
             },
         )
+        if environment.get(ATTEMPT_ENV) == str(directory):
+            return True
         if retain_until is not None and retain_until > datetime.now(UTC):
             disposable.retain_until(directory, retain_until)
             print(f"Disposable fixture retained until {retain_until.isoformat()}.", flush=True)

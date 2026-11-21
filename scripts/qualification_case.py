@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from scripts.m3_12_diagnostic_store import ATTEMPT_ENV
 from scripts.qualification_context import ARCHIVE_ENV, HOST_ENV, IMAGE_ENV, RUN_ENV, host_name
 from scripts.qualification_mutation import protected_run
 from scripts.qualification_probe import bounded_command, document
@@ -209,23 +210,43 @@ def phase(
 
     require_available(directory)
     print(f"Owned installed fixture: {name}", flush=True)
-    with (directory / f"{name}.log").open("xb") as stream:
-        result = subprocess.run(  # noqa: S603 - fixed phase command and owned private context
-            [
-                uv,
-                "run",
-                "--frozen",
-                "molecule",
-                "--base-config",
-                str(directory / "case-base.yml"),
-                name,
-                "--scenario-name",
-                "m3_8",
-            ],
-            env=environment,
-            cwd=(project or ROOT) / "config/ansible",
-            stdout=stream,
-            stderr=subprocess.STDOUT,
-            check=False,
-        )
-    return result.returncode if result.returncode >= 0 else 128 - result.returncode
+    arguments = [
+        uv,
+        "run",
+        "--frozen",
+        "molecule",
+        "--base-config",
+        str(directory / "case-base.yml"),
+        name,
+        "--scenario-name",
+        "m3_8",
+    ]
+    cwd = (project or ROOT) / "config/ansible"
+    # The M3.12 path records allowlisted callbacks. It never spools phase streams.
+    if environment.get(ATTEMPT_ENV) == str(directory):
+        from scripts.m3_12_diagnostic_store import Attempt  # noqa: PLC0415
+
+        attempt = Attempt(directory)
+        with attempt.lock("dispatch.lock"):
+            if os.path.lexists(directory / "cancel.json"):
+                return 130
+            child = subprocess.Popen(  # noqa: S603 - fixed phase command and owned private context
+                arguments,
+                env=environment,
+                cwd=cwd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        status = child.wait()
+    else:
+        with (directory / f"{name}.log").open("xb") as stream:
+            result = subprocess.run(  # noqa: S603 - fixed phase command and owned private context
+                arguments,
+                env=environment,
+                cwd=cwd,
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                check=False,
+            )
+        status = result.returncode
+    return status if status >= 0 else 128 - status

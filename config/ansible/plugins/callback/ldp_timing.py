@@ -12,6 +12,8 @@ from ansible.plugins.callback import CallbackBase  # type: ignore[import-untyped
 
 # The controller loads callbacks outside the repository's Python import root.
 sys.path.insert(0, str(Path(__file__).resolve().parents[4]))
+from scripts.m3_12_diagnostic_store import clock
+from scripts.m3_12_diagnostic_transport import checkpoint
 from scripts.qualification_failure import (
     capture_failure_observation,
     capture_fixture,
@@ -56,6 +58,8 @@ class CallbackModule(CallbackBase):  # type: ignore[misc]
     CALLBACK_NEEDS_ENABLED = True
 
     def v2_playbook_on_start(self, playbook: Playbook) -> None:
+        self._diagnostic_started = clock()
+        checkpoint("ansible", started=self._diagnostic_started)
         self._timing_start = time.monotonic_ns()
         name = Path(playbook._file_name).stem
         if name == "verify_full_size_archive":
@@ -114,6 +118,7 @@ class CallbackModule(CallbackBase):  # type: ignore[misc]
         self._reboot_timing = None
 
     def v2_runner_on_unreachable(self, result: CallbackResult) -> None:
+        checkpoint("ansible", 2, started=self._diagnostic_started, error=ConnectionError())
         self._task_outcome = "failed"
         self._finish_reboot("failed")
         record_ansible_failure(
@@ -129,6 +134,7 @@ class CallbackModule(CallbackBase):  # type: ignore[misc]
         if self._timing_phase == "create":
             capture_fixture()
         failed = any(stats.failures.values()) or any(stats.dark.values())
+        checkpoint("ansible", 2 if failed else 0, started=self._diagnostic_started)
         record_span(self._timing_phase, self._timing_start, "failed" if failed else "completed")
         if (
             failed

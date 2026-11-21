@@ -147,6 +147,16 @@ check-installed-group case: _sync
     uv run ansible-galaxy collection install --no-deps --requirements-file config/ansible/requirements.yml
     uv run python -m scripts.qualification_timing run -- uv run python "$PWD/scripts/qualification_local.py" --case "$1"
 
+# Allocate a durable private attempt before any dependency setup.
+[positional-arguments]
+m3-12 action *arguments:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [[ "$1" != run && -x .venv/bin/python ]]; then
+        exec .venv/bin/python -B -m scripts.m3_12_diagnostics "$@"
+    fi
+    exec python3 -B -m scripts.m3_12_diagnostics "$@"
+
 # Preview required installed groups for two full committed revision IDs.
 plan-installed-checks base head: _sync
     uv run python -m scripts.qualification_selection --base {{quote(base)}} --head {{quote(head)}}
