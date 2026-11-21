@@ -49,6 +49,10 @@
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\\s\\S])"
     },
+    "uuid7Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{12}7[0-9a-f]{3}[89ab][0-9a-f]{15}(?![\\s\\S])"
+    },
     "time": {
       "type": "string",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z(?![\\s\\S])",
@@ -83,7 +87,7 @@
           "$ref": "#/$defs/sha256"
         },
         "runLabel": {
-          "$ref": "#/$defs/uuid7"
+          "$ref": "#/$defs/uuid7Hex"
         }
       },
       "required": [
@@ -141,7 +145,7 @@
                   "$ref": "#/$defs/sha256"
                 },
                 "runLabel": {
-                  "$ref": "#/$defs/uuid7"
+                  "$ref": "#/$defs/uuid7Hex"
                 },
                 "drainedAllocationSha256": {
                   "$ref": "#/$defs/sha256"

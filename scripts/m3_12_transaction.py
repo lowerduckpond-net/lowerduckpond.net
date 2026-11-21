@@ -157,8 +157,9 @@ def validate_transition(
 
 @dataclass(frozen=True)
 class RollbackReadback:
-    """Original scope, currently selected generation and durable launch/history facts."""
+    """Same-invocation safety and original retained state from the verified journal."""
 
+    invocation_id: str
     authorization_sha256: str
     evidence_sha256: str
     preceding_generation_sha256: str
@@ -168,6 +169,7 @@ class RollbackReadback:
     platform_only_compatible: bool
     irreversible_history: bool
     policy_unchanged: bool
+    rollback_active: bool
 
 
 def validate_rollback(
@@ -182,7 +184,7 @@ def validate_rollback(
     require(
         decision["transactionSha256"] == history.transaction_sha256
         and decision["priorHeadSha256"] == history.head_sha256
-        and decision["invocationId"] == authority.invocation_id
+        and decision["invocationId"] == authority.invocation_id == readback.invocation_id
         and decision["leaseSha256"] == authority.lease_sha256
         and history.recorded_at <= instant(decision["decidedAt"]) <= authority.now + CLOCK_TOLERANCE
         and decision["authorizationSha256"] == readback.authorization_sha256
@@ -203,13 +205,13 @@ def validate_rollback(
         )
         and readback.platform_only_compatible
         and (
+            "durable-launch" not in history.completed or readback.retained_launch_sha256 is not None
+        )
+        and (
             readback.retained_launch_sha256 is None or readback.retained_intent_sha256 is not None
         ),
         "unsafe-rollback",
     )
     if decision["action"] == "reactivate-same-policy":
-        require(
-            readback.retained_launch_sha256 is not None and readback.policy_unchanged,
-            "invalid-reactivation",
-        )
+        require(readback.rollback_active and readback.policy_unchanged, "invalid-reactivation")
     return decision

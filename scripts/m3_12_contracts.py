@@ -7,6 +7,7 @@ from functools import cache
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, cast
+from uuid import UUID
 
 from jsonschema import Draft202012Validator
 from lowerduckpond_static_contracts import (
@@ -152,9 +153,10 @@ def _binding(admission: Document) -> Document:
     if backend == "minio":
         docker = target["docker"]
         host, archive = docker["roles"]["host"], docker["roles"]["archive"]
+        run_label = UUID(binding["runId"]).hex
         require(
             host["id"] != archive["id"]
-            and host["runLabel"] == archive["runLabel"] == docker["runLabel"] == binding["runId"],
+            and host["runLabel"] == archive["runLabel"] == docker["runLabel"] == run_label,
             "invalid-fixture-roles",
         )
     else:
@@ -198,12 +200,16 @@ def _prerequisites(admission: Document, evidence: Evidence) -> tuple[datetime, d
     )
     if production:
         target = admission["target"]
+        invocation = admission["invocationId"]
+        preflight, preflight_start, preflight_end = checks["livePreflight"]
+        mutations = (checks["darkStage"], checks["darkRepeat"], checks["backupRestore"])
         require(
-            checks["livePreflight"][0]["invocationId"] == admission["invocationId"]
-            and (
-                checks["livePreflight"][2] <= checks["darkStage"][1]
-                if checks["darkStage"][0]["invocationId"] == admission["invocationId"]
-                else checks["darkStage"][2] <= checks["livePreflight"][1]
+            preflight["invocationId"] == invocation
+            and all(
+                preflight_end <= start
+                if receipt["invocationId"] == invocation
+                else end <= preflight_start
+                for receipt, start, end in mutations
             )
             and checks["backupRestore"][1] >= checks["darkRepeat"][2],
             "invalid-production-stage-order",

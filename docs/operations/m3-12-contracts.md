@@ -48,6 +48,10 @@ independently of the bundle.
 | `disposable-droplet` / `disposable-qualification` | Bind the exact owned OpenTofu state, run/project/Droplet, independent provider/metadata/SSH identities, admitted address and inventory, provisioning and leased operation scope, and exact disposable Spaces targets. |
 | `production-host` / `production` | Bind the enrolled provider/metadata/SSH identity, real inventory and state, original accepted M3.11 completion and selection, reviewed successor proposal, distinct successor journal and lease, reserved address and exact production Spaces targets. The successor proposal digest identifies the original proposal before it is cross-linked from the successor journal. |
 
+The observed Docker `runLabel` is the existing lowercase UUIDv7 hex string
+without hyphens. Match it verbatim for the Docker run and both container
+roles against the hex representation of the binding's canonical `runId`.
+
 The immutable admission bundle contains that binding and the target, candidate
 and platform documents it hashes. The current invocation, authority and
 fence must independently match. Require absence of tenant history,
@@ -64,11 +68,13 @@ tenant count alone cannot decide first launch.
   platform state entirely before activation.
 - Production also requires the exact complete-disposable report for the
   same candidate and reviewed disposable platform, same-invocation live
-  preflight before the first host mutation, the accepted predecessor and successor
-  lease, and the final restore-verified platform backup taken after dark
-  repeat. After an interrupted caller, read back the earlier dark stage and
-  run fresh preflight before the resumed invocation mutates the host. The earlier disposable platform has its own approved storage
-  identity. Match the reviewed Cloudflare network set, domains and policies.
+  preflight, the accepted predecessor and successor lease, and the final
+  restore-verified platform backup taken after dark repeat. The preflight must
+  finish before dark staging, dark repeat or final backup performed by that
+  invocation. A resumed invocation may reuse earlier committed receipts whose
+  work finished before its fresh preflight. The earlier disposable platform
+  has its own approved storage identity. Match the reviewed Cloudflare network
+  set, domains and policies.
 - Every direct prerequisite receipt binds the admission's original run,
   target, candidate and platform, exact expected receipt kind and an
   authenticated observation digest. Include original observation start,
@@ -150,9 +156,12 @@ current journal head, original platform-only predecessor and independently
 verified absence of tenant state/work. Close issuance, restore only that
 compatible generation and retain all intent and launch bytes and decisions.
 The journal reader treats the latest rollback disposition as a closed
-overlay on the normal phase machine. Resume requires explicitly guarded
-same-policy reactivation with fresh checks and the original launch identity
-if present. P3 implements the durable rollback disposition and gating.
+overlay on the normal phase machine. Reactivation requires an active, verified
+rollback disposition and fresh same-invocation safety and policy checks.
+Preserve the original intent and launch hashes wherever present. A rollback
+before launch can reactivate with a null launch hash. A journal with a
+committed durable launch requires both original hashes. P3 implements the
+durable rollback disposition and gating.
 When history exists, keep the enabled contract and use tested lifecycle,
 forward repair, or separately authorized emergency operations or fenced
 restore. Zero current tenants after deletion does not reopen rollback.

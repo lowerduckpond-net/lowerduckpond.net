@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from jsonschema import Draft202012Validator
@@ -39,6 +40,7 @@ from scripts.m3_12_transaction import (
     validate_rollback,
     validate_transition,
 )
+from scripts.qualification_context import RUN_ENV, resource_names
 
 BASE = datetime(2026, 1, 1, tzinfo=UTC)
 PURPOSES = {
@@ -111,14 +113,15 @@ def enroll(
         "transport": {"kind": "ssh", "identitySha256": proof(kind + "ssh")},
     }
     if kind == INSTALLED:
+        run_label = resource_names(UUID(run_id).hex)[RUN_ENV]
         target["docker"] = {
             "endpointSha256": proof("endpoint"),
             "daemonObservationSha256": proof("daemon"),
             "ownerManifestSha256": proof("owner"),
-            "runLabel": run_id,
+            "runLabel": run_label,
             "drainedAllocationSha256": proof("drained"),
             "roles": {
-                role: {"id": proof(role), "image": proof(role + "image"), "runLabel": run_id}
+                role: {"id": proof(role), "image": proof(role + "image"), "runLabel": run_label}
                 for role in ("host", "archive")
             },
         }
@@ -341,7 +344,7 @@ def test_three_paired_admissions_and_existing_launch_record(kind: str) -> None:
         (INSTALLED, ("docker", "daemonObservationSha256"), proof("replacement-daemon")),
         (INSTALLED, ("docker", "roles", "host", "id"), proof("recreated-container")),
         (INSTALLED, ("docker", "roles", "host", "image"), proof("another-image")),
-        (INSTALLED, ("docker", "roles", "host", "runLabel"), uuid(9)),
+        (INSTALLED, ("docker", "roles", "host", "runLabel"), UUID(uuid(9)).hex),
         (INSTALLED, ("docker", "ownerManifestSha256"), proof("copied-manifest")),
         (INSTALLED, ("docker", "drainedAllocationSha256"), proof("unknown-allocation")),
         (INSTALLED, ("leaseDomainSha256",), proof("another-lock")),
@@ -360,6 +363,23 @@ def test_target_substitution_rejected_even_when_rehashed(
     parent[path[-1]] = value
     bundle["binding"]["targetSha256"] = digest(bundle["target"])
     with pytest.raises(ValidationError, match=r"enrollment-mismatch|invalid-fixture-roles"):
+        validate_admission(encode(bundle), context, evidence)
+
+
+@pytest.mark.parametrize(
+    ("label", "error"),
+    [(uuid(0), "invalid-record"), (UUID(uuid(9)).hex, "invalid-fixture-roles")],
+)
+def test_installed_labels_keep_the_observed_hex_form_and_original_run(
+    label: str, error: str
+) -> None:
+    bundle, context, evidence = enroll(INSTALLED)
+    assert validate_admission(encode(bundle), context, evidence) == bundle
+    docker = bundle["target"]["docker"]
+    for observation in (docker, *docker["roles"].values()):
+        observation["runLabel"] = label
+    bundle["binding"]["targetSha256"] = digest(bundle["target"])
+    with pytest.raises(ValidationError, match=error):
         validate_admission(encode(bundle), context, evidence)
 
 
@@ -613,28 +633,41 @@ def test_journal_crash_resumes_original_intent_and_refuses_replay() -> None:
         validate_transition(encode(start), encode(bad_tx), bad_history, authority, readback)
 
 
-def test_rollback_requires_exact_scope_and_zero_history_even_with_no_current_tenants() -> None:
+@pytest.mark.parametrize("launch_state", ["absent", "intent-only", "durable"])
+def test_rollback_requires_exact_scope_and_zero_history_even_with_no_current_tenants(
+    launch_state: str,
+) -> None:
     transaction, authority = production_transaction()
     raw = encode(transaction)
     records: dict[str, bytes] = {}
-    start = retain(records, phase_link(transaction, authority, None, PHASES[0], "started"))
-    commit = retain(records, phase_link(transaction, authority, start, PHASES[0], "committed"))
-    history = read_history(raw, [start, commit], Evidence(records))
+    chain: list[str] = []
+    last_phase = "durable-launch" if launch_state == "durable" else "dark-staging"
+    for phase in PHASES[: PHASES.index(last_phase) + 1]:
+        start = retain(
+            records,
+            phase_link(transaction, authority, chain[-1] if chain else None, phase, "started"),
+        )
+        chain.extend(
+            (start, retain(records, phase_link(transaction, authority, start, phase, "committed")))
+        )
+    history = read_history(raw, chain, Evidence(records))
     readback = RollbackReadback(
-        proof("rollback-consent"),
-        proof("rollback-readback"),
-        proof("predecessor-generation"),
-        proof("retained-launch"),
-        proof("retained-intent"),
-        True,
-        True,
-        False,
-        True,
+        invocation_id=authority.invocation_id,
+        authorization_sha256=proof("rollback-consent"),
+        evidence_sha256=proof("rollback-readback"),
+        preceding_generation_sha256=proof("predecessor-generation"),
+        retained_launch_sha256=proof("retained-launch") if launch_state == "durable" else None,
+        retained_intent_sha256=proof("retained-intent") if launch_state != "absent" else None,
+        drained=True,
+        platform_only_compatible=True,
+        irreversible_history=False,
+        policy_unchanged=True,
+        rollback_active=False,
     )
     decision = record(
         "rollback",
         transactionSha256=digest(transaction),
-        priorHeadSha256=commit,
+        priorHeadSha256=chain[-1],
         authorizationSha256=readback.authorization_sha256,
         invocationId=authority.invocation_id,
         leaseSha256=authority.lease_sha256,
@@ -655,10 +688,43 @@ def test_rollback_requires_exact_scope_and_zero_history_even_with_no_current_ten
             validate_rollback(encode(decision), raw, history, authority, altered)
     decision["action"] = "reactivate-same-policy"
     with pytest.raises(ValidationError, match="invalid-reactivation"):
+        validate_rollback(encode(decision), raw, history, authority, readback)
+
+    authority = replace(authority, invocation_id=uuid(66))
+    active = replace(
+        readback,
+        invocation_id=authority.invocation_id,
+        evidence_sha256=proof("reactivation-readback"),
+        rollback_active=True,
+    )
+    decision.update(invocationId=authority.invocation_id, readbackSha256=active.evidence_sha256)
+    assert validate_rollback(encode(decision), raw, history, authority, active) == decision
+    with pytest.raises(ValidationError, match="invalid-reactivation"):
         validate_rollback(
-            encode(decision), raw, history, authority, replace(readback, policy_unchanged=False)
+            encode(decision), raw, history, authority, replace(active, policy_unchanged=False)
         )
-    assert validate_rollback(encode(decision), raw, history, authority, readback) == decision
+    with pytest.raises(ValidationError, match="wrong-rollback-scope"):
+        validate_rollback(
+            encode(decision),
+            raw,
+            history,
+            authority,
+            replace(active, invocation_id=readback.invocation_id),
+        )
+    for field in ("retainedIntentSha256", "retainedLaunchSha256"):
+        with pytest.raises(ValidationError, match="wrong-rollback-scope"):
+            validate_rollback(
+                encode({**decision, field: proof("substituted")}), raw, history, authority, active
+            )
+    if launch_state == "durable":
+        with pytest.raises(ValidationError, match="unsafe-rollback"):
+            validate_rollback(
+                encode({**decision, "retainedLaunchSha256": None}),
+                raw,
+                history,
+                authority,
+                replace(active, retained_launch_sha256=None),
+            )
 
 
 def test_inventory_covers_every_source_paragraph_and_rejects_stale_or_missing_entries() -> None:
@@ -722,14 +788,30 @@ def test_exact_requirement_coverage_rejects_missing_skipped_duplicate_and_instal
         validate_coverage(inventory, scope, [accepted], evidence)
 
 
-def test_resumed_admission_rechecks_preflight_without_replaying_committed_dark_staging() -> None:
+@pytest.mark.parametrize(
+    ("earlier_slots", "preflight", "allowed"),
+    [
+        (("darkStage",), (76, 77), True),
+        (("darkStage",), (79, 80), False),
+        (("darkStage", "darkRepeat"), (79, 81), False),
+        (("darkStage", "darkRepeat", "backupRestore"), (82, 83), True),
+    ],
+)
+def test_resumed_admission_orders_preflight_before_current_mutations(
+    earlier_slots: tuple[str, ...], preflight: tuple[int, int], allowed: bool
+) -> None:
     report, prior = completed(DISPOSABLE)
     bundle, context, current = enroll(PRODUCTION, report)
     store = dict(prior.records) | dict(current.records)
-    staged = current.read(bundle["prerequisites"]["darkStage"], "receipt")
-    staged["invocationId"] = uuid(65)
-    bundle["prerequisites"]["darkStage"] = retain(store, staged)
+    for slot in earlier_slots:
+        earlier = current.read(bundle["prerequisites"][slot], "receipt")
+        earlier["invocationId"] = uuid(65)
+        bundle["prerequisites"][slot] = retain(store, earlier)
     bundle["prerequisites"]["livePreflight"] = retain(
-        store, receipt(bundle, "live-preflight", 76, 77)
+        store, receipt(bundle, "live-preflight", *preflight)
     )
-    assert validate_admission(encode(bundle), context, Evidence(store)) == bundle
+    if allowed:
+        assert validate_admission(encode(bundle), context, Evidence(store)) == bundle
+    else:
+        with pytest.raises(ValidationError, match="invalid-production-stage-order"):
+            validate_admission(encode(bundle), context, Evidence(store))
