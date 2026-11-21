@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import os
 import shutil
 import subprocess
-import tarfile
 import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -31,8 +29,8 @@ from scripts.m3_12_diagnostic_store import publish, read
 from scripts.m3_12_installed import recheck_installed
 from scripts.m3_12_installed_root import PUBLICATION
 from scripts.qualification_context import ARTIFACT_ENV
+from scripts.qualification_production_predecessor import ACCEPTED_M3_11
 
-ACCEPTED = "a3d35834ac8a0a28bc7723be017407b58bf4a73e"
 AUTHORITY = Path("/var/lib/lowerduckpond/convergence/m3-12")
 GATE = "/usr/local/libexec/lowerduckpond/static-publication-gate"
 VERIFY = "/usr/local/libexec/lowerduckpond/check-caddy-publication-open"
@@ -419,17 +417,13 @@ class Rollout:
 def test_installed_m3_12_successor_from_accepted_m3_11(
     host: Host,
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
     assert host.run("systemctl is-active caddy.service").rc == 0
-    historical = tmp_path / "accepted-m3-11"
-    with tarfile.open(fileobj=io.BytesIO(inputs.git(ROOT, "archive", ACCEPTED))) as archive:
-        archive.extractall(historical, filter="data")
-    fixture = Fixture(monkeypatch, source_root=historical, source_revision=ACCEPTED)
+    fixture = Fixture(monkeypatch, source_revision=ACCEPTED_M3_11)
     original = fixture.run()
     state = previous_journal.validate(original)
     assert state["phase"] == "complete"
-    assert json.loads(original[0][1])["candidate"]["source_revision"] == ACCEPTED
+    assert json.loads(original[0][1])["candidate"]["source_revision"] == ACCEPTED_M3_11
     assert host.run("test ! -e /var/lib/lowerduckpond/static/platform/launch.json").rc == 0
     directory = fixture.directory / "successor"
     directory.mkdir(mode=0o700)
@@ -474,7 +468,7 @@ def test_installed_m3_12_successor_from_accepted_m3_11(
             rollout.origin,
             "m3-12-successor-before-reboot.json",
             {
-                "predecessorSource": ACCEPTED,
+                "predecessorSource": ACCEPTED_M3_11,
                 "predecessorSha256": rollout.predecessor,
                 "launchReceiptSha256": sha(launch),
                 "launchRecordSha256": json.loads(launch)["launchRecordSha256"],

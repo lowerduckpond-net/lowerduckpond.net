@@ -24,6 +24,7 @@ from scripts.production_qualification_inputs import (
     fingerprint,
     git,
 )
+from scripts.qualification_production_predecessor import historical_candidate_inputs
 
 ROOT = Path(__file__).parents[2]
 ARTIFACT = "b" * 64
@@ -140,6 +141,47 @@ def test_revoked_artifact_never_inherits_completion(repository: tuple[Path, str]
     (root / REVOCATIONS).write_text(json.dumps(policy))
     with pytest.raises(ValueError, match="revoked"):
         equivalent_completion(root, source=commit(root), completed=source, artifact=ARTIFACT)
+
+
+def test_installed_predecessor_uses_its_own_committed_tree(repository: tuple[Path, str]) -> None:
+    root, source = repository
+    (root / "runtime.py").write_text("current candidate\n")
+    current = commit(root)
+
+    with pytest.raises(ValueError, match="clean, complete candidate checkout"):
+        candidate_inputs(root, source, ARTIFACT)
+    assert historical_candidate_inputs(root, source, ARTIFACT) == fingerprint(root, source)
+    assert historical_candidate_inputs(root, source, ARTIFACT) != fingerprint(root, current)
+
+    (root / "runtime.py").write_text("uncommitted drift\n")
+    with pytest.raises(ValueError, match="clean, complete candidate checkout"):
+        historical_candidate_inputs(root, source, ARTIFACT)
+
+
+@pytest.mark.parametrize("field", ["sources", "artifacts", "input_digests"])
+def test_installed_predecessor_checks_current_revocations(
+    repository: tuple[Path, str], field: str
+) -> None:
+    root, source = repository
+    policy = json.loads((root / REVOCATIONS).read_text())
+    policy[field] = [
+        {"sources": source, "artifacts": ARTIFACT, "input_digests": fingerprint(root, source)}[
+            field
+        ]
+    ]
+    (root / REVOCATIONS).write_text(json.dumps(policy))
+    commit(root)
+    with pytest.raises(ValueError, match="revoked"):
+        historical_candidate_inputs(root, source, ARTIFACT)
+
+
+def test_installed_predecessor_must_be_in_checkout_history(repository: tuple[Path, str]) -> None:
+    root, source = repository
+    git(root, "checkout", "--quiet", "--orphan", "unrelated")
+    (root / "runtime.py").write_text("unrelated root commit\n")
+    commit(root)
+    with pytest.raises(ValueError, match="Git inputs"):
+        historical_candidate_inputs(root, source, ARTIFACT)
 
 
 @pytest.fixture
