@@ -105,7 +105,7 @@ def _report_binding_timeout(progress: CommandTimeoutProgress) -> None:
         )
 
 
-def daemon_id(environment: dict[str, str], *, initial_binding: bool = False) -> str:
+def daemon_id(environment: dict[str, str]) -> str:
     if not environment.get("DOCKER_HOST", "").startswith("unix:///"):
         raise ValueError("disposable cleanup requires the original local Docker socket")
     progress: list[CommandTimeoutProgress] = []
@@ -114,8 +114,10 @@ def daemon_id(environment: dict[str, str], *, initial_binding: bool = False) -> 
             ["docker", "info", "--format", "{{.ID}}"],
             environment=environment,
             check=True,
-            timeout=BINDING_IDENTITY_TIMEOUT_SECONDS if initial_binding else 5,
-            timeout_progress=progress if initial_binding else None,
+            # Binding and readback use the same Docker CLI operation. Slow
+            # first output is possible in either; keep one hung-child ceiling.
+            timeout=BINDING_IDENTITY_TIMEOUT_SECONDS,
+            timeout_progress=progress,
         )
     except subprocess.TimeoutExpired:
         if progress:
@@ -139,7 +141,7 @@ def bind(directory: Path, environment: dict[str, str]) -> None:
             "format": FORMAT,
             "run_id": environment[RUN_ENV],
             "endpoint": environment["DOCKER_HOST"],
-            "daemon_id": daemon_id(environment, initial_binding=True),
+            "daemon_id": daemon_id(environment),
         },
     )
 

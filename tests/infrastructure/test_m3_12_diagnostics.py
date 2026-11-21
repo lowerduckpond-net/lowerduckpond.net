@@ -8,10 +8,14 @@ import stat
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
+from scripts import m3_12_diagnostic_transport as transport
 from scripts import m3_12_diagnostics as diagnostics
+from scripts import qualification_disposable_cleanup as disposable
+from scripts import qualification_local as local
 from scripts.m3_12_contracts import decode, validate_diagnostic
 from scripts.m3_12_diagnostic_guest import export_record
 from scripts.m3_12_diagnostic_store import (
@@ -21,10 +25,12 @@ from scripts.m3_12_diagnostic_store import (
     ROOT,
     Attempt,
     clock,
+    encode,
     failure,
     publish,
 )
-from scripts.qualification_case import phase
+from scripts.qualification_case import phase, private_document
+from scripts.qualification_context import HOST_ENV, RUN_ENV, run_lease
 
 CANARY = "M3-12-SYNTHETIC-EXCLUDED-OUTPUT"
 SETUP_STATUS = 7
@@ -75,6 +81,7 @@ def test_lost_caller_leaves_durable_start_and_unknown_result(tmp_path: Path) -> 
 import signal
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 from scripts.m3_12_diagnostic_store import Attempt, clock
 
 attempt = Attempt(Path(sys.argv[1]))
@@ -173,3 +180,53 @@ def test_guest_checkpoint_refuses_unlisted_fields(tmp_path: Path) -> None:
     publish(attempt.directory, original.name, result)
     with pytest.raises(ValueError, match="invalid guest checkpoint"):
         export_record(attempt, "result")
+
+
+def test_public_guest_collection_reopens_the_original_bound_lease(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("DOCKER_HOST", "unix:///synthetic-local.sock")
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+    environment = local.create_environment(tmp_path)
+    daemon = "synthetic-daemon"
+    host_id = "a" * 64
+    monkeypatch.setattr(disposable, "daemon_id", lambda _environment: daemon)
+    identity = Mock(return_value=daemon)
+    monkeypatch.setattr(transport, "daemon_id", identity)
+    monkeypatch.setattr(transport, "owned_containers", lambda *args, **kwargs: {HOST_ENV: host_id})
+    disposable.bind(tmp_path, environment)
+    private_document(tmp_path, "failure-fixture.json", {"container_id": host_id})
+    attempt = Attempt.allocate(tmp_path / transport.RETAINED_ATTEMPTS)
+    owner = {"run_id": environment[RUN_ENV], "container_id": host_id}
+    publish(attempt.directory, transport.RETAINED_FIXTURE, owner)
+    record = attempt.append("bootstrap", "systemd", clock())
+    transfer = Mock(return_value=encode(record))
+    monkeypatch.setattr(transport, "bounded_command", transfer)
+    arguments = ["collect", str(attempt.directory), "--guest", "start"]
+
+    with run_lease(tmp_path, create=True), pytest.raises(BlockingIOError):
+        diagnostics.cli(arguments)
+    identity.assert_not_called()
+    transfer.assert_not_called()
+
+    identity.return_value = "substituted-daemon"
+    with pytest.raises(ValueError, match="retained fixture daemon changed"):
+        diagnostics.cli(arguments)
+    transfer.assert_not_called()
+    identity.return_value = daemon
+
+    companion = attempt.directory / transport.RETAINED_FIXTURE
+    companion.unlink()
+    publish(attempt.directory, companion.name, {**owner, "container_id": "b" * 64})
+    with pytest.raises(ValueError, match="retained attempt fixture changed"):
+        diagnostics.cli(arguments)
+    transfer.assert_not_called()
+
+    companion.unlink()
+    publish(attempt.directory, companion.name, owner)
+    assert diagnostics.cli(arguments) == 0
+    assert decode(capfd.readouterr().out.encode(), "diagnostic-summary")["result"] == "unknown"
+    assert attempt.record("guest-start.json") == record
+    assert transfer.call_args.args[0][:3] == ["docker", "exec", host_id]
+    assert transfer.call_args.kwargs["timeout"] is None
+    assert not (attempt.directory / "original.json").exists()

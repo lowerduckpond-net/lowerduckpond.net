@@ -10,7 +10,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from scripts.m3_12_diagnostic_store import ATTEMPT_ENV, Attempt, clock, failure, publish
+from scripts.m3_12_diagnostic_store import ATTEMPT_ENV, Attempt, clock, failure, publish, read
 from scripts.qualification_case import owned_containers
 from scripts.qualification_context import HOST_ENV, RUN_ENV, run_lease
 from scripts.qualification_disposable_cleanup import FORMAT, cleanup, daemon_id
@@ -18,6 +18,8 @@ from scripts.qualification_probe import bounded_command, document
 from scripts.qualification_retirement import environment_for
 
 GUEST_FILE = "/var/lib/lowerduckpond-m3-12-diagnostics"
+RETAINED_ATTEMPTS = "retained-m3-12-attempts"
+RETAINED_FIXTURE = "retained-fixture.json"
 
 
 def checkpoint(
@@ -91,7 +93,9 @@ def read_guest(
         ],
         environment=environment,
         check=True,
-        timeout=55,
+        # This is an attended read with an output bound. Interrupting the
+        # caller drains the local probe and releases the original fixture lease.
+        timeout=None,
     )
     if payload is None:
         raise ValueError("guest checkpoint unavailable")
@@ -111,12 +115,29 @@ def read_guest(
     return record
 
 
+def guest_owner(attempt: Attempt, environment: dict[str, str], host: str) -> None:
+    if read(attempt.directory, RETAINED_FIXTURE) != {
+        "run_id": environment[RUN_ENV],
+        "container_id": host,
+    }:
+        raise ValueError("retained attempt fixture changed")
+
+
 def collect_guest(attempt: Attempt, slot: str) -> dict[str, Any]:
     from scripts.m3_12_diagnostics import secondary  # noqa: PLC0415
 
     try:
-        with run_lease(attempt.directory):
-            environment, host = bound_host(attempt.directory)
+        directory = attempt.directory
+        root = directory.parent.parent
+        fixture = (
+            root.parent
+            if root.name == RETAINED_ATTEMPTS and not os.path.lexists(directory / "fixture.json")
+            else directory
+        )
+        with run_lease(fixture):
+            environment, host = bound_host(fixture)
+            if fixture != directory:
+                guest_owner(attempt, environment, host)
             return read_guest(attempt, environment, host, slot)
     except Exception as error:
         secondary(attempt, "transfer", "docker", error)

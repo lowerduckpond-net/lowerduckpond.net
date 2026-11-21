@@ -237,17 +237,17 @@ class CommandTimeoutProgress(NamedTuple):
     eof_ms: int | None
 
 
-def bounded_command(  # noqa: PLR0913 - independent command, time, input and output bounds
+def bounded_command(  # noqa: PLR0912, PLR0913 - bounded I/O and child cleanup
     arguments: list[str],
     *,
-    timeout: float = 5,
+    timeout: float | None = 5,
     stdin: bytes = b"",
     environment: dict[str, str] | None = None,
     check: bool = False,
     maximum: int = MAX_COMMAND_BYTES,
     timeout_progress: list[CommandTimeoutProgress] | None = None,
 ) -> bytes | None:
-    """Bound time and captured bytes, always discarding stderr and sensitive output."""
+    """Bound captured bytes and optionally time, always discarding stderr."""
     if type(maximum) is not int or not 0 < maximum <= MAX_BYTES:
         raise ValueError("invalid bounded observation output limit")
     executable = shutil.which(arguments[0])
@@ -275,17 +275,19 @@ def bounded_command(  # noqa: PLR0913 - independent command, time, input and out
             with selectors.DefaultSelector() as ready:
                 ready.register(process.stdout, selectors.EVENT_READ)
                 started = time.monotonic()
-                deadline = started + timeout
+                deadline = started + timeout if timeout is not None else None
                 output = bytearray()
                 while True:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0 or not ready.select(remaining):
-                        raise subprocess.TimeoutExpired(arguments, timeout)
+                    remaining = deadline - time.monotonic() if deadline is not None else None
+                    if (remaining is not None and remaining <= 0) or not ready.select(remaining):
+                        if timeout is not None:
+                            raise subprocess.TimeoutExpired(arguments, timeout)
+                        raise OSError("diagnostic output pipe stopped reporting readiness")
                     block = os.read(process.stdout.fileno(), 4096)
                     if not block:
                         eof = time.monotonic()
                         eof_ms = int((eof - started) * 1000)
-                        remaining = max(0.001, deadline - eof)
+                        remaining = max(0.001, deadline - eof) if deadline is not None else None
                         status = process.wait(timeout=remaining)
                         return (
                             bytes(output)

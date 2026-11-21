@@ -1057,3 +1057,11 @@ def test_installed_command_failure_points_to_the_preparation_call_site(
     assert record["file"] == file
     assert record["line"] == 6  # noqa: PLR2004 - actual preparation call, not command wrapper
     assert CANARY not in text
+
+
+def test_attended_bounded_command_keeps_the_byte_limit_without_a_deadline() -> None:
+    assert probe.bounded_command([sys.executable, "-c", "print('ok')"], timeout=None) == b"ok\n"
+    assert (
+        probe.bounded_command([sys.executable, "-c", "print('too long')"], timeout=None, maximum=2)
+        is None
+    )

@@ -352,6 +352,7 @@ files = [
   "scripts/m3_12_diagnostic_guest.py",
   "scripts/m3_12_diagnostic_store.py",
   "scripts/m3_12_diagnostic_transport.py",
+  "scripts/m3_12_diagnostic_witness.py",
   "scripts/m3_12_diagnostics.py",
   "tests/infrastructure/test_m3_12_diagnostics.py",
   "scripts/m3_12_requirements.py",

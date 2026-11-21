@@ -459,7 +459,7 @@ def test_binding_probe_preserves_identity_checks_and_safe_wait_milestones(
     stdout.close.assert_called_once()
 
 
-def test_cleanup_identity_recheck_keeps_five_second_ceiling(
+def test_cleanup_identity_recheck_uses_shared_probe_ceiling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     environment = {"DOCKER_HOST": "unix:///synthetic-private-socket"}
@@ -471,6 +471,6 @@ def test_cleanup_identity_recheck_keeps_five_second_ceiling(
         ["docker", "info", "--format", "{{.ID}}"],
         environment=environment,
         check=True,
-        timeout=5,
-        timeout_progress=None,
+        timeout=cleanup.BINDING_IDENTITY_TIMEOUT_SECONDS,
+        timeout_progress=[],
     )

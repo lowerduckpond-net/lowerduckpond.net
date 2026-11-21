@@ -22,7 +22,11 @@ Use the original, unmodified path for follow-up. The default root is
 
 An installed failure keeps the fixture when its existing local ownership fence
 allows retention. The retained debugger and guest collection require the bound
-fixture and installed tooling. Live host, provider, and production adapters are
+fixture and installed tooling. The binding probe has the same 60-second
+hung-process ceiling for allocation and readback and reports its last I/O
+milestone if it stalls. Guest checkpoint transfer is byte-bounded. Interrupt
+an attended collection to stop the local probe and release the fixture lease.
+Live host, provider, and production adapters are
 delivered with their corresponding M3.12 slices.
 
 The public summary omits exception text, environment, arguments, and native
@@ -34,7 +38,8 @@ secondary collector, finalizer or cleanup action fails.
 
 The existing installed `transport-recovery` group contains the P2 witness.
 It exercises a failing root-owned helper through the real Ansible Docker
-connection, a disconnected observer while systemd still runs, a setup failure
+connection, public collection under the original receipt and lease after
+an observer disconnects while systemd still runs, a setup failure
 before guest setup, and a rejected export. The allowlisted
 `m3-12-installed-diagnostic-proof.json` attests to these checks and to synthetic
 secret exclusion from the console, private checkpoints and exported summary.

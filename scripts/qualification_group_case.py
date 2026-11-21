@@ -61,7 +61,7 @@ def case_configuration(
     return configuration, previous
 
 
-def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) -> int:  # noqa: PLR0915 - distinct retained-failure and successful teardown paths
+def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) -> int:
     group = GROUPS[case]
     with run_lease(directory, create=True):
         environment = {
@@ -118,62 +118,78 @@ def run_group(directory: Path, environment: dict[str, str], uv: str, case: str) 
                     print("Created fixture ownership could not be fully recorded.", flush=True)
             if status:
                 return status
-        record_phase("final-accounting")
-        record_accounting_check(case, "stage-receipts")
-        installed = stage_receipts(directory, environment, case)
-        if group.retained_failure:
-            from scripts.m3_11_retirement_case import completion  # noqa: PLC0415
+        if case != "transport-recovery":
+            return finish_group(directory, environment, uv, case, identities)
 
-            return completion(directory, environment)
-        record_accounting_check(case, "fixture-identity-before-storage")
-        if owned_containers(environment) != identities:
-            raise ValueError("owned fixture changed before accounting")
-        record_accounting_check(case, "local-before-storage")
-        pair = restore.paired_proof(environment) if group.reconstruction else None
-        if (
-            not group.reconstruction
-            and local_proof(environment, identities[HOST_ENV]) != "quiescent-installed"
-        ):
-            raise ValueError("installed group accounting is incomplete")
-        record_phase("final-storage-proof")
-        record_accounting_check(case, "storage-absence")
-        independent_storage_absence(environment, identities[ARCHIVE_ENV])
-        record_phase("final-accounting")
-        record_accounting_check(case, "fixture-identity-before-teardown")
-        if owned_containers(environment) != identities:
-            raise ValueError("owned fixture changed before teardown")
-        record_accounting_check(case, "local-before-teardown")
-        if (
-            restore.paired_proof(environment) != pair
-            if group.reconstruction
-            else local_proof(environment, identities[HOST_ENV]) != "quiescent-installed"
-        ):
-            raise ValueError("installed group accounting changed before teardown")
-        record_accounting_check(case, "destroy")
-        if pair is not None:
-            restore.remove_pair(environment, pair)
-        status = phase(directory, environment, uv, "destroy")
-        if status:
-            return status
-        record_accounting_check(case, "image-cleanup")
-        remove_owned_image(environment)
-        with (directory / "case.json").open("x", encoding="ascii") as stream:
-            json.dump(
-                {
-                    "format": FORMAT,
-                    "authority": "diagnostic-only",
-                    "case": case,
-                    "run_id": environment[RUN_ENV],
-                    "backend": "minio",
-                    "status": "passed",
-                    "local_accounting": "passed",
-                    "independent_storage_absence": "passed",
-                    "destroy": "passed",
-                    **({"installed": installed} if installed is not None else {}),
-                },
-                stream,
-                sort_keys=True,
-            )
-            stream.write("\n")
-        print(f"Installed group passed: {directory / 'case.json'}", flush=True)
-        return 0
+    # The public observer must reopen the same native run lease after the
+    # submitting observer has exited, while the still-owned guest remains.
+    from scripts.m3_12_diagnostic_witness import prove_retained_collection  # noqa: PLC0415
+
+    prove_retained_collection(directory)
+    with run_lease(directory):
+        return finish_group(directory, environment, uv, case, identities)
+
+
+def finish_group(
+    directory: Path, environment: dict[str, str], uv: str, case: str, identities: dict[str, str]
+) -> int:
+    group = GROUPS[case]
+    record_phase("final-accounting")
+    record_accounting_check(case, "stage-receipts")
+    installed = stage_receipts(directory, environment, case)
+    if group.retained_failure:
+        from scripts.m3_11_retirement_case import completion  # noqa: PLC0415
+
+        return completion(directory, environment)
+    record_accounting_check(case, "fixture-identity-before-storage")
+    if owned_containers(environment) != identities:
+        raise ValueError("owned fixture changed before accounting")
+    record_accounting_check(case, "local-before-storage")
+    pair = restore.paired_proof(environment) if group.reconstruction else None
+    if (
+        not group.reconstruction
+        and local_proof(environment, identities[HOST_ENV]) != "quiescent-installed"
+    ):
+        raise ValueError("installed group accounting is incomplete")
+    record_phase("final-storage-proof")
+    record_accounting_check(case, "storage-absence")
+    independent_storage_absence(environment, identities[ARCHIVE_ENV])
+    record_phase("final-accounting")
+    record_accounting_check(case, "fixture-identity-before-teardown")
+    if owned_containers(environment) != identities:
+        raise ValueError("owned fixture changed before teardown")
+    record_accounting_check(case, "local-before-teardown")
+    if (
+        restore.paired_proof(environment) != pair
+        if group.reconstruction
+        else local_proof(environment, identities[HOST_ENV]) != "quiescent-installed"
+    ):
+        raise ValueError("installed group accounting changed before teardown")
+    record_accounting_check(case, "destroy")
+    if pair is not None:
+        restore.remove_pair(environment, pair)
+    status = phase(directory, environment, uv, "destroy")
+    if status:
+        return status
+    record_accounting_check(case, "image-cleanup")
+    remove_owned_image(environment)
+    with (directory / "case.json").open("x", encoding="ascii") as stream:
+        json.dump(
+            {
+                "format": FORMAT,
+                "authority": "diagnostic-only",
+                "case": case,
+                "run_id": environment[RUN_ENV],
+                "backend": "minio",
+                "status": "passed",
+                "local_accounting": "passed",
+                "independent_storage_absence": "passed",
+                "destroy": "passed",
+                **({"installed": installed} if installed is not None else {}),
+            },
+            stream,
+            sort_keys=True,
+        )
+        stream.write("\n")
+    print(f"Installed group passed: {directory / 'case.json'}", flush=True)
+    return 0

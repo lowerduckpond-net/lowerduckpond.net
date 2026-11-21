@@ -15,11 +15,15 @@ from testinfra.host import Host
 
 from scripts.m3_12_contracts import decode
 from scripts.m3_12_diagnostic_store import ROOT, Attempt, publish
-from scripts.m3_12_diagnostic_transport import GUEST_FILE, read_guest
+from scripts.m3_12_diagnostic_transport import (
+    GUEST_FILE,
+    RETAINED_ATTEMPTS,
+    RETAINED_FIXTURE,
+    read_guest,
+)
 from scripts.m3_12_diagnostics import Step, child_environment, collect, execute, status
 from scripts.qualification_case import owned_containers
-from scripts.qualification_context import HOST_ENV
-from scripts.qualification_probe import bounded_command
+from scripts.qualification_context import HOST_ENV, RUN_ENV
 
 CANARY = b"M3-12-SYNTHETIC-PRIVATE-TRANSPORT-WITNESS"
 WITNESS = Path(__file__).with_name("m3_12_guest_witness.py")
@@ -211,53 +215,19 @@ def test_m3_12_installed_diagnostic_boundaries(
         for item in failed.record(name)["failures"]
     )
 
-    lost = Attempt.allocate(journal)
-    arguments, unit = playbook(lost, tmp_path, host_id, "hold")
-    try:
-        disconnect_observer(lost, arguments)
-        # The invoking observer was killed. The native unit remains active.
-        assert (
-            bounded_command(
-                [
-                    "docker",
-                    "exec",
-                    host_id,
-                    "systemctl",
-                    "show",
-                    "--property=ActiveState",
-                    "--value",
-                    unit,
-                ],
-                environment=environment,
-            )
-            == b"active\n"
-        )
-        native = read_guest(lost, environment, host_id, "start")
-        assert native["terminalEvidence"] == "missing"
-        assert status(lost)["uncertainWork"] is True
-        assert status(lost)["result"] == "unknown"
-    finally:
-        stopped = bounded_command(
-            ["docker", "exec", host_id, "systemctl", "stop", unit],
-            environment=environment,
-        )
-
-    assert stopped == b"", "The witness unit did not stop."
+    fixture = Path(environment["LDP_QUALIFICATION_TIMING_EVENTS"]).parent
+    lost = Attempt.allocate(fixture / RETAINED_ATTEMPTS)
+    arguments, _ = playbook(lost, tmp_path, host_id, "hold")
+    disconnect_observer(lost, arguments)
+    assert status(lost)["uncertainWork"] is True
+    assert status(lost)["result"] == "unknown"
+    publish(
+        lost.directory,
+        RETAINED_FIXTURE,
+        {"run_id": environment[RUN_ENV], "container_id": host_id},
+    )
 
     verify_no_canary(journal)
     capture = capfd.readouterr()
     if CANARY.decode() in capture.out or CANARY.decode() in capture.err:
         raise AssertionError("The fixture canary reached the console.")
-    events = Path(environment["LDP_QUALIFICATION_TIMING_EVENTS"])
-    publish(
-        events.parent,
-        "m3-12-installed-diagnostic-proof.json",
-        {
-            "format": "lowerduckpond-m3-12-installed-diagnostic-proof-v1",
-            "setup": "original-exit-retained",
-            "systemd": "cause-chain-transferred",
-            "observer": "unknown-while-guest-active",
-            "collection": "secondary-failure-retained",
-            "secretExclusion": "checked",
-        },
-    )
