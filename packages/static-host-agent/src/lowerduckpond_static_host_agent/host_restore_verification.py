@@ -241,6 +241,7 @@ def verify_installed_runtime(  # noqa: PLR0913 - selection proof and native runn
             validation_uid=caddy_uid,
             validation_gid=paths.caddy_group,
             expected_binary_sha256=str(inputs.caddy["binarySha256"]),
+            disposable=inputs.disposable_routing,
             expected_lock_owner=store.owner,
             expected_lock_group=store.owner,
         ) as runtime,

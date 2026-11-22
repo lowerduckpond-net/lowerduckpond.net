@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import base64
 import os
+import sys
 from dataclasses import replace
+from hashlib import sha256
 from pathlib import Path
+from runpy import run_path
 from typing import cast
 from uuid import uuid7
 
 import pytest
 from lowerduckpond_static_contracts import canonical_json_bytes, decode_json_object
-from lowerduckpond_static_host_agent import (
-    droplet_enrollment,
-)
+from lowerduckpond_static_host_agent import droplet_enrollment, installed_routing
 from lowerduckpond_static_host_agent import (
     host_restore_activation as activation,
 )
@@ -35,6 +36,7 @@ from lowerduckpond_static_host_agent.backup_descriptor import (
     encode_backup_descriptor,
 )
 from lowerduckpond_static_host_agent.backup_identity import framed_digest
+from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
 from lowerduckpond_static_host_agent.host_restore_authority import begin_restore_authority
 from lowerduckpond_static_host_agent.host_restore_delivery import (
     delivery_readback,
@@ -45,7 +47,7 @@ from lowerduckpond_static_host_agent.host_restore_gate import (
     close_gate,
     restore_admission,
 )
-from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
+from lowerduckpond_static_host_agent.host_restore_inputs import ROUTING_INPUT, RestoreInputs
 from lowerduckpond_static_host_agent.host_restore_journal import (
     DROPLET_BINDING,
     DROPLET_SCOPE_FORMAT,
@@ -238,6 +240,11 @@ def launched_snapshot(
     return scoped, source_target_sha256, digest(decode_json_object(raw_receipt))
 
 
+@pytest.fixture
+def projected_scope() -> bool:
+    return False
+
+
 @pytest.fixture(params=[False, True], ids=["dark", "launched"])
 def native_recovery(  # noqa: PLR0913,PLR0917 - independent fixture artifacts and policy
     request: pytest.FixtureRequest,
@@ -246,6 +253,7 @@ def native_recovery(  # noqa: PLR0913,PLR0917 - independent fixture artifacts an
     destination: tuple[str, str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    projected_scope: bool,
 ) -> tuple[Path, RestoreInputs]:
     owner = os.geteuid()
     snapshot, _ = restic
@@ -278,6 +286,17 @@ def native_recovery(  # noqa: PLR0913,PLR0917 - independent fixture artifacts an
         raw = fence.source_fence_receipt(
             store, snapshot, cast(str, configuration["restoreId"]), "a" * 32, "b" * 64
         )
+    if projected_scope:
+        configuration[ROUTING_INPUT] = DisposableRoutes(
+            "d" * 64,
+            run_id,
+            str(uuid7()),
+            source_target,
+            target,
+            "platform.fixture.example",
+            "tenant.fixture.example",
+            (),
+        ).document()
     policy = RestoreInputs.from_bytes(
         canonical_json_bytes(
             {
@@ -306,6 +325,142 @@ def native_recovery(  # noqa: PLR0913,PLR0917 - independent fixture artifacts an
         for phase in PHASES[1:]:
             current = store.advance(current, phase, {})
     return root, policy
+
+
+def _installed_boot(root: Path, calls: list[str], monkeypatch: pytest.MonkeyPatch) -> int:
+    root_script = Path(__file__).parents[3] / (
+        "config/ansible/roles/host_recovery/files/host-restore-gate"
+    )
+    main = run_path(str(root_script))["main"]
+    monkeypatch.setitem(main.__globals__, "ROOT", root)
+    monkeypatch.setitem(main.__globals__, "close_firewall", lambda: calls.append("closed"))
+    monkeypatch.setitem(
+        main.__globals__, "acquire_selection", lambda: os.open("/dev/null", os.O_RDONLY)
+    )
+    monkeypatch.setitem(main.__globals__, "require_artifact", lambda: root)
+    with monkeypatch.context() as invocation:
+        invocation.setattr(sys, "argv", [str(root_script), "--boot"])
+        invocation.setattr(sys, "path", list(sys.path))
+        return int(main(owner=os.geteuid()))
+
+
+@pytest.mark.parametrize("projected_scope", [True])
+def test_projected_ingress_reopens_only_for_enrolled_role_and_current_boot(  # noqa: PLR0915 - native failure and reboot sequence
+    native_recovery: tuple[Path, RestoreInputs],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root, inputs = native_recovery
+    routing = inputs.disposable_routing
+    assert routing is not None
+    owner = os.geteuid()
+    authority = droplet_restore.AUTHORITY
+    caddy = tmp_path / "routing-caddy"
+    caddy.mkdir(mode=0o750)
+    (caddy / "intents").mkdir(mode=0o700)
+    boot_file = tmp_path / "boot-id"
+    role_file = authority / installed_routing.ROLE
+    map_file = caddy / installed_routing.PROJECTION
+    monkeypatch.setattr(observe, "BOOT_ID", boot_file)
+    monkeypatch.setattr(installed_routing, "AUTHORITY", authority)
+    monkeypatch.setattr(installed_routing, "CADDY_ROOT", caddy)
+    read_projection = installed_routing.installed_projection
+    monkeypatch.setattr(
+        installed_routing,
+        "installed_projection",
+        lambda **options: read_projection(**options, group=os.getegid()),
+    )
+
+    def write(path: Path, data: bytes, mode: int = 0o600) -> None:
+        path.write_bytes(data)
+        path.chmod(mode)
+
+    write(boot_file, b"11111111-3333-4444-5555-666666666666\n")
+    calls: list[str] = []
+    monkeypatch.setattr(services, "restore_schedules", lambda **_: calls.append("timers"))
+    monkeypatch.setattr(services, "remove_public_gate", lambda: calls.append("opened"))
+    config = tmp_path / "static-publication.json"
+    write(
+        config,
+        encode(
+            {
+                "format": "lowerduckpond-static-publication-gate-v1",
+                "static_publication_enabled": False,
+            }
+        ),
+        0o400,
+    )
+    ready = tmp_path / "runtime/schedules-ready"
+    with RestoreStore.locked(root, owner=owner) as store:
+        fence_raw = store.read_bytes(f"source-fence-{inputs.restore_id}.json")
+        original = {
+            "format": installed_routing.CUTOVER_FORMAT,
+            "routingSha256": routing.sha256,
+            "allocationSha256": routing.allocation_sha256,
+            "sourceTargetSha256": routing.source_target,
+            "restoreTargetSha256": routing.restore_target,
+            "sourceBootSha256": "a" * 64,
+            "restoreBootSha256": observe.boot_sha256(owner),
+            "restoreId": inputs.restore_id,
+            "sourceFenceSha256": sha256(fence_raw).hexdigest(),
+        }
+        cutover = authority / installed_routing.cutover_filename(observe.boot_sha256(owner))
+
+        def activate() -> None:
+            activation.activate_completed_restore(
+                store,
+                inputs,
+                caddy,
+                configuration=config,
+                ready=ready,
+            )
+
+        with pytest.raises(HostRestoreError, match="restore_disposable_routing_changed"):
+            activate()
+        write(map_file, encode(routing.document()), 0o440)
+        with pytest.raises(FileNotFoundError):
+            activate()
+        write(role_file, encode(routing.role_document("source")))
+        with pytest.raises(HostRestoreError, match="role_changed"):
+            activate()
+        write(role_file, encode(routing.role_document("restore")))
+        with pytest.raises(FileNotFoundError):
+            activate()
+        write(cutover, b"{}\n")
+        with pytest.raises(HostRestoreError, match="unexpected members"):
+            activate()
+        write(cutover, encode({**original, "sourceFenceSha256": "9" * 64}))
+        with pytest.raises(HostRestoreError, match="cutover_changed"):
+            activate()
+        assert restore_admission(root, owner=owner, boot=True) is False
+        assert calls == [] and not ready.exists() and (root / GATE[0]).exists()
+
+        write(cutover, encode(original))
+        assert restore_admission(root, owner=owner, caddy=True)
+        activate()
+        assert calls == ["timers", "opened"]
+        assert restore_admission(root, owner=owner, boot=True)
+
+        write(boot_file, b"22222222-3333-4444-5555-666666666666\n")
+        assert restore_admission(root, owner=owner, boot=True) is False
+        assert _installed_boot(root, calls, monkeypatch) == 0
+        with pytest.raises(FileNotFoundError):
+            restore_admission(root, owner=owner, caddy=True)
+        with pytest.raises(FileNotFoundError):
+            activation.finish_public_ingress(store)
+        refreshed = authority / installed_routing.cutover_filename(observe.boot_sha256(owner))
+        write(refreshed, encode(original))
+        with pytest.raises(HostRestoreError, match="cutover_changed"):
+            activation.finish_public_ingress(store)
+        assert calls == ["timers", "opened", "closed"]
+
+        write(refreshed, encode({**original, "restoreBootSha256": observe.boot_sha256(owner)}))
+        assert restore_admission(root, owner=owner, boot=True)
+        assert _installed_boot(root, calls, monkeypatch) == 0
+        activation.finish_public_ingress(store)
+        assert calls == ["timers", "opened", "closed", "opened"]
+        assert cutover.read_bytes() == encode(original)
+        assert store.read_bytes(f"source-fence-{inputs.restore_id}.json") == fence_raw
 
 
 def test_droplet_activation_and_ingress_resume_require_the_original_destination(

@@ -17,6 +17,7 @@ from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.host_restore_droplet import AUTHORITY, require_source_launch
 from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
 from lowerduckpond_static_host_agent.host_restore_journal import HostRestoreError
+from lowerduckpond_static_host_agent.installed_routing import ROLE
 from scripts.m3_12_contracts import DISPOSABLE, Document, decode, digest, encode, validate_launch
 
 ENROLLMENT_FILES = (TARGET, ENROLLMENT, EXCLUSIONS)
@@ -55,6 +56,11 @@ def publication_files(
             observed = read_enrollment(directory, protected, owner=owner)
             if observed.target != target or observed.registration != registration:
                 raise HostRestoreError("droplet_restore_destination_changed")
+        routing = inputs.disposable_routing
+        if routing is not None:
+            records[ROLE] = protected_record(protected, ROLE, owner)
+            if records[ROLE] != encode(routing.role_document("restore")):
+                raise HostRestoreError("restore_disposable_routing_role_changed")
         launch = inputs.document["launch"]
         if launch is not None:
             records.update(

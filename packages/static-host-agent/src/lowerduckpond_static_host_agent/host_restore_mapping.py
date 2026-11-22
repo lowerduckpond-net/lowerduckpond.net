@@ -39,6 +39,7 @@ from lowerduckpond_static_host_agent.caddy_routes import (
     TenantRouteInput,
     build_tenant_caddy_routes,
 )
+from lowerduckpond_static_host_agent.disposable_routes import project_native_routes
 from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.host_restore_history import provenance_stores
 from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
@@ -142,6 +143,7 @@ class RuntimeInputs:
             evidence,
             {"reconciled": (evidence.selected_target.generation_id, original)},
             result.original_ca,
+            captured_disposable=trusted.disposable_routing,
         )
         result.routes()  # Validate every target contract and the complete projection.
         return result
@@ -218,13 +220,16 @@ class RuntimeInputs:
 
     def routes(self) -> TenantCaddyRoutes:
         target = self.projected
-        return build_tenant_caddy_routes(
+        routes = build_tenant_caddy_routes(
             platform_namespace=target.platform_namespace,
             tenants=target.tenants,
             runtime_generation_id=self.generation_id,
             origin_pull_ca_der=self.current_ca,
             origin_pull_required=True,
         )
+
+        routing = self.trusted.disposable_routing
+        return routes if routing is None else project_native_routes(routes, routing)
 
     def to_bytes(self) -> bytes:
         return canonical_json_bytes(self.document, maximum_bytes=MAX_PLAN_BYTES)

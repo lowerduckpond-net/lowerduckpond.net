@@ -113,10 +113,10 @@ def require_artifact() -> pathlib.Path:
     return selected
 
 
-def main() -> int:  # noqa: PLR0911 - explicit boot and admission failure boundaries
+def main(*, owner: int = 0) -> int:  # noqa: PLR0911 - explicit boot and admission failure boundaries
     if sys.argv[1:] not in (["--boot"], ["--ordinary"], ["--caddy"]):
         return 64
-    if os.geteuid() != 0:
+    if os.geteuid() != owner:
         return 77
     boot = sys.argv[1] == "--boot"
     try:
@@ -126,14 +126,14 @@ def main() -> int:  # noqa: PLR0911 - explicit boot and admission failure bounda
         if (
             not stat.S_ISDIR(metadata.st_mode)
             or stat.S_IMODE(metadata.st_mode) != PRIVATE_MODE
-            or metadata.st_uid != 0
-            or metadata.st_gid != 0
+            or metadata.st_uid != owner
+            or metadata.st_gid != owner
         ):
             raise ValueError("unsafe recovery root")
         marker = os.path.lexists(ROOT / "restore-gate.json")
         journal = os.path.lexists(ROOT / "host-restore.json")
         if not marker and not journal:
-            require_uninitialized_directory(ROOT)
+            require_uninitialized_directory(ROOT, owner=owner)
             return 0
         if marker and boot:
             close_firewall()
@@ -148,7 +148,7 @@ def main() -> int:  # noqa: PLR0911 - explicit boot and admission failure bounda
                 restore_admission,
             )
 
-            admitted = restore_admission(caddy=sys.argv[1] == "--caddy", boot=boot)
+            admitted = restore_admission(ROOT, owner=owner, caddy=sys.argv[1] == "--caddy", boot=boot)
             if not admitted and boot:
                 close_firewall()
                 return 0

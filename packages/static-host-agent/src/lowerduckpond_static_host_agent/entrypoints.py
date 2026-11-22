@@ -108,6 +108,10 @@ from lowerduckpond_static_host_agent.export_spool import ExportSpool, ExportSpoo
 from lowerduckpond_static_host_agent.host_restore_gate import require_restore_admission
 from lowerduckpond_static_host_agent.host_restore_journal import HostRestoreError
 from lowerduckpond_static_host_agent.host_restore_startup import require_restore_startup
+from lowerduckpond_static_host_agent.installed_routing import (
+    installed_projection,
+    require_caddy_routing,
+)
 from lowerduckpond_static_host_agent.intake import ArtifactIntake, IntakeError
 from lowerduckpond_static_host_agent.issuance import (
     AuthorizationIssuer,
@@ -489,22 +493,7 @@ def caddy_launcher_main(arguments: list[str] | None = None) -> int:
     if values:
         return _fail("invalid_caddy_launcher_invocation", 64)
     try:
-        lock_descriptor = _systemd_publication_lock_descriptor()
-        caddy_user = pwd.getpwnam(_CADDY_ACCOUNT)
-        caddy_group = grp.getgrnam(_CADDY_ACCOUNT)
-        with CaddyRuntime.from_lock_descriptor(
-            _CADDY_RUNTIME_ROOT,
-            lock_descriptor,
-            expected_owner=0,
-            expected_group=caddy_group.gr_gid,
-            validation_uid=caddy_user.pw_uid,
-            validation_gid=caddy_group.gr_gid,
-            expected_binary_sha256=None,
-            expected_lock_owner=0,
-            expected_lock_group=0,
-            root_mode=CADDY_RUNTIME_ROOT_MODE,
-            lock_mode=CADDY_PUBLICATION_LOCK_MODE,
-        ) as runtime:
+        with _open_systemd_caddy_runtime() as runtime:
             execution = prepare_active_caddy_execution(runtime)
         with execution:
             execution.execute(inherited_environment=os.environ)
@@ -519,6 +508,7 @@ def caddy_start_gate_main(arguments: list[str] | None = None) -> int:
     values = sys.argv[1:] if arguments is None else arguments
     try:
         require_restore_admission(caddy=True)
+        require_caddy_routing(installed_projection())
         _require_no_arguments(values)
         invocation_id = _systemd_invocation_id()
         with (
@@ -549,6 +539,7 @@ def caddy_start_verifier_main(arguments: list[str] | None = None) -> int:
     values = sys.argv[1:] if arguments is None else arguments
     try:
         require_restore_admission(caddy=True)
+        require_caddy_routing(installed_projection())
         _require_no_arguments(values)
         invocation_id = _systemd_invocation_id()
         with (
@@ -663,6 +654,8 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
         return _fail("invalid_caddy_bootstrap_invocation", 64)
     try:
         require_restore_admission()
+        routing = installed_projection()
+        require_caddy_routing(routing)
         caddy_user = pwd.getpwnam(_CADDY_ACCOUNT)
         caddy_group = grp.getgrnam(_CADDY_ACCOUNT)
         binary = CaddyBinarySource(binary_path, owner=0, group=0, mode=0o755)
@@ -707,6 +700,7 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
                 validation_uid=caddy_user.pw_uid,
                 validation_gid=caddy_group.gr_gid,
                 expected_binary_sha256=expected_digest,
+                disposable=routing,
                 expected_lock_owner=0,
                 expected_lock_group=0,
             ) as runtime,
@@ -891,6 +885,7 @@ def _open_systemd_caddy_runtime() -> CaddyRuntime:
         validation_uid=caddy_user.pw_uid,
         validation_gid=caddy_group.gr_gid,
         expected_binary_sha256=None,
+        disposable=installed_projection(group=caddy_group.gr_gid),
         expected_lock_owner=0,
         expected_lock_group=0,
         root_mode=CADDY_RUNTIME_ROOT_MODE,
@@ -917,6 +912,7 @@ def _open_caddy_control_runtime() -> CaddyRuntime:
         validation_uid=caddy_user.pw_uid,
         validation_gid=caddy_group.gr_gid,
         expected_binary_sha256=None,
+        disposable=installed_projection(group=caddy_group.gr_gid),
         expected_lock_owner=0,
         expected_lock_group=0,
         root_mode=CADDY_RUNTIME_ROOT_MODE,

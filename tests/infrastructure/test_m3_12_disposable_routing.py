@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from dataclasses import dataclass, replace
 from hashlib import sha256
 from pathlib import Path
@@ -12,11 +13,12 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from lowerduckpond_static_host_agent.caddy_routes import build_platform_only_caddy_routes
-from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
+from lowerduckpond_static_host_agent.host_restore_inputs import ROUTING_INPUT, RestoreInputs
 from lowerduckpond_static_host_agent.host_restore_journal import (
     DROPLET_BINDING,
     DROPLET_SCOPE_FORMAT,
 )
+from lowerduckpond_static_host_agent.installed_routing import PROJECTION, ROLE, cutover_filename
 from playwright.async_api import Browser, Page
 
 from infrastructure.test_m3_12_droplet_adapters import Captures, adapter, endpoint
@@ -24,6 +26,7 @@ from infrastructure.test_m3_12_droplet_controller import recovery_policy
 from infrastructure.test_m3_12_droplet_journey import fixture as fixture  # noqa: PLC0414
 from infrastructure.test_m3_12_droplet_journey import proof
 from infrastructure.test_m3_12_droplet_journey import records as records  # noqa: PLC0414
+from scripts import m3_12_droplet_observe as guest
 from scripts.m3_12_contracts import Document, ValidationError, digest, encode
 from scripts.m3_12_diagnostic_store import Attempt
 from scripts.m3_12_disposable_routing import (
@@ -31,6 +34,7 @@ from scripts.m3_12_disposable_routing import (
     RESTORE_PHASES,
     PreparedRouting,
     RoutingEndpoint,
+    prepare_installed_routing_delivery,
     prepare_projected_routes,
     prepare_routing,
     verify_cutover,
@@ -105,7 +109,6 @@ def pair(  # noqa: PLR0915 - full enrolled source and restore proof
         "destinationTargetSha256": digest(hosts["restore"]["target"]),
         "sourceLaunchReceiptSha256": None,
     }
-    restored = RestoreInputs.from_bytes(encode(native_policy))
     captures = Captures(attempt, scope)
     captures.evidence["backup-fence"] = {"sourceFence": sha256(fence).hexdigest()}
     destination_inputs = adapter((attempt, scope, review), "restore", captures)
@@ -170,6 +173,9 @@ def pair(  # noqa: PLR0915 - full enrolled source and restore proof
     dst = prepare_routing(destination_inputs, destination, raw, wire)
     assert src.policy == dst.policy
     assert src.target_sha256 != dst.target_sha256
+    restored = RestoreInputs.from_bytes(
+        encode({**native_policy, ROUTING_INPUT: src.policy.document()})
+    )
 
     def cutover(*, from_host: PreparedRouting = src, to_host: PreparedRouting = dst) -> Document:
         return verify_cutover(
@@ -185,9 +191,17 @@ def pair(  # noqa: PLR0915 - full enrolled source and restore proof
         origin_pull_ca_der=(b"synthetic CA",), origin_pull_required=True
     )
     projected_source = prepare_projected_routes(source_inputs, src, raw, dark)
+    assert prepare_installed_routing_delivery(source_inputs, src, raw) == {
+        ROLE: encode(src.policy.role_document("source")),
+        PROJECTION: encode(src.policy.document()),
+    }
     with pytest.raises(ValidationError, match="droplet-routing-cutover-missing"):
         prepare_projected_routes(destination_inputs, dst, raw, dark)
     receipt = cutover()
+    assert prepare_installed_routing_delivery(destination_inputs, dst, raw, cutover=receipt) == {
+        ROLE: encode(dst.policy.role_document("restore")),
+        cutover_filename(dst.boot_sha256): encode(receipt),
+    }
     assert (
         prepare_projected_routes(destination_inputs, dst, raw, dark, cutover=receipt)
         == projected_source
@@ -384,9 +398,9 @@ def test_browser_correlates_one_native_tls_request_and_excludes_unrelated_rows()
     )
 
 
-def test_exact_native_firewall_projection_rejects_missing_or_changed_rules() -> None:
+def _native_firewall() -> Document:
     base = {"family": "inet", "table": "lowerduckpond_restore"}
-    row = {
+    return {
         "nftables": [
             {"metainfo": {"version": "fixture"}},
             {"table": {"family": "inet", "name": "lowerduckpond_restore", "handle": 1}},
@@ -425,6 +439,44 @@ def test_exact_native_firewall_projection_rejects_missing_or_changed_rules() -> 
             },
         ],
     }
+
+
+def test_exact_native_firewall_projection_rejects_missing_or_changed_rules() -> None:
+    row = _native_firewall()
     assert _restore_firewall(row)
     row["nftables"].pop()
     assert not _restore_firewall(row)
+
+
+def test_reboot_fence_observation_requires_original_completed_restore_and_closed_rule(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal = tmp_path / "host-restore.json"
+    gate_path = tmp_path / "restore-gate.json"
+    restore_id = TENANT
+    recorded = {"schema": guest.JOURNAL_FORMAT, "restoreId": restore_id, "phase": "complete"}
+    journal.write_bytes(encode(recorded))
+    journal.chmod(0o600)
+    kernel_rule = _native_firewall()
+    monkeypatch.setattr(guest, "JOURNAL", journal)
+    monkeypatch.setattr(guest, "RESTORE_GATE", gate_path)
+    monkeypatch.setattr(guest, "observe", lambda _owner: {"bootSha256": proof("destination boot")})
+    monkeypatch.setattr(
+        guest,
+        "_command",
+        lambda command, *_argv: json.dumps(kernel_rule) if command.endswith("/nft") else "inactive",
+    )
+    with pytest.raises(ValueError, match="droplet-restore-gate-missing"):
+        guest.fence_status(os.geteuid())
+    with pytest.raises(ValueError, match="droplet-restore-completion-changed"):
+        guest.fence_status(os.geteuid(), completed_restore_id=str(0))
+    result = guest.fence_status(os.geteuid(), completed_restore_id=restore_id)
+    gate_path.write_bytes(encode({"schema": guest.RESTORE_GATE_FORMAT, "restoreId": restore_id}))
+    gate_path.chmod(0o600)
+    assert result == guest.fence_status(os.geteuid())
+    assert result["ingressClosed"] is True
+    kernel_rule["nftables"].pop()
+    assert (
+        guest.fence_status(os.geteuid(), completed_restore_id=restore_id)["ingressClosed"] is False
+    )

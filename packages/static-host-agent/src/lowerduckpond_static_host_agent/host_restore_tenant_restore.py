@@ -12,6 +12,7 @@ from lowerduckpond_static_contracts import validate_uuid7
 from lowerduckpond_static_host_agent.audit import AuditState
 from lowerduckpond_static_host_agent.backup_caddy import CaddyBackupEvidence
 from lowerduckpond_static_host_agent.caddy_routes import TenantRouteInput
+from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
 from lowerduckpond_static_host_agent.execution import _validate_result_audit
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
 from lowerduckpond_static_host_agent.host_restore_archives import require_verified_archive
@@ -135,6 +136,7 @@ def reconcile_tenant_restore(  # noqa: PLR0913, PLR0917 - complete trusted selec
     original_origin_pull_ca_der: tuple[bytes, ...],
     archive_proof: dict[str, object],
     *,
+    captured_disposable: DisposableRoutes | None = None,
     failure_hook: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     """Preserve retirement until the credential helper verifies its terminal choice."""
@@ -146,7 +148,13 @@ def reconcile_tenant_restore(  # noqa: PLR0913, PLR0917 - complete trusted selec
     if retirement is None:
         raise HostRestoreError("restore_tenant_retirement_unavailable")
     plan = _plan(transaction, intent, job, retirement)
-    choice = restore_selection(transaction, plan, evidence, original_origin_pull_ca_der)
+    choice = restore_selection(
+        transaction,
+        plan,
+        evidence,
+        original_origin_pull_ca_der,
+        captured_disposable=captured_disposable,
+    )
     archive = cast(dict[str, object], retirement.document["archiveRecord"])
     require_verified_archive(archive_proof, archive, required=choice == "source")
     local_present = any(
@@ -202,6 +210,8 @@ def restore_selection(
     plan: DeploymentTransitionPlan,
     evidence: CaddyBackupEvidence,
     original_origin_pull_ca_der: tuple[bytes, ...],
+    *,
+    captured_disposable: DisposableRoutes | None = None,
 ) -> str:
     recorded = cast(dict[str, object], plan.intent["lifecycleRecovery"])
     others = snapshot_other_tenant_routes(transaction, excluded_tenant_id=plan.tenant_id)
@@ -217,4 +227,5 @@ def restore_selection(
             ),
         },
         original_origin_pull_ca_der,
+        captured_disposable=captured_disposable,
     )

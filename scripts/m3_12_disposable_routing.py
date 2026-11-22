@@ -19,6 +19,12 @@ from lowerduckpond_static_host_agent.disposable_routes import (
 from lowerduckpond_static_host_agent.host_restore_fence import require_fence_policy
 from lowerduckpond_static_host_agent.host_restore_gate import GATE_SCHEMA
 from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
+from lowerduckpond_static_host_agent.installed_routing import (
+    CUTOVER_FORMAT,
+    PROJECTION,
+    ROLE,
+    cutover_filename,
+)
 
 from scripts.m3_12_contracts import (
     MAX_RECORD_BYTES,
@@ -123,12 +129,14 @@ def prepare_routing(
     return PreparedRouting(policy, role, digest(host["target"]), observed["bootSha256"])
 
 
-def observe_fence(
+def observe_fence(  # noqa: PLR0913 - reviewed role, pinned transport and reboot identity
     inputs: AdapterInputs,
     endpoint: Endpoint,
     prepared: PreparedRouting,
     policy_raw: bytes,
     execute: ReadExecutor,
+    *,
+    completed_restore_id: str | None = None,
 ) -> Document:
     """Get current gate/firewall state over the existing independently pinned SSH path."""
     role = endpoint.allocation.role
@@ -142,7 +150,9 @@ def observe_fence(
         and prepared.target_sha256 == digest(host["target"]),
         "droplet-routing-policy-changed",
     )
-    record = observe_restore_fence(endpoint, executor=execute)
+    record = observe_restore_fence(
+        endpoint, executor=execute, completed_restore_id=completed_restore_id
+    )
     guest, enrolled = record["observation"], host["enrollment"]
     require(
         guest["bootSha256"] == prepared.boot_sha256
@@ -191,7 +201,10 @@ def verify_cutover(  # noqa: PLR0913 - native fence and pinned executor are inde
     require(
         source.role == "source"
         and destination.role == "restore"
-        and source.policy == destination.policy == reviewed_routing_policy(scope, policy_raw)
+        and source.policy
+        == destination.policy
+        == restore.disposable_routing
+        == reviewed_routing_policy(scope, policy_raw)
         and source.target_sha256 == source.policy.source_target
         and destination.target_sha256 == source.policy.restore_target
         and destination.target_sha256 == action["targets"]["restore"],
@@ -222,7 +235,12 @@ def verify_cutover(  # noqa: PLR0913 - native fence and pinned executor are inde
         source_host.inputs, source_host.endpoint, source, policy_raw, execute
     )
     destination_fence = observe_fence(
-        inputs, restore_host.endpoint, destination, policy_raw, execute
+        inputs,
+        restore_host.endpoint,
+        destination,
+        policy_raw,
+        execute,
+        completed_restore_id=restore.restore_id if action["phase"] == "restore-reboot" else None,
     )
     require(
         encode(source_fence)
@@ -248,7 +266,7 @@ def verify_cutover(  # noqa: PLR0913 - native fence and pinned executor are inde
         "droplet-routing-fence-unproven",
     )
     result = {
-        "format": "lowerduckpond-m3-12-disposable-routing-cutover-v1",
+        "format": CUTOVER_FORMAT,
         "routingSha256": source.policy.sha256,
         "allocationSha256": digest(scope),
         "sourceTargetSha256": source.target_sha256,
@@ -311,6 +329,23 @@ def require_prepared_cutover(
     )
 
 
+def prepare_installed_routing_delivery(
+    inputs: AdapterInputs,
+    prepared: PreparedRouting,
+    policy_raw: bytes,
+    *,
+    cutover: Document | None = None,
+) -> dict[str, bytes]:
+    """Return fixed records from reviewed preparation without contacting either host."""
+    _require_projection_admission(inputs, prepared, policy_raw, cutover)
+    records = {ROLE: encode(prepared.policy.role_document(prepared.role))}
+    if prepared.role == "source":
+        records[PROJECTION] = encode(prepared.policy.document())
+    elif cutover is not None:
+        records[cutover_filename(prepared.boot_sha256)] = encode(cutover)
+    return records
+
+
 def prepare_projected_routes[Routes: PlatformOnlyCaddyRoutes | TenantCaddyRoutes](
     inputs: AdapterInputs,
     prepared: PreparedRouting,
@@ -320,6 +355,13 @@ def prepare_projected_routes[Routes: PlatformOnlyCaddyRoutes | TenantCaddyRoutes
     cutover: Document | None = None,
 ) -> Routes:
     """Prepare a scoped Caddy payload while preserving the logical native generation."""
+    _require_projection_admission(inputs, prepared, policy_raw, cutover)
+    return project_native_routes(logical, prepared.policy)
+
+
+def _require_projection_admission(
+    inputs: AdapterInputs, prepared: PreparedRouting, policy_raw: bytes, cutover: Document | None
+) -> None:
     role = prepared.role
     require(role in {"source", "restore"}, "droplet-routing-role-changed")
     scope, intent = inputs.open(SOURCE_PHASES if role == "source" else RESTORE_PHASES)
@@ -338,4 +380,3 @@ def prepare_projected_routes[Routes: PlatformOnlyCaddyRoutes | TenantCaddyRoutes
             and not os.path.lexists(inputs.attempt.directory / "routing-source-fenced.json"),
             "droplet-routing-source-fenced",
         )
-    return project_native_routes(logical, prepared.policy)

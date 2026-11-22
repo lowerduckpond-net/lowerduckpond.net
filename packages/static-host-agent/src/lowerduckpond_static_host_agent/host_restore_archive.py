@@ -19,6 +19,7 @@ from lowerduckpond_static_host_agent.archive_journal import failed_construction_
 from lowerduckpond_static_host_agent.audit import AuditState
 from lowerduckpond_static_host_agent.backup_caddy import CaddyBackupEvidence
 from lowerduckpond_static_host_agent.caddy_routes import TenantRouteInput
+from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
 from lowerduckpond_static_host_agent.execution import (
     _require_same_authority,
     _validate_request_integrity,
@@ -229,6 +230,7 @@ def reconcile_archive(  # noqa: PLR0913, PLR0917 - independent authority and cre
     original_origin_pull_ca_der: tuple[bytes, ...],
     archive_proof: dict[str, object],
     *,
+    captured_disposable: DisposableRoutes | None = None,
     failure_hook: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     """Keep the construction journal for independently verified remote finalization."""
@@ -242,7 +244,13 @@ def reconcile_archive(  # noqa: PLR0913, PLR0917 - independent authority and cre
     with repository.publication_transaction() as transaction:
         intent, job, resuming = _original(store, transaction, intent_id)
         plan = _plan(transaction, intent, job)
-        choice = archive_selection(transaction, plan, evidence, original_origin_pull_ca_der)
+        choice = archive_selection(
+            transaction,
+            plan,
+            evidence,
+            original_origin_pull_ca_der,
+            captured_disposable=captured_disposable,
+        )
         require_verified_archive(archive_proof, plan.archive_record, required=choice == "candidate")
         if not resuming or choice == "candidate":
             validate_archive_transition(transaction, spool, job, plan)
@@ -293,6 +301,8 @@ def archive_selection(
     plan: ArchiveTransitionPlan,
     evidence: CaddyBackupEvidence,
     original_origin_pull_ca_der: tuple[bytes, ...],
+    *,
+    captured_disposable: DisposableRoutes | None = None,
 ) -> str:
     recorded = cast(dict[str, object], plan.intent["archiveRecovery"])
     others = snapshot_other_tenant_routes(transaction, excluded_tenant_id=plan.tenant_id)
@@ -313,4 +323,5 @@ def archive_selection(
             "candidate": (validate_uuid7(recorded["candidateRuntimeGenerationId"]), others),
         },
         original_origin_pull_ca_der,
+        captured_disposable=captured_disposable,
     )

@@ -79,11 +79,10 @@ target before reading either native command result.
 The Ansible preview reopens the one-host inventory, known-hosts file, and
 dark stage file under the original handoff digests. It rederives the stage
 from the authorized artifact or protected restore policy. The command
-selects only the owned host and uses `site.yml --list-hosts`. Native apply
-is blocked. The immutable Caddy route builder emits production apex and
-wildcard subjects and the tenant contracts still pin the production
-canonical suffix. The legacy `caddy_domain` variable does not change those
-paths.
+selects only the owned host and uses `site.yml --list-hosts`. Native provider
+apply is blocked. Ordinary Caddy generations still use production apex and
+wildcard subjects. The legacy `caddy_domain` variable does not change
+the tenant origin contracts.
 
 The [edge adapter](../../scripts/m3_12_droplet_edge.py) builds exact browser
 origins, apex and wildcard subjects, and origin-pull identity inputs from
@@ -227,12 +226,26 @@ request. The pinned SSH probe correlates its unique marker to one Caddy
 access entry in the restored host's current boot. Only the proof fields
 leave the guest. Raw journal entries and request headers stay on the host.
 
-The ordinary Ansible apply refusal is still active. Native provisioning,
-delivery of protected routing authority to the installed service and actual
-provider proof need their own verified handoff. This offline suite exercises
-generation selection under the exact projected scope and tests the controller
-boundary and browser protocol with synthetic transport. The qualification
-root presently owns only the initial host resources.
+The installed Caddy runtime reads only the nonsecret projection in
+`/etc/caddy/disposable-routing.json` (root-owned and read-only to Caddy).
+The privileged start hooks compare it to the protected role and locally
+reobserved enrollment. Cold restore builds that file from its reviewed
+destination policy and independently verifies the original projected source
+generation. TLS verification uses the reviewed disposable subjects. Ordinary
+installs have no projection file and follow the existing canonical path.
+
+Recovery requires the original source fence and an immutable cutover
+receipt for the destination's current boot before starting Caddy or
+opening public ingress. After reboot, the installed gate closes ingress
+when the prior boot's receipt no longer applies. Renew the receipt only
+after pinned readback of the fenced source and the still-closed destination
+kernel rule. Retain old receipts and resume the completed destination
+recovery to clear the gate through the existing activation path.
+
+Native provider apply is still refused. The local fixtures exercise actual
+generation selection, recovery admission and the installed boot script with
+synthetic host identities and firewall calls. The qualification root presently
+owns only the initial host resources.
 
 The real-host sequence remains to be proven from the accepted predecessor
 through upgrade, interruption and reboot, the full lifecycle and actual

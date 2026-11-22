@@ -13,7 +13,7 @@ from subprocess import CalledProcessError
 from tempfile import TemporaryDirectory
 from typing import Protocol
 
-from lowerduckpond_static_contracts import ContractError, decode_json_object
+from lowerduckpond_static_contracts import ContractError, decode_json_object, validate_uuid7
 
 from scripts.m3_12_contracts import (
     MAX_RECORD_BYTES,
@@ -216,10 +216,14 @@ def capacity_sample(endpoint: Endpoint, *, allocation: bool) -> Document:
     return sample
 
 
-def observe_restore_fence(endpoint: Endpoint, *, executor: ReadExecutor) -> Document:
-    raw = _call(
-        endpoint, f"{REMOTE_PROBE} --restore-fence", stdin=PROBE.read_bytes(), executor=executor
-    )
+def observe_restore_fence(
+    endpoint: Endpoint, *, executor: ReadExecutor, completed_restore_id: str | None = None
+) -> Document:
+    command = f"{REMOTE_PROBE} --restore-fence"
+    if completed_restore_id is not None:
+        require(endpoint.allocation.role == "restore", "droplet-restore-readback-role-changed")
+        command += f" {validate_uuid7(completed_restore_id)}"
+    raw = _call(endpoint, command, stdin=PROBE.read_bytes(), executor=executor)
     record = decode(raw, "droplet-fence-observation")
     require_observation(endpoint, record["observation"])
     return record

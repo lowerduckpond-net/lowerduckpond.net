@@ -12,6 +12,7 @@ from lowerduckpond_static_host_agent.caddy_startup import (
     CaddyStartupStore,
 )
 from lowerduckpond_static_host_agent.capacity import FilesystemCapacity
+from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
 from lowerduckpond_static_host_agent.host_restore_journal import (
     HostRestoreError,
     RestoreJournal,
@@ -22,6 +23,7 @@ from lowerduckpond_static_host_agent.host_restore_runtime import (
     TrustedCaddy,
     prepare_restored_runtime,
 )
+from lowerduckpond_static_host_agent.installed_routing import PROJECTION, installed_projection
 from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
 from test_backup_caddy import fixture as caddy_fixture  # noqa: F401 - actual backup fixture
 from test_backup_capture import Capture
@@ -30,6 +32,7 @@ from test_host_restore_mapping import (
     ENVIRONMENT,
     NEW,
     NEW_CA,
+    OLD,
     OLD_CA,
     setup,
 )
@@ -41,17 +44,43 @@ from test_host_restore_routes import begin
 
 
 @pytest.mark.parametrize(
-    "boundary", ["layout", "mapping", "selection", "startup", "observation", "prepared"]
+    ("boundary", "projected"),
+    [
+        (step, False)
+        for step in ("layout", "mapping", "selection", "startup", "observation", "prepared")
+    ]
+    + [("selection", True)],
 )
-def test_runtime_publication_resumes_same_generation_and_mapped_observation_at_every_boundary(  # noqa: PLR0913,PLR0917
+def test_runtime_publication_resumes_same_generation_and_mapped_observation_at_every_boundary(  # noqa: PLR0913, PLR0915, PLR0917
     capture: Capture,
     configuration: dict[str, object],
     journal: RestoreJournal,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     boundary: str,
+    projected: bool,
 ) -> None:
-    journal, inputs, descriptor, binary = setup(capture, configuration, journal, tmp_path)
+    scope = (
+        DisposableRoutes(
+            "d" * 64,
+            OLD,
+            NEW,
+            "2" * 64,
+            "3" * 64,
+            "source.platform.example",
+            "source.tenant.example",
+            ((TENANT, f"https://t-{TENANT.replace('-', '')}.source.tenant.example"),),
+        )
+        if projected
+        else None
+    )
+    journal, inputs, descriptor, binary = setup(
+        capture,
+        configuration,
+        journal,
+        tmp_path,
+        routing=scope,
+    )
     candidate_parent = tmp_path / "runtime-container"
     candidate_parent.mkdir(mode=0o700)
     candidate = candidate_parent / "candidate"
@@ -125,6 +154,8 @@ def test_runtime_publication_resumes_same_generation_and_mapped_observation_at_e
         assert prepare() == proof
         assert validations and set(validations) == {NEW}
         assert (candidate / "active").read_text() == NEW + "\n"
+        assert installed_projection(candidate, owner=os.geteuid(), group=os.getegid()) == scope
+        assert (candidate / PROJECTION).exists() is projected
         assert (candidate / "environment").read_bytes() == ENVIRONMENT
         assert (candidate / "origin-pull-ca-0.pem").read_bytes() == files.current_pem[0]
         after = repository.read(StateRecordPath.tenant_observed(TENANT)).document

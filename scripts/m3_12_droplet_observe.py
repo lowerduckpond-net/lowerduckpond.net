@@ -31,12 +31,15 @@ PUBLICATION = Path("/etc/lowerduckpond/static-publication.json")
 RELEASES = Path("/srv/lowerduckpond/sites")
 CGROUP = Path("/sys/fs/cgroup")
 RESTORE_GATE = Path("/var/lib/lowerduckpond/recovery/restore-gate.json")
+JOURNAL = RESTORE_GATE.with_name("host-restore.json")
+JOURNAL_FORMAT = "lowerduckpond-host-restore-v1"
 RESTORE_GATE_FORMAT = "lowerduckpond-host-restore-gate-v1"
 UUID_VERSION = 7
 FENCE_FORMAT = "lowerduckpond-m3-12-disposable-fence-observation-v1"
 BROWSER_FORMAT = "lowerduckpond-m3-12-restored-browser-request-v1"
 BROWSER_QUERY = "ldp_restore_witness"
 BROWSER_ARGUMENT_COUNT = 3
+RESTORE_FENCE_REBOOT_ARGUMENT_COUNT = 2
 DNS_NAME_MAXIMUM = 253
 TENANT_NAME_MINIMUM_LABELS = 3
 CAPACITY_UNITS = {
@@ -189,15 +192,19 @@ def selected_artifact(owner: int) -> str | None:
     return target.name
 
 
-def observe(owner: int = 0) -> dict[str, object]:
-    droplet_id, ipv4 = metadata_identity()
+def boot_sha256(owner: int = 0) -> str:
     boot = UUID(_system_file(BOOT_ID, owner).decode("ascii"))
     require(boot.int != 0, "droplet-boot-id-invalid")
+    return sha256(boot.bytes).hexdigest()
+
+
+def observe(owner: int = 0) -> dict[str, object]:
+    droplet_id, ipv4 = metadata_identity()
     return {
         "format": FORMAT,
         "metadata": {"dropletId": droplet_id, "ipv4": ipv4},
         "hostIdentity": host_identity(owner),
-        "bootSha256": sha256(boot.bytes).hexdigest(),
+        "bootSha256": boot_sha256(owner),
         "state": {
             "artifactSha256": selected_artifact(owner),
             "launchPresent": os.path.lexists(LAUNCH),
@@ -411,10 +418,31 @@ def _restore_firewall(value: object) -> bool:
     )
 
 
-def fence_status(owner: int = 0) -> dict[str, object]:
+def fence_status(owner: int = 0, *, completed_restore_id: str | None = None) -> dict[str, object]:
     """Read the exact native restore drop and service state without mutating either."""
     before = observe(owner)
-    raw = _system_file(RESTORE_GATE, owner, mode=0o600)
+    try:
+        raw = _system_file(RESTORE_GATE, owner, mode=0o600)
+    except FileNotFoundError:
+        # A finished destination may be fenced again after reboot. Its
+        # original marker was removed only after native completion.
+        require(completed_restore_id is not None, "droplet-restore-gate-missing")
+        journal = json.loads(_system_file(JOURNAL, owner, mode=0o600))
+        require(
+            isinstance(journal, dict)
+            and journal.get("schema") == JOURNAL_FORMAT
+            and journal.get("phase") == "complete"
+            and journal.get("restoreId") == completed_restore_id,
+            "droplet-restore-completion-changed",
+        )
+        raw = (
+            json.dumps(
+                {"schema": RESTORE_GATE_FORMAT, "restoreId": completed_restore_id},
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode("ascii")
     gate = json.loads(raw)
     require(
         isinstance(gate, dict)
@@ -424,7 +452,9 @@ def fence_status(owner: int = 0) -> dict[str, object]:
     )
     restore = UUID(gate["restoreId"]) if isinstance(gate["restoreId"], str) else UUID(int=0)
     require(
-        restore.version == UUID_VERSION and str(restore) == gate["restoreId"],
+        restore.version == UUID_VERSION
+        and str(restore) == gate["restoreId"]
+        and completed_restore_id in {None, str(restore)},
         "droplet-restore-gate-invalid",
     )
     nft = json.loads(
@@ -512,6 +542,11 @@ def main() -> int:
             document = capacity(allocation=arguments == ["--capacity-allocation"])
         elif arguments == ["--restore-fence"]:
             document = fence_status()
+        elif (
+            len(arguments) == RESTORE_FENCE_REBOOT_ARGUMENT_COUNT
+            and arguments[0] == "--restore-fence"
+        ):
+            document = fence_status(completed_restore_id=arguments[1])
         elif len(arguments) == BROWSER_ARGUMENT_COUNT and arguments[0] == "--browser-request":
             document = browser_status(arguments[1], arguments[2])
         else:

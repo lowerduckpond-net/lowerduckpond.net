@@ -47,6 +47,11 @@ def require_activation(
     scope = saved.droplet_scope
     if scope is None or (inputs is not None and saved != inputs):
         raise HostRestoreError("droplet_restore_scope_changed")
+    from lowerduckpond_static_host_agent.installed_routing import (  # noqa: PLC0415 - after saved authority
+        require_restore_cutover,
+    )
+
+    require_restore_cutover(store, saved)
     with DurableDirectory.open(
         authority_path, expected_owner=store.owner, expected_directory_mode=0o700
     ) as authority:

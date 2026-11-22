@@ -9,17 +9,19 @@ from hashlib import sha256
 from pathlib import Path
 from typing import cast
 
+from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
 from lowerduckpond_static_host_agent.droplet_enrollment import ENROLLMENT, EXCLUSIONS, TARGET
 from lowerduckpond_static_host_agent.durable import DurableDirectory, StateAlreadyExistsError
 from lowerduckpond_static_host_agent.host_restore_bootstrap import verify_bootstrap_inputs
 from lowerduckpond_static_host_agent.host_restore_delivery import LAUNCH_FILES, publication_files
-from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
+from lowerduckpond_static_host_agent.host_restore_inputs import ROUTING_INPUT, RestoreInputs
 from lowerduckpond_static_host_agent.host_restore_journal import (
     DROPLET_BINDING,
     DROPLET_SCOPE_FORMAT,
     RestorePhase,
 )
 from lowerduckpond_static_host_agent.host_restore_paths import private_directory
+from lowerduckpond_static_host_agent.installed_routing import ROLE
 
 from scripts.m3_12_contracts import (
     DISPOSABLE,
@@ -396,13 +398,14 @@ def source_launch_provenance(
     }
 
 
-def prepare_cold_restore(
+def prepare_cold_restore(  # noqa: PLR0913 - independent pinned hosts and reviewed routing
     attempt: Attempt,
     source: Endpoint,
     restore: Endpoint,
     production_exclusions: bytes,
     *,
     inputs_directory: Path,
+    routing: DisposableRoutes | None = None,
 ) -> Document:
     """Bind the original recovery policy to the pinned pair before destination setup.
 
@@ -438,7 +441,15 @@ def prepare_cold_restore(
             "sourceLaunchReceiptSha256": None if launch is None else launch["launchReceiptSha256"],
         }
         require(inputs.droplet_scope in (None, scope), "droplet-restore-policy-scope-changed")
-        scoped = RestoreInputs.from_bytes(encode({**inputs.document, DROPLET_BINDING: scope}))
+        scoped_document = {**inputs.document, DROPLET_BINDING: scope}
+        if routing is not None:
+            require(
+                routing.invocation_id == attempt.directory.name
+                and inputs.disposable_routing in {None, routing},
+                "droplet-restore-routing-attempt-changed",
+            )
+            scoped_document[ROUTING_INPUT] = routing.document()
+        scoped = RestoreInputs.from_bytes(encode(scoped_document))
         plan = {
             "format": "lowerduckpond-m3-12-cold-restore-inputs-v1",
             "preparationSha256": digest(completed),
@@ -486,12 +497,20 @@ def stage_restore_delivery(
         owner = os.geteuid()
         original_inputs = RestoreInputs.load(inputs_directory, owner=owner)
         ca_count = verify_bootstrap_inputs(inputs_directory, original_inputs, owner=owner)
+        original_document = {**original_inputs.document, DROPLET_BINDING: scoped.droplet_scope}
+        routing = scoped.disposable_routing
+        if routing is not None:
+            require(
+                original_inputs.disposable_routing in {None, routing}
+                and routing.invocation_id == attempt.directory.name,
+                "droplet-restore-routing-attempt-changed",
+            )
+            original_document[ROUTING_INPUT] = routing.document()
         require(
             ca_count == plan["originalCaCount"]
             and scoped.digest == plan["trustedInputs"]
             and digest(completed) == plan["preparationSha256"]
-            and {**original_inputs.document, DROPLET_BINDING: scoped.droplet_scope}
-            == scoped.document
+            and original_document == scoped.document
             and original_inputs.droplet_scope in (None, scoped.droplet_scope),
             "droplet-restore-delivery-inputs-changed",
         )
@@ -506,6 +525,8 @@ def stage_restore_delivery(
             ENROLLMENT: encode(bound["enrollment"]),
             EXCLUSIONS: production_exclusions,
         }
+        if routing is not None:
+            files[ROLE] = encode(routing.role_document("restore"))
         with DurableDirectory.open(
             inputs_directory, expected_owner=owner, expected_directory_mode=0o700
         ) as source:

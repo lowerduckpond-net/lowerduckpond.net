@@ -60,6 +60,56 @@ class DisposableRoutes:
             ],
         }
 
+    @classmethod
+    def from_bytes(cls, raw: bytes) -> DisposableRoutes:
+        value = decode_json_object(raw)
+        keys = (
+            "allocationSha256",
+            "runId",
+            "invocationId",
+            "sourceTargetSha256",
+            "restoreTargetSha256",
+            "platform",
+            "tenantScope",
+        )
+        if (
+            set(value) != {"format", "tenants", *keys}
+            or value["format"] != "lowerduckpond-m3-12-disposable-routing-v1"
+            or canonical_json_bytes(value) != raw
+            or not all(isinstance(value[key], str) for key in keys)
+            or not isinstance(value["tenants"], list)
+        ):
+            raise CaddyRouteError("disposable routing policy is malformed")
+        origins = []
+        for entry in value["tenants"]:
+            if (
+                not isinstance(entry, dict)
+                or set(entry) != {"tenantId", "origin"}
+                or not all(isinstance(item, str) for item in entry.values())
+            ):
+                raise CaddyRouteError("disposable routing tenant is malformed")
+            origins.append((entry["tenantId"], entry["origin"]))
+        return cls(
+            allocation_sha256=cast(str, value["allocationSha256"]),
+            run_id=cast(str, value["runId"]),
+            invocation_id=cast(str, value["invocationId"]),
+            source_target=cast(str, value["sourceTargetSha256"]),
+            restore_target=cast(str, value["restoreTargetSha256"]),
+            platform=cast(str, value["platform"]),
+            tenant_scope=cast(str, value["tenantScope"]),
+            tenants=tuple(origins),
+        )
+
+    def role_document(self, role: str) -> Document:
+        if role not in {"source", "restore"}:
+            raise CaddyRouteError("disposable routing role is invalid")
+        return {
+            "format": "lowerduckpond-m3-12-installed-routing-role-v1",
+            "role": role,
+            "routingSha256": self.sha256,
+            "targetSha256": self.source_target if role == "source" else self.restore_target,
+        }
+
     @property
     def sha256(self) -> str:
         return sha256(canonical_json_bytes(self.document())).hexdigest()

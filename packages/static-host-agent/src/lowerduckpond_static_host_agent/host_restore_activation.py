@@ -16,6 +16,7 @@ from lowerduckpond_static_host_agent.host_restore_gate import (
     ingress_pending,
     ingress_record,
     open_gate,
+    projected_recovery,
     require_scoped_activation,
 )
 from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
@@ -44,7 +45,10 @@ def finish_public_ingress(
     ingress_record(store)  # Require durable completion even after cleanup committed.
     if gate_pending(store):
         raise HostRestoreError("restore_ingress_requires_admission_commit")
-    if ingress_pending(store):
+    pending = ingress_pending(store)
+    # A completed projected restore may have been fenced again at boot.
+    # It cannot clear the kernel table until the new boot's proof is present.
+    if pending or projected_recovery(store):
         require_scoped_activation(store)
         services.remove_public_gate()
         failure_hook("firewall")

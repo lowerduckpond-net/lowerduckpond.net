@@ -213,6 +213,13 @@ class CaddyRuntime:
         self._lock_owner_thread: int | None = None
         self._closed = False
 
+    def project_routes[Routes: PlatformOnlyCaddyRoutes | TenantCaddyRoutes](
+        self, routes: Routes
+    ) -> Routes:
+        return (
+            routes if self._disposable is None else project_native_routes(routes, self._disposable)
+        )
+
     @classmethod
     def open(  # noqa: PLR0913
         cls,

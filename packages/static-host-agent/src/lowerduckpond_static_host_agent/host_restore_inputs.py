@@ -29,6 +29,7 @@ from lowerduckpond_static_host_agent.caddy_routes import (
     TENANT_APEX,
     TENANT_WILDCARD,
 )
+from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
 from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.host_restore_journal import (
     DROPLET_BINDING,
@@ -40,6 +41,7 @@ from lowerduckpond_static_host_agent.host_restore_journal import (
 )
 
 INPUT_SCHEMA: Final = "lowerduckpond-host-restore-inputs-v1"
+ROUTING_INPUT: Final = "disposableRouting"
 INPUT_ROOT: Final = Path("/etc/lowerduckpond/host-restore")
 MACHINE: Final = re.compile(r"[0-9a-f]{32}", re.ASCII)
 SUBJECTS: Final = tuple(sorted((PLATFORM_APEX, PLATFORM_WILDCARD, TENANT_APEX, TENANT_WILDCARD)))
@@ -99,7 +101,8 @@ class RestoreInputs:
                 "publicationEnabled",
                 "auditRotationEnabled",
             }
-            | ({DROPLET_BINDING} if DROPLET_BINDING in document else set()),
+            | ({DROPLET_BINDING} if DROPLET_BINDING in document else set())
+            | ({ROUTING_INPUT} if ROUTING_INPUT in document else set()),
         )
         if value["schema"] != INPUT_SCHEMA:
             raise HostRestoreError("restore input schema is unsupported")
@@ -132,10 +135,20 @@ class RestoreInputs:
             or re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", target["bucket"]) is None
         ):
             raise HostRestoreError("restore archive target is invalid")
+        result = cls(value)
+        routing = result.disposable_routing
+        if routing is not None:
+            scope = result.droplet_scope
+            if scope is None or (
+                routing.run_id != scope["runId"]
+                or routing.source_target != scope["sourceTargetSha256"]
+                or routing.restore_target != scope["destinationTargetSha256"]
+            ):
+                raise HostRestoreError("restore_disposable_routing_scope_changed")
         _validate_caddy(value["caddy"])
         if canonical_json_bytes(value, maximum_bytes=MAX_RESTORE_BYTES) != raw:
             raise HostRestoreError("restore inputs are not canonical")
-        return cls(value)
+        return result
 
     @classmethod
     def load(cls, root: Path = INPUT_ROOT, *, owner: int = 0) -> RestoreInputs:
@@ -156,6 +169,15 @@ class RestoreInputs:
         return framed_digest(
             INPUT_SCHEMA, canonical_json_bytes(self.document, maximum_bytes=MAX_RESTORE_BYTES)
         )
+
+    @property
+    def disposable_routing(self) -> DisposableRoutes | None:
+        if ROUTING_INPUT not in self.document:
+            return None
+        value = self.document[ROUTING_INPUT]
+        if not isinstance(value, dict):
+            raise HostRestoreError("restore_disposable_routing_invalid")
+        return DisposableRoutes.from_bytes(canonical_json_bytes(value))
 
     @property
     def droplet_scope(self) -> dict[str, object] | None:
