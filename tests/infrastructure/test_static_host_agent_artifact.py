@@ -36,6 +36,9 @@ VERIFIER = (
     REPOSITORY_ROOT
     / "config/ansible/roles/static_host_agent/files/verify-static-host-agent-artifact"
 ).resolve()
+NATIVE_ACTION = (
+    REPOSITORY_ROOT / "config/ansible/roles/static_host_agent/files/m3-12-successor-action"
+).resolve()
 ARCHIVE_ROOT_MODE = 0o555
 ARCHIVE_FILE_MODE = 0o444
 WORKER_UNIT_TEMPLATE = (
@@ -118,7 +121,7 @@ def create_selection_lock(install_root: Path) -> Path:
 def test_host_agent_artifact_is_locked_reproducible_and_installable(
     tmp_path: Path,
 ) -> None:
-    for helper in (INSTALLER, VERIFIER):
+    for helper in (INSTALLER, VERIFIER, NATIVE_ACTION):
         ast.parse(helper.read_text(encoding="utf-8"), feature_version=(3, 12))
 
     first = tmp_path / "first.tar"
@@ -174,6 +177,39 @@ def test_host_agent_artifact_is_locked_reproducible_and_installable(
     assert manifest["format"] == "lowerduckpond-static-host-agent-artifact-v1"
     assert manifest["python"] == "3.14"
     assert run(verifier, selected).returncode == 0
+    assert_native_import_preserves_artifact(selected, verifier)
+
+
+def assert_native_import_preserves_artifact(artifact: Path, verifier: Path) -> None:
+    scripts = artifact / "site-packages/scripts"
+    # Model the real root launcher's ability to write despite artifact modes.
+    scripts.chmod(0o755)
+    try:
+        loaded = run(
+            sys.executable,
+            "-I",
+            "-c",
+            """
+from pathlib import Path
+from runpy import run_path
+import sys
+
+artifact = Path(sys.argv[2])
+load = run_path(sys.argv[1])["load_verified_action"]
+action = load(artifact)
+assert Path(sys.modules[action.__module__].__file__) == (
+    artifact / "site-packages/scripts/m3_12_native.py"
+)
+""",
+            NATIVE_ACTION,
+            artifact,
+        )
+    finally:
+        scripts.chmod(ARCHIVE_ROOT_MODE)
+
+    assert loaded.returncode == 0, loaded.stderr
+    verified = run(verifier, artifact)
+    assert verified.returncode == 0, verified.stderr
 
 
 def test_installer_verifies_a_concurrent_enotempty_publication_winner(
