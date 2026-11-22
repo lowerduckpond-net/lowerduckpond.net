@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from importlib import import_module
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -84,6 +85,7 @@ def test_lost_caller_leaves_durable_start_and_unknown_result(tmp_path: Path) -> 
     code = """
 import signal
 import sys
+from importlib import import_module
 from pathlib import Path
 from unittest.mock import Mock
 from scripts.m3_12_diagnostic_store import Attempt, clock
@@ -121,6 +123,7 @@ def test_installed_successor_progress_survives_interruption(tmp_path: Path) -> N
     code = """
 import signal
 import sys
+from importlib import import_module
 from pathlib import Path
 from scripts.m3_12_installed import successor_stage
 
@@ -398,3 +401,45 @@ def test_successor_archive_route_uses_only_the_original_shared_network(
         assert installed.installed_archive_hosts_line(tmp_path, environment) == expected
     allocation.assert_called_once_with(tmp_path, environment)
     assert [call.args[-1] for call in docker.call_args_list] == ["host", "archive"]
+
+
+def test_successor_build_retains_the_artifact_required_for_final_accounting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from scripts import qualification_retirement as retirement  # noqa: PLC0415
+    from scripts.qualification_context import ARTIFACT_ENV  # noqa: PLC0415
+
+    tests = ROOT / "config/ansible/molecule/m3_8/tests"
+    monkeypatch.syspath_prepend(str(tests))
+    successor = import_module("test_m3_12_successor")
+    fixture_dir = tmp_path / "fixture"
+    fixture_dir.mkdir()
+    retained = fixture_dir / "static-host-agent.tar"
+    predecessor = tmp_path / "accepted-predecessor.tar"
+    prior_bytes = b"accepted predecessor archive"
+    candidate_bytes = b"built successor archive"
+    predecessor.write_bytes(prior_bytes)
+    shutil.copyfile(predecessor, retained)
+    environment = {ARTIFACT_ENV: str(retained)}
+    fixture = Mock(source_artifact=retained, artifact=predecessor, environment=environment)
+    directory = tmp_path / "successor"
+    directory.mkdir()
+    monkeypatch.setattr(successor, "recheck_installed", Mock(return_value={}))
+
+    def run(arguments: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        if Path(arguments[0]).name == "build-static-host-agent":
+            Path(arguments[1]).write_bytes(candidate_bytes)
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr(successor.subprocess, "run", run)
+    rollout = successor.Rollout(fixture, Mock(), directory, [])
+    digest = rollout.build()
+    monkeypatch.setattr(
+        retirement,
+        "bounded_command",
+        Mock(return_value=encode({"state": "quiescent-installed", "artifact_sha256": digest})),
+    )
+
+    assert retirement.local_proof(environment, "owned-host") == "quiescent-installed"
+    assert predecessor.read_bytes() == prior_bytes
+    assert retained.read_bytes() == candidate_bytes

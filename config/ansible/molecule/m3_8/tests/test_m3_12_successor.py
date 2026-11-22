@@ -74,7 +74,8 @@ class Rollout:
         self.allocation = recheck_installed(self.origin, fixture.environment)
         self.predecessor = sha(previous_records.encode(original))
         self.invocation = str(uuid.uuid7())
-        self.artifact = directory / "successor.tar"
+        # Convergence and final accounting must use the same owned archive.
+        self.artifact = fixture.source_artifact
         self.inventory = directory / "installed-inventory.json"
         self.measurements: dict[str, tuple[str, str, str]] = {}
 
