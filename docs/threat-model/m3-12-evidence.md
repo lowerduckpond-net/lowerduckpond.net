@@ -42,6 +42,16 @@ and bound ingress recovery after interruption. These tests supply component
 evidence. Provider, independent restore, and real reboot
 slots still require their own original receipts.
 
+The [installed restore case](../../config/ansible/molecule/m3_8/tests/test_restore_reconstruction.py)
+checks that a copied Droplet bundle cannot promote its Docker destination
+while the ordinary installed restore can still complete. The
+[initial retirement tests](../../tests/infrastructure/test_m3_12_droplet_plan.py)
+`test_retirement_review_validates_only_original_deletions` and
+`test_interrupted_retirement_requires_exact_independent_absence` cover
+foreign deletes and interrupted cleanup at the component layer. The
+[disposable preparation guide](../operations/m3-12-qualification.md) names the
+remaining real-host and provider proofs.
+
 The [inventory validator](../../scripts/m3_12_requirements.py) checks source
 coverage, fingerprints, unique requirements/slots and existing mapped test
 nodes. The versioned requirement-proof binds the reviewed inventory, exact

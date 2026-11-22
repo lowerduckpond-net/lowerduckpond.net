@@ -473,3 +473,20 @@ def test_installed_delivery_readback_requires_the_original_bundle_and_present_ho
     observe.MACHINE_ID.write_bytes(b"d" * 32 + b"\n")
     with pytest.raises(ValidationError, match="droplet-enrollment-changed"):
         delivery_readback(inputs, artifact, owner=owner, authority=authority)
+
+
+def test_consistent_droplet_delivery_remains_unavailable_in_docker(
+    native_recovery: tuple[Path, RestoreInputs], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    recovery, inputs = native_recovery
+    owner = os.geteuid()
+    authority = droplet_restore.AUTHORITY
+    artifact = cast(str, inputs.document["originalArtifactSha256"])
+    files = publication_files(authority, inputs, owner=owner)
+    marker = tmp_path / "docker-marked"
+    marker.touch()
+    monkeypatch.setattr(droplet_enrollment, "DOCKER_MARKER", marker)
+    with pytest.raises(ValidationError, match="droplet-enrollment-conflicts"):
+        delivery_readback(inputs, artifact, owner=owner, authority=authority)
+    assert publication_files(authority, inputs, owner=owner) == files
+    assert not restore_admission(recovery, owner=owner)

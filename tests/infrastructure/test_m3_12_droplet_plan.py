@@ -9,6 +9,12 @@ from hashlib import sha256
 import pytest
 
 from scripts.m3_12_contracts import Document, ValidationError, encode
+from scripts.m3_12_droplet_cleanup import (
+    InitialRetirement,
+    capture_initial_retirement,
+    reconcile_initial_retirement,
+    verify_initial_destroy_plan,
+)
 from scripts.m3_12_droplet_plan import (
     CONFIGURATION_FIELDS,
     EGRESS,
@@ -290,3 +296,106 @@ def test_initial_provider_readback_joins_only_the_exact_reviewed_role(
     exclusions["dropletIds"] = [101]
     with pytest.raises(ValidationError, match="production-crossover"):
         bind_initial_allocation(review, plan_raw, state_raw, observed, encode(exclusions))
+
+
+@pytest.fixture
+def retirement(
+    reviewed_plan: tuple[Document, ApprovedHostPlan], readback: tuple[Document, Document, Document]
+) -> tuple[InitialRetirement, Document, Document]:
+    plan, scope = reviewed_plan
+    state, provider, exclusions = readback
+    raw_plan, raw_state = encode(plan), encode(state)
+    original = capture_initial_retirement(
+        ReviewedReadback(
+            scope,
+            sha256(raw_plan).hexdigest(),
+            sha256(raw_state).hexdigest(),
+            f"qualification/m3-12/{scope.run_id}/{scope.role}.tfstate",
+        ),
+        raw_plan,
+        raw_state,
+        provider,
+        encode(exclusions),
+    )
+    resources = state["values"]["root_module"]["resources"]
+    plan = {
+        "errored": False,
+        "prior_state": state,
+        "planned_values": {"root_module": {}},
+        "resource_changes": [
+            {
+                **{key: row[key] for key in ("address", "mode", "name", "type", "provider_name")},
+                "change": {"actions": ["delete"], "before": deepcopy(row["values"]), "after": None},
+            }
+            for row in resources
+        ],
+    }
+    return original, plan, state
+
+
+def test_retirement_review_validates_only_original_deletions(
+    retirement: tuple[InitialRetirement, Document, Document],
+) -> None:
+    original, destroy, _ = retirement
+
+    def verify(plan: Document, *, key: str = original.state_key) -> None:
+        raw = encode(plan)
+        verify_initial_destroy_plan(
+            original, raw, reviewed_sha256=sha256(raw).hexdigest(), state_key=key
+        )
+
+    verify(destroy)
+    with pytest.raises(ValidationError, match="droplet-cleanup-plan-changed"):
+        verify(destroy, key=original.state_key.replace("restore.tfstate", "source.tfstate"))
+    replaced = deepcopy(destroy)
+    replaced["resource_changes"][0]["change"]["actions"] = ["delete", "create"]
+    with pytest.raises(ValidationError, match="droplet-cleanup-resource-changed"):
+        verify(replaced)
+    foreign = deepcopy(destroy)
+    foreign["resource_changes"][0]["change"]["before"]["id"] = "999"
+    with pytest.raises(ValidationError, match="droplet-cleanup-resource-changed"):
+        verify(foreign)
+    extra = deepcopy(destroy)
+    extra["resource_changes"].append({"address": "digitalocean_reserved_ip.foreign"})
+    with pytest.raises(ValidationError, match="droplet-plan-resource-set-changed"):
+        verify(extra)
+
+
+def test_interrupted_retirement_requires_exact_independent_absence(
+    retirement: tuple[InitialRetirement, Document, Document],
+) -> None:
+    original, _, occupied = retirement
+    clean = encode({"format_version": "1.0", "terraform_version": "1.12.6"})
+    nonempty = encode({**occupied, "terraform_version": "1.12.6"})
+    identity = original.allocation.identity
+    observed = {
+        "stateKey": original.state_key,
+        "allocationSha256": original.allocation.allocation_sha256,
+        "projectIdSha256": identity.project_id_sha256,
+        "dropletId": identity.droplet_id,
+        "firewallId": original.firewall_id,
+        "projectUrn": original.urn,
+        "stateSha256": sha256(clean).hexdigest(),
+        "droplet": "absent",
+        "firewall": "absent",
+        "projectMembership": "absent",
+    }
+    complete = reconcile_initial_retirement(original, clean, observed)
+    assert complete["outcome"] == "absent"
+    assert complete == reconcile_initial_retirement(original, clean, observed)
+    assert (
+        reconcile_initial_retirement(original, clean, {**observed, "firewall": "unverified"})[
+            "outcome"
+        ]
+        == "unresolved"
+    )
+    assert (
+        reconcile_initial_retirement(
+            original, nonempty, {**observed, "stateSha256": sha256(nonempty).hexdigest()}
+        )["outcome"]
+        == "unresolved"
+    )
+    with pytest.raises(ValidationError, match="droplet-cleanup-readback-scope-changed"):
+        reconcile_initial_retirement(original, clean, {**observed, "projectUrn": "do:droplet:999"})
+    with pytest.raises(ValidationError, match="droplet-cleanup-readback-scope-changed"):
+        reconcile_initial_retirement(original, nonempty, observed)

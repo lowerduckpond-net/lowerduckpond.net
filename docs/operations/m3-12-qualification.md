@@ -44,13 +44,52 @@ join the fixed native delivery and status readbacks across the same pinned
 host and boot. The resulting observation stays private and carries no
 qualification or publication authority by itself.
 
+## Installed destination witness
+
+The existing `restore-reconstruction` group already runs a fenced source
+and a distinct cold destination through real Ansible, Restic, systemd and
+installed archive reconciliation on the owned Docker and MinIO fixture.
+It checks closed ingress from a peer before recovery, exact restored state
+and archive readback, and completed recovery after a destination restart.
+
+The [installed destination test](../../config/ansible/molecule/m3_8/tests/test_restore_reconstruction.py)
+also passes an internally consistent copied Droplet bundle to the actual
+verified installed artifact. The native workstation-style record checks
+accept the bundle and the destination readback rejects its Docker identity.
+This probe uses a private disposable path and leaves the real restore
+policy, fence and publication view untouched. The test rechecks closed
+ingress, then finishes the existing restore journey.
+
+A positive Droplet delivery, launch, activation, or reboot receipt requires
+a real independently enrolled host. The installed fixture continues to
+produce evidence for native restore behavior and rejection of copied
+authority. Its container restart and MinIO observations occupy installed
+proof slots only.
+
+## Initial allocation teardown review
+
+The [retirement guard](../../scripts/m3_12_droplet_cleanup.py) captures the
+original review, state and independent provider facts for one initial host.
+It checks an independently reviewed destroy-plan digest and role-specific
+state key, matches the original resource bytes, and accepts only deletion
+of that exact Droplet, attached firewall and project membership. A changed
+allocation or additional resource needs a new reviewed disposition.
+
+If a caller loses the result, retain the original allocation and plan
+and reconcile the exact state key and provider identities. The offline
+reconciler requires the observed state digest and independent absence of
+the Droplet, firewall and project membership before it records absence.
+Any surviving or unverified observation remains unresolved. This covers the
+initial host allocation. Edge, DNS, archived objects, credentials, and
+their own teardown evidence remain separate obligations.
+
 ## Evidence still required
 
 The component tests exercise pinned client configuration, deterministic
-staging, state and provider substitutions, native readback, and the existing
-activation gates. The real journey still needs authenticated provider
-captures, protected host-key provisioning, an accepted M3.11 source, a
-separately owned restore and fresh target, and installed proof through
-reboot, exact archive versions, ingress, and cleanup. Provider operations
-and edge and storage exercises require their own reviewed disposable
-authorization.
+staging, state and provider substitutions, native readback, and activation
+gates. The real journey still needs authenticated provider captures,
+protected host-key provisioning, an accepted M3.11 source, and separately
+owned restore and fresh targets. The real-host evidence has to cover actual
+host reboot, archive versions, ingress, capacity, and cleanup. Provider
+operations and edge and storage exercises require their own reviewed
+disposable authorization.

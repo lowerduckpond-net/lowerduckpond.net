@@ -3,11 +3,14 @@
 from pathlib import Path
 
 import restore_scenarios as restore
+from restore_droplet_boundary import require_no_droplet_authority
 from testinfra.host import Host
 
 
 def test_installed_restore_reconstruction(host: Host, tmp_path: Path) -> None:
     fixture, tenants, replay = restore.source(host, tmp_path, archived_prefix=True)
+    restore.gate_closed(fixture)
+    require_no_droplet_authority(fixture)
     restore.gate_closed(fixture)
     fixture.start()
     restore.finish(fixture, tenants, replay)
