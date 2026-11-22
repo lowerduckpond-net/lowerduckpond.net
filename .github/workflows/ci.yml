@@ -330,8 +330,10 @@ jobs:
     needs: [installed-selection, pre-commit, python, python-recovery, m3-archive-storage]
     if: needs.installed-selection.outputs.required == 'true'
     runs-on: ubuntu-24.04
+    # The successor includes the installed predecessor rollout, plus four
+    # successor convergences, rollback/resume, reboot, and backup readback.
     timeout-minutes: >-
-      ${{ contains(fromJSON('["combined-reconstruction","production-rollout","failed-retirement"]'), matrix.case) && 90 ||
+      ${{ contains(fromJSON('["combined-reconstruction","production-rollout","successor-rollout","failed-retirement"]'), matrix.case) && 90 ||
           contains(fromJSON('["audit-protection","restore-reconstruction"]'), matrix.case) && 75 ||
           contains(fromJSON('["core","archive-cycles","backup-mutation-overlap","backup-coherence","restore-tls-bootstrap","restore-negative"]'), matrix.case) && 60 ||
           45 }}
@@ -418,6 +420,8 @@ jobs:
             ${{ runner.temp }}/ldp-installed/timing-interrupted.json
             ${{ runner.temp }}/ldp-installed/failure.json
             ${{ runner.temp }}/ldp-installed/m3-12-installed-diagnostic-proof.json
+            ${{ runner.temp }}/ldp-installed/m3-12-successor-proof.json
+            ${{ runner.temp }}/ldp-installed/m3-12-successor-progress/*.json
           if-no-files-found: ignore
           retention-days: 30
 

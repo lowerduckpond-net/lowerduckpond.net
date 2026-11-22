@@ -7,13 +7,15 @@ real source/artifact/repository inputs but cannot pass the public report gate.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import shlex
 import shutil
+import tarfile
 import tempfile
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
@@ -32,7 +34,12 @@ from scripts.m3_11_production_replica import Replica
 from scripts.m3_11_production_session import Logs, Result, controller
 from scripts.qualification_case import owned_containers
 from scripts.qualification_context import ARTIFACT_ENV, HOST_ENV
-from scripts.qualification_production_predecessor import PREDECESSOR, REPOSITORY
+from scripts.qualification_production_predecessor import (
+    ACCEPTED_M3_11,
+    PREDECESSOR,
+    REPOSITORY,
+    historical_candidate_inputs,
+)
 
 ROOT = Path(__file__).resolve().parents[5]
 INSTALL = "/opt/lowerduckpond/static-host-agent"
@@ -44,7 +51,14 @@ class ControllerDepartureError(Exception):
 
 
 class Fixture:
-    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        source_revision: str | None = None,
+    ) -> None:
+        if source_revision is not None and source_revision != ACCEPTED_M3_11:
+            raise ValueError("installed successor requires its accepted M3.11 predecessor")
         require_owned_fixture()
         self.environment = dict(os.environ)
         self.identities = owned_containers(self.environment)
@@ -54,16 +68,35 @@ class Fixture:
         self.directory.mkdir(mode=0o700)
         self.logs = Logs(self.directory)
         self.artifact = self.directory / "candidate.tar"
+        source_root = ROOT
+        if source_revision is not None:
+            source_root = self.directory / "accepted-source"
+            source_root.mkdir(mode=0o700)
+            with tarfile.open(
+                fileobj=io.BytesIO(inputs.git(ROOT, "archive", source_revision))
+            ) as archive:
+                archive.extractall(source_root, filter="data")
         self.command(
-            "candidate-build", [str(ROOT / "scripts/build-static-host-agent"), str(self.artifact)]
+            "candidate-build",
+            [str(source_root / "scripts/build-static-host-agent"), str(self.artifact)],
         )
         self.artifact.chmod(0o400)
         self.digest = hashlib.sha256(self.artifact.read_bytes()).hexdigest()
+        revision = source_revision or (
+            self.command("source-revision", ["git", "-C", str(ROOT), "rev-parse", "HEAD"])
+            .decode()
+            .strip()
+        )
+        qualification_inputs = (
+            inputs.candidate_inputs(ROOT, revision, self.digest)
+            if source_revision is None
+            else historical_candidate_inputs(ROOT, revision, self.digest)
+        )
         self.patch = monkeypatch
         self.predecessor()
         self.ssh = self.transport()
         self.configure()
-        self.original = self.proposal()
+        self.original = self.proposal(revision, qualification_inputs)
         for name in ("journal", "proposals"):
             (self.directory / name).mkdir(mode=0o700)
 
@@ -229,7 +262,7 @@ class Fixture:
 
         self.patch.setattr(converge, "_variables", fixture_variables)
 
-    def proposal(self) -> bytes:
+    def proposal(self, revision: str, qualification_inputs: str) -> bytes:
         repository = json.loads(
             self.remote(
                 "repository-config",
@@ -246,11 +279,6 @@ class Fixture:
             ["bash", "-s", "--", "inspect"],
             (ROOT / "scripts/m3-10-convergence-state").read_bytes(),
         ).decode()
-        revision = (
-            self.command("source-revision", ["git", "-C", str(ROOT), "rev-parse", "HEAD"])
-            .decode()
-            .strip()
-        )
         now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         original: dict[str, object] = {
             "format": journal.FORMAT,
@@ -260,7 +288,7 @@ class Fixture:
                 "source_revision": revision,
                 "artifact_sha256": self.digest,
                 "input_policy": inputs.POLICY,
-                "qualification_inputs_sha256": inputs.candidate_inputs(ROOT, revision, self.digest),
+                "qualification_inputs_sha256": qualification_inputs,
                 "storage_target_sha256": journal.digest(b"local-fixture-storage-not-live-provider"),
                 "report_sha256": journal.digest(b"diagnostic-only-not-a-qualification-report"),
             },
@@ -382,7 +410,9 @@ class Fixture:
         )
         assert selected == (self.previous_digest if partial else self.digest)
 
-    def run(self, stop: str | None = None) -> list[tuple[str, bytes]]:
+    def run(
+        self, stop: str | None = None, *, on_receipt: Callable[[str], None] | None = None
+    ) -> list[tuple[str, bytes]]:
         attempt = Path(tempfile.mkdtemp(prefix="controller-", dir=self.directory))
         fixture = self
 
@@ -395,6 +425,8 @@ class Fixture:
                         "original verified backup retained before acknowledgement"
                     )
                 super().publish(pair, name, raw)
+                if on_receipt is not None:
+                    on_receipt(name)
 
         with (
             journal.locked(self.directory / "journal", owner=os.geteuid(), create=True) as local,

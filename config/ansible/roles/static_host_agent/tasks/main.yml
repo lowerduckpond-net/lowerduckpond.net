@@ -226,6 +226,7 @@
     - install-static-host-agent-artifact
     - static-publication-gate
     - verify-static-host-agent-artifact
+    - m3-12-successor-action
     - execute-authorized-job
     - reconcile-authorized-jobs
     - archive-export-service
@@ -313,6 +314,7 @@
     - install-static-host-agent-artifact
     - static-publication-gate
     - verify-static-host-agent-artifact
+    - m3-12-successor-action
     - execute-authorized-job
     - reconcile-authorized-jobs
     - archive-export-service

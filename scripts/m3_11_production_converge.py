@@ -28,7 +28,9 @@ MAX_RECEIPT_BYTES = 4096
 PRIVATE_MODE = 0o600
 
 
-def recap(path: Path, context: str, *, idempotent: bool) -> tuple[bytes, dict[str, int]]:
+def recap(
+    path: Path, context: str, *, idempotent: bool, expected_host: str = HOST
+) -> tuple[bytes, dict[str, int]]:
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     try:
         metadata = os.fstat(descriptor)
@@ -50,11 +52,11 @@ def recap(path: Path, context: str, *, idempotent: bool) -> tuple[bytes, dict[st
         or value["format"] != "lowerduckpond-m3-11-playbook-recap-v1"
         or value["context_sha256"] != context
         or type(value["hosts"]) is not dict
-        or set(value["hosts"]) != {HOST}
+        or set(value["hosts"]) != {expected_host}
         or journal.canonical(value) != raw
     ):
         raise ValueError("production playbook did not report exactly its intended host and inputs")
-    counters = value["hosts"][HOST]
+    counters = value["hosts"][expected_host]
     if (
         type(counters) is not dict
         or set(counters) != COUNTERS

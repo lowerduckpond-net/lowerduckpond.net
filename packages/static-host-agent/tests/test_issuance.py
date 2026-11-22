@@ -27,10 +27,13 @@ from lowerduckpond_static_host_agent import (
     IssuanceError,
     IssuedAuthorization,
     LockManager,
+    LockMode,
+    LockName,
     PublicationDisabledError,
     StateRecordPath,
     StateRepository,
     VerifiedArtifact,
+    successor_rollback,
 )
 
 from config.ansible.molecule.m3_8.tests import admission_probe, correlation_pacing
@@ -170,6 +173,52 @@ def test_closed_gate_rejects_before_state_access_or_allocation(tmp_path: Path) -
         inventory = repository.measure_authorization_records()
 
     assert inventory.record_count == 0
+
+
+def test_issuance_rechecks_a_new_rollback_fence_with_tenant_state_locked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _state_root(tmp_path)
+    _write(root, StateRecordPath.platform_namespace(), _fixture("platform-namespace.json"))
+    authority = tmp_path / "successor"
+    _mkdir(authority)
+    original_check = successor_rollback.require_unfenced_publication
+    checked_with_lock = False
+
+    with _repository(root) as repository:
+
+        def enabled_before_rollback(
+            command: list[str], **_kwargs: object
+        ) -> subprocess.CompletedProcess[bytes]:
+            original_check(authority)
+            with repository.publication_transaction():
+                authority.joinpath(*successor_rollback.FENCE).touch(mode=0o600)
+            return subprocess.CompletedProcess(command, 0)
+
+        def recheck_before_commit() -> None:
+            nonlocal checked_with_lock
+            repository.require_held(LockName.TENANT_STATE, mode=LockMode.EXCLUSIVE)
+            checked_with_lock = True
+            original_check(authority)
+
+        monkeypatch.setattr(subprocess, "run", enabled_before_rollback)
+        monkeypatch.setattr(
+            successor_rollback, "require_unfenced_publication", recheck_before_commit
+        )
+        issuer = AuthorizationIssuer(
+            repository,
+            gate=CommandPublicationGate(Path("/fixed/publication-gate")),
+            entropy=_Entropy(),
+        )
+        with pytest.raises(PublicationDisabledError, match="publication_disabled"):
+            issuer.issue(
+                _create_request(),
+                operator_principal="operator@example.test",
+                now=_NOW,
+                artifact=None,
+            )
+        assert checked_with_lock
+        assert repository.measure_authorization_records().record_count == 0
 
 
 def test_command_gate_accepts_only_the_fixed_success_or_disabled_contract(

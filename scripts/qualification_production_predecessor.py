@@ -1,4 +1,4 @@
-"""Prepare the actual deployed M3.10 source before the rollout fixture converges."""
+"""Prepare accepted historical sources for the owned installed rollout fixtures."""
 
 from __future__ import annotations
 
@@ -8,8 +8,11 @@ import subprocess
 import tarfile
 from pathlib import Path
 
+from scripts import production_qualification_inputs as inputs
+
 ROOT = Path(__file__).resolve().parents[1]
 PREDECESSOR = "22147a64e9b39e7965201cf2d96e07aeaa6d3ca1"
+ACCEPTED_M3_11 = "a3d35834ac8a0a28bc7723be017407b58bf4a73e"
 REPOSITORY = "/var/cache/lowerduckpond-backup/rollout-fixture-repository"
 SCENARIO = Path("config/ansible/molecule/m3_8")
 HARNESS_COPIES = (
@@ -18,6 +21,17 @@ HARNESS_COPIES = (
     "prepare_archive_storage.py",
     "Dockerfile.minio.j2",
 )
+
+
+def historical_candidate_inputs(repository: Path, source: str, artifact: str) -> str:
+    """Bind an installed predecessor to its own tree and today's revocations."""
+    source = inputs.revision(source)
+    current = inputs.git(repository, "rev-parse", "HEAD").decode("ascii").strip()
+    revocations = inputs.current_candidate(repository, current)
+    inputs.git(repository, "merge-base", "--is-ancestor", source, current)
+    fingerprint = inputs.fingerprint(repository, source)
+    inputs.assert_not_revoked(revocations, source=source, artifact=artifact, inputs=fingerprint)
+    return fingerprint
 
 
 def adapt_harness(previous: Path) -> None:

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import stat
 import subprocess
 import sys
+from importlib import import_module
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -14,6 +16,7 @@ import pytest
 
 from scripts import m3_12_diagnostic_transport as transport
 from scripts import m3_12_diagnostics as diagnostics
+from scripts import m3_12_installed as installed
 from scripts import qualification_disposable_cleanup as disposable
 from scripts import qualification_local as local
 from scripts.m3_12_contracts import decode, validate_diagnostic
@@ -28,6 +31,7 @@ from scripts.m3_12_diagnostic_store import (
     encode,
     failure,
     publish,
+    read,
 )
 from scripts.qualification_case import phase, private_document
 from scripts.qualification_context import HOST_ENV, RUN_ENV, run_lease
@@ -35,6 +39,7 @@ from scripts.qualification_context import HOST_ENV, RUN_ENV, run_lease
 CANARY = "M3-12-SYNTHETIC-EXCLUDED-OUTPUT"
 SETUP_STATUS = 7
 CANCELLED = 130
+ANSIBLE_FAILED = 2
 
 
 def test_attempt_exists_before_setup_and_exports_original_failure(
@@ -80,6 +85,7 @@ def test_lost_caller_leaves_durable_start_and_unknown_result(tmp_path: Path) -> 
     code = """
 import signal
 import sys
+from importlib import import_module
 from pathlib import Path
 from unittest.mock import Mock
 from scripts.m3_12_diagnostic_store import Attempt, clock
@@ -109,6 +115,142 @@ with attempt.lock("controller.lock"):
     assert not (attempt.directory / "original.json").exists()
     assert diagnostics.collect(attempt)["omissionCount"] == 1
     assert not (attempt.directory / "summary.json").exists()
+
+
+def test_installed_successor_progress_survives_interruption(tmp_path: Path) -> None:
+    installed.predecessor_progress(tmp_path, "rotation-enabled.started")
+    installed.predecessor_progress(tmp_path, "rotation-enabled")
+    code = """
+import signal
+import sys
+from importlib import import_module
+from pathlib import Path
+from scripts.m3_12_installed import successor_stage
+
+with successor_stage(Path(sys.argv[1]), "dark-staging"):
+    print("ready", flush=True)
+    signal.pause()
+"""
+    with subprocess.Popen(  # noqa: S603 - fixed local interruption fixture
+        [sys.executable, "-c", code, str(tmp_path)], cwd=ROOT, stdout=subprocess.PIPE, text=True
+    ) as observer:
+        try:
+            assert observer.stdout is not None
+            assert observer.stdout.readline() == "ready\n"
+        finally:
+            observer.kill()
+
+    progress = tmp_path / installed.PROGRESS_DIRECTORY
+    assert {path.name for path in progress.iterdir()} == {
+        "m3-11-rotation-enabled-started.json",
+        "m3-11-rotation-enabled-completed.json",
+        "dark-staging-started.json",
+    }
+    completed = read(progress, "m3-11-rotation-enabled-completed.json")
+    interrupted = read(progress, "dark-staging-started.json")
+    assert interrupted == {
+        "format": "lowerduckpond-m3-12-successor-progress-v1",
+        "authority": "diagnostic-only",
+        "stage": "dark-staging",
+        "state": "started",
+        "utc": interrupted["utc"],
+        "monotonicMs": interrupted["monotonicMs"],
+    }
+    assert interrupted["monotonicMs"] >= completed["monotonicMs"]
+    with (
+        pytest.raises(ValueError, match="invalid installed successor progress label"),
+        installed.successor_stage(tmp_path, CANARY),
+    ):
+        pytest.fail("unrecognized diagnostic label was accepted")
+
+
+def test_successor_progress_failure_preserves_the_original_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(installed, "publish", Mock(side_effect=OSError(CANARY)))
+    original = RuntimeError("original fixture error")
+    with (
+        pytest.raises(RuntimeError) as observed,
+        installed.successor_stage(tmp_path, "dark-repeat"),
+    ):
+        raise original
+    assert observed.value is original
+    assert capsys.readouterr().err == "Installed successor progress unavailable.\n"
+
+
+def test_nested_successor_ansible_failure_retains_only_category_and_counts(tmp_path: Path) -> None:
+    playbook = tmp_path / f"{CANARY}.yml"
+    playbook.write_text(
+        json.dumps(
+            [
+                {
+                    "hosts": "all",
+                    "gather_facts": False,
+                    "tasks": [
+                        {
+                            "name": CANARY,
+                            "ansible.builtin.command": {
+                                "argv": [
+                                    sys.executable,
+                                    "-c",
+                                    "import sys;"
+                                    f"print({CANARY!r});"
+                                    "sys.stderr.write('launch_authority_unavailable\\n');"
+                                    "sys.exit(78)",
+                                ],
+                            },
+                            "changed_when": False,
+                        }
+                    ],
+                }
+            ]
+        )
+    )
+    result = subprocess.run(  # noqa: S603 - fixed localhost controller, no host changes
+        [
+            str(Path(sys.executable).with_name("ansible-playbook")),
+            "-i",
+            f"{CANARY},",
+            "-c",
+            "local",
+            str(playbook),
+        ],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "ANSIBLE_CONFIG": str(ROOT / "config/ansible/ansible.cfg"),
+            "ANSIBLE_CALLBACK_PLUGINS": str(ROOT / "config/ansible/plugins/callback"),
+            "ANSIBLE_CALLBACKS_ENABLED": "ldp_m3_12_successor",
+            "ANSIBLE_LOCAL_TEMP": str(tmp_path / "local"),
+            "ANSIBLE_REMOTE_TEMP": str(tmp_path / "remote"),
+            installed.APPLY_STAGE_ENV: "enabled-repeat",
+            installed.PROGRESS_ROOT_ENV: str(tmp_path),
+        },
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    assert result.returncode == ANSIBLE_FAILED
+    progress = tmp_path / installed.PROGRESS_DIRECTORY
+    failure = read(progress, "enabled-repeat-ansible-failure.json")
+    recap = read(progress, "enabled-repeat-ansible-recap.json")
+    assert failure["task"] == {
+        "action": "command",
+        "category": "launch-authority-unavailable",
+        "line": 0,
+        "source": "unknown",
+    }
+    assert recap["counts"] == {
+        "ok": 0,
+        "changed": 0,
+        "failures": 1,
+        "unreachable": 0,
+        "rescued": 0,
+        "ignored": 0,
+        "skipped": 0,
+    }
+    for artifact in progress.iterdir():
+        assert CANARY.encode() not in artifact.read_bytes()
 
 
 def test_collection_conflict_preserves_original(tmp_path: Path) -> None:
@@ -230,3 +372,93 @@ def test_public_guest_collection_reopens_the_original_bound_lease(
     assert transfer.call_args.args[0][:3] == ["docker", "exec", host_id]
     assert transfer.call_args.kwargs["timeout"] is None
     assert not (attempt.directory / "original.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("archive_endpoint", "expected"),
+    [
+        (f"{'a' * 64} 172.21.0.3", "172.21.0.3 ams3.digitaloceanspaces.com"),
+        (f"{'b' * 64} 172.21.0.3", None),
+        (f"{'a' * 64} 8.8.8.8", None),
+        (f"{'a' * 64} 172.21.0.2", None),
+        (f"{'a' * 64} 172.21.0.3\n{'b' * 64} 172.22.0.3", None),
+    ],
+)
+def test_successor_archive_route_uses_only_the_original_shared_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, archive_endpoint: str, expected: str | None
+) -> None:
+    allocation = Mock(
+        return_value={"docker": {"roles": {"host": {"id": "host"}, "archive": {"id": "archive"}}}}
+    )
+    monkeypatch.setattr(installed, "recheck_installed", allocation)
+    docker = Mock(side_effect=[f"{'a' * 64} 172.21.0.2".encode(), archive_endpoint.encode()])
+    monkeypatch.setattr(installed, "_docker", docker)
+    environment = {"M3_10_ARCHIVE_BACKEND": "minio"}
+    if expected is None:
+        with pytest.raises(ValueError, match=r"^installed-archive-network-(changed|invalid)$"):
+            installed.installed_archive_hosts_line(tmp_path, environment)
+    else:
+        assert installed.installed_archive_hosts_line(tmp_path, environment) == expected
+    allocation.assert_called_once_with(tmp_path, environment)
+    assert [call.args[-1] for call in docker.call_args_list] == ["host", "archive"]
+
+
+def test_successor_build_retains_the_artifact_required_for_final_accounting(tmp_path: Path) -> None:
+    # The Molecule suite uses bare test module names also collected by this suite.
+    # Load it in a fresh interpreter so these suites never share those modules.
+    subprocess.run(  # noqa: S603 - fixed Python probe and owned test paths
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys; from pathlib import Path; from runpy import run_path; "
+            "from pytest import MonkeyPatch; sys.path.insert(0, str(Path.cwd())); "
+            "probe = run_path(sys.argv[1])['_check_successor_archive_binding']; "
+            "probe(Path(sys.argv[2]), MonkeyPatch())",
+            str(Path(__file__).resolve()),
+            str(tmp_path),
+        ],
+        cwd=ROOT,
+        check=True,
+    )
+
+
+def _check_successor_archive_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import qualification_retirement as retirement  # noqa: PLC0415
+    from scripts.qualification_context import ARTIFACT_ENV  # noqa: PLC0415
+
+    tests = ROOT / "config/ansible/molecule/m3_8/tests"
+    monkeypatch.syspath_prepend(str(tests))
+    successor = import_module("test_m3_12_successor")
+    fixture_dir = tmp_path / "fixture"
+    fixture_dir.mkdir()
+    retained = fixture_dir / "static-host-agent.tar"
+    predecessor = tmp_path / "accepted-predecessor.tar"
+    prior_bytes = b"accepted predecessor archive"
+    candidate_bytes = b"built successor archive"
+    predecessor.write_bytes(prior_bytes)
+    shutil.copyfile(predecessor, retained)
+    environment = {ARTIFACT_ENV: str(retained)}
+    fixture = Mock(source_artifact=retained, artifact=predecessor, environment=environment)
+    directory = tmp_path / "successor"
+    directory.mkdir()
+    monkeypatch.setattr(successor, "recheck_installed", Mock(return_value={}))
+
+    def run(arguments: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        if Path(arguments[0]).name == "build-static-host-agent":
+            Path(arguments[1]).write_bytes(candidate_bytes)
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr(successor.subprocess, "run", run)
+    rollout = successor.Rollout(fixture, Mock(), directory, [])
+    digest = rollout.build()
+    monkeypatch.setattr(
+        retirement,
+        "bounded_command",
+        Mock(return_value=encode({"state": "quiescent-installed", "artifact_sha256": digest})),
+    )
+
+    assert retirement.local_proof(environment, "owned-host") == "quiescent-installed"
+    assert predecessor.read_bytes() == prior_bytes
+    assert retained.read_bytes() == candidate_bytes

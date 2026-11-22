@@ -265,11 +265,12 @@ def select_destination(
         os.close(selection_lock)
 
 
-def parse_arguments() -> tuple[pathlib.Path, str, pathlib.Path, pathlib.Path, pathlib.Path]:
-    if len(sys.argv) != ARGUMENT_COUNT:
+def parse_arguments() -> tuple[pathlib.Path, str, pathlib.Path, pathlib.Path, pathlib.Path, bool]:
+    stage_only = len(sys.argv) == ARGUMENT_COUNT + 1 and sys.argv[-1] == "--stage-only"
+    if len(sys.argv) != ARGUMENT_COUNT and not stage_only:
         fail(
             "usage: install-static-host-agent-artifact "
-            "ARCHIVE SHA256 INSTALL_ROOT VERIFIER STATE_ROOT"
+            "ARCHIVE SHA256 INSTALL_ROOT VERIFIER STATE_ROOT [--stage-only]"
         )
     archive_path = pathlib.Path(sys.argv[1])
     expected_digest = sys.argv[2]
@@ -285,11 +286,13 @@ def parse_arguments() -> tuple[pathlib.Path, str, pathlib.Path, pathlib.Path, pa
         or not state_root.is_absolute()
     ):
         fail("host-agent installer arguments are invalid")
-    return archive_path, expected_digest, install_root, verifier, state_root
+    return archive_path, expected_digest, install_root, verifier, state_root, stage_only
 
 
 def main() -> None:
-    archive_path, expected_digest, install_root, verifier, state_root = parse_arguments()
+    archive_path, expected_digest, install_root, verifier, state_root, stage_only = (
+        parse_arguments()
+    )
     if digest_file(archive_path) != expected_digest:
         fail("host-agent archive digest does not match its pinned identity")
 
@@ -323,7 +326,7 @@ def main() -> None:
             if staging.exists() or staging.is_symlink():
                 discard_staging(staging)
 
-    if select_destination(install_root, destination, state_root):
+    if not stage_only and select_destination(install_root, destination, state_root):
         changed = True
     print("changed" if changed else "unchanged")
 

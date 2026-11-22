@@ -59,6 +59,7 @@ def test_helper_bundle_is_deterministic_and_contains_only_qualified_code(tmp_pat
             "scripts/m3_11_production_probe.py",
             "scripts/m3_11_production_records.py",
             "scripts/m3_11_production_remote.py",
+            "scripts/m3_12_installed_root.py",
         }
         for name in (
             "m3_11_production_fence.py",
@@ -71,6 +72,7 @@ def test_helper_bundle_is_deterministic_and_contains_only_qualified_code(tmp_pat
             "m3_11_production_probe.py",
             "m3_11_production_records.py",
             "m3_11_production_remote.py",
+            "m3_12_installed_root.py",
         ):
             assert archive.read("scripts/" + name) == (ROOT / "scripts" / name).read_bytes()
     path = stage.stage(tmp_path / "helpers", raw, Path(helper).stem, owner=OWNER)

@@ -109,7 +109,7 @@ def _known_source(path: Path) -> str:
     return "unknown"
 
 
-def _source(source: object) -> tuple[str, int]:
+def task_source(source: object) -> tuple[str, int]:
     match = re.fullmatch(r"(.+\.ya?ml):([0-9]{1,6})", source if isinstance(source, str) else "")
     if match and 0 < int(match[2]) <= MAX_SOURCE_LINE:
         path = _known_source(Path(match[1]))
@@ -138,7 +138,7 @@ def start_task(phase: str, action: object, source: object) -> TaskEvent | None:
     if not os.environ.get(timing.EVENT_ENV):
         return None
     try:
-        path, line = _source(source)
+        path, line = task_source(source)
         module = action.rsplit(".", 1)[-1] if isinstance(action, str) else "other"
         group = os.environ.get(timing.CONTEXT_ENV, "unclassified")
         event: TaskEvent = {
