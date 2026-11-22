@@ -10,6 +10,7 @@ from ipaddress import IPv4Address
 from pathlib import Path
 from subprocess import CalledProcessError
 from tempfile import TemporaryDirectory
+from typing import Protocol
 
 from lowerduckpond_static_contracts import ContractError, decode_json_object
 
@@ -135,7 +136,21 @@ def installation_inventory(endpoint: Endpoint, known_hosts: Path) -> Document:
     }
 
 
-def _call(endpoint: Endpoint, command: str, *, stdin: bytes = b"") -> bytes:
+class ReadExecutor(Protocol):
+    def __call__(
+        self,
+        arguments: list[str],
+        *,
+        stdin: bytes,
+        check: bool,
+        timeout: float | None,
+        maximum: int,
+    ) -> bytes | None: ...
+
+
+def _call(
+    endpoint: Endpoint, command: str, *, stdin: bytes = b"", executor: ReadExecutor | None = None
+) -> bytes:
     public_key, _ = endpoint.validate()
     with TemporaryDirectory(prefix="ldp-m3-12-known-host-") as directory:
         known_hosts = Path(directory) / "known_hosts"
@@ -143,7 +158,8 @@ def _call(endpoint: Endpoint, command: str, *, stdin: bytes = b"") -> bytes:
         with os.fdopen(fd, "wb") as file:
             file.write(endpoint.provider.ipv4.encode("ascii") + b" " + public_key + b"\n")
         try:
-            raw = bounded_command(
+            execute = bounded_command if executor is None else executor
+            raw = execute(
                 _arguments(endpoint, known_hosts, command),
                 stdin=stdin,
                 check=True,
@@ -172,9 +188,9 @@ def require_observation(endpoint: Endpoint, doc: Document) -> None:
     )
 
 
-def observe(endpoint: Endpoint) -> Document:
+def observe(endpoint: Endpoint, *, executor: ReadExecutor | None = None) -> Document:
     """Run the fixed probe over a fresh connection with only this host key trusted."""
-    raw = _call(endpoint, REMOTE_PROBE, stdin=PROBE.read_bytes())
+    raw = _call(endpoint, REMOTE_PROBE, stdin=PROBE.read_bytes(), executor=executor)
     doc = decode(raw, "droplet-observation")
     require_observation(endpoint, doc)
     return doc
@@ -199,17 +215,17 @@ def capacity_sample(endpoint: Endpoint, *, allocation: bool) -> Document:
     return sample
 
 
-def restore_delivery(endpoint: Endpoint) -> Document:
-    return _restore_read(endpoint, "--verify-delivery")
+def restore_delivery(endpoint: Endpoint, *, executor: ReadExecutor | None = None) -> Document:
+    return _restore_read(endpoint, "--verify-delivery", executor=executor)
 
 
-def restore_status(endpoint: Endpoint) -> Document:
-    return _restore_read(endpoint, "--status")
+def restore_status(endpoint: Endpoint, *, executor: ReadExecutor | None = None) -> Document:
+    return _restore_read(endpoint, "--status", executor=executor)
 
 
-def _restore_read(endpoint: Endpoint, operation: str) -> Document:
+def _restore_read(endpoint: Endpoint, operation: str, *, executor: ReadExecutor | None) -> Document:
     require(endpoint.allocation.role == "restore", "droplet-restore-readback-role-changed")
-    raw = _call(endpoint, f"{REMOTE_RESTORE} {operation}")
+    raw = _call(endpoint, f"{REMOTE_RESTORE} {operation}", executor=executor)
     try:
         value = decode_json_object(raw, maximum_bytes=MAX_RECORD_BYTES)
     except ContractError:

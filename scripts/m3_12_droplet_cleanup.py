@@ -16,7 +16,7 @@ from scripts.m3_12_contracts import (
     require,
 )
 from scripts.m3_12_droplet_inventory import ApprovedAllocation
-from scripts.m3_12_droplet_plan import PROVIDER, _resource_index
+from scripts.m3_12_droplet_plan import CONFIGURATION_FIELDS, PROVIDER, _resource_index
 from scripts.m3_12_droplet_provider import ReviewedReadback, bind_initial_allocation
 
 
@@ -71,6 +71,11 @@ def verify_initial_destroy_plan(
     require(
         state_key == original.state_key and sha256(plan_json).hexdigest() == reviewed_sha256,
         "droplet-cleanup-plan-changed",
+    )
+    require(
+        {address for address, _ in original._resources} == set(CONFIGURATION_FIELDS)
+        and len(original._resources) == len(CONFIGURATION_FIELDS),
+        "droplet-cleanup-original-resource-set-changed",
     )
     plan = _document(plan_json)
     try:

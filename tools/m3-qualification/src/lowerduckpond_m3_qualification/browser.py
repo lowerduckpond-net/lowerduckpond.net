@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import sys
 import traceback
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from typing import Final
 from urllib.parse import urlsplit
@@ -70,14 +71,19 @@ class BrowserOrigins:
     tenant_alias: str
     tenant_immutable: str
     tenant_unknown: str
+    approved_scopes: tuple[str, str] | None = field(default=None, kw_only=True, repr=False)
 
     def __post_init__(self) -> None:
         hosts = tuple(urlsplit(origin).hostname for origin in self.all_origins)
-        if hosts not in {
-            (PLATFORM_HOST, *TENANT_HOSTS),
-            (LOCAL_PLATFORM_HOST, *LOCAL_TENANT_HOSTS),
-        }:
-            raise ValueError("qualification origins are not an exact approved host set")
+        if self.approved_scopes is None:
+            if hosts not in {
+                (PLATFORM_HOST, *TENANT_HOSTS),
+                (LOCAL_PLATFORM_HOST, *LOCAL_TENANT_HOSTS),
+            }:
+                raise ValueError("qualification origins are not an exact approved host set")
+        else:
+            platform, tenant = self.approved_scopes
+            self._require_scoped_hosts(hosts, platform, tenant)
         for origin, expected_host in zip(self.all_origins, hosts, strict=True):
             parsed = urlsplit(origin)
             if (
@@ -92,6 +98,27 @@ class BrowserOrigins:
             ):
                 raise ValueError("qualification origin is not the exact approved HTTPS host")
 
+    @staticmethod
+    def _require_scoped_hosts(hosts: tuple[str | None, ...], platform: str, tenant: str) -> None:
+        if (
+            hosts[0] != platform
+            or platform == tenant
+            or platform.endswith("." + tenant)
+            or tenant.endswith("." + platform)
+            or len(hosts) != len(set(hosts))
+            or any(
+                host is None
+                or len(host) > 253  # noqa: PLR2004 - maximum DNS name length
+                or any(
+                    re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) is None
+                    for label in host.split(".")
+                )
+                for host in hosts
+            )
+            or any(host is None or host.partition(".")[2] != tenant for host in hosts[1:])
+        ):
+            raise ValueError("qualification origins are outside the approved disposable scopes")
+
     @property
     def tenant_origins(self) -> tuple[str, str, str]:
         return (self.tenant_alias, self.tenant_immutable, self.tenant_unknown)
@@ -102,6 +129,8 @@ class BrowserOrigins:
 
     @property
     def tenant_parent_domain(self) -> str:
+        if self.approved_scopes is not None:
+            return self.approved_scopes[1]
         hostname = urlsplit(self.tenant_alias).hostname
         if hostname is None:
             raise ValueError
@@ -109,6 +138,8 @@ class BrowserOrigins:
 
     @property
     def platform_domain(self) -> str:
+        if self.approved_scopes is not None:
+            return self.approved_scopes[0]
         hostname = urlsplit(self.platform).hostname
         if hostname is None:
             raise ValueError

@@ -40,6 +40,7 @@ from scripts.m3_12_droplet_inventory import (
 )
 from scripts.m3_12_droplet_ssh import (
     Endpoint,
+    ReadExecutor,
     capacity_sample,
     installation_inventory,
     observe,
@@ -316,8 +317,10 @@ def _retained_role(
     return prepared, completed, original, before
 
 
-def _observe_same_host(attempt: Attempt, endpoint: Endpoint, before: Document) -> Document:
-    after = observe(endpoint)
+def _observe_same_host(
+    attempt: Attempt, endpoint: Endpoint, before: Document, *, executor: ReadExecutor | None = None
+) -> Document:
+    after = observe(endpoint) if executor is None else observe(endpoint, executor=executor)
     _require_same_host(before, after)
     _retain_observation(attempt, after)
     return after
@@ -558,6 +561,50 @@ def _retain_files(site: Path, files: dict[str, bytes], *, owner: int) -> None:
                 require(previous == raw, "droplet-restore-delivery-original-changed")
 
 
+def install_stage(
+    directory: Path, role: str, target_sha256: str, *, fresh_artifact: str | None, owner: int
+) -> Document:
+    """Derive native dark stage variables from the protected install inputs."""
+    require(role in {"fresh", "restore"}, "droplet-install-role-invalid")
+    stage: Document = {
+        "caddy_generation_enabled": True,
+        "backup_static_recovery_enabled": True,
+        "backup_audit_rotation_enabled": False,
+        "static_publication_enabled": False,
+        "host_recovery_bootstrap_enabled": role == "restore",
+    }
+    if role == "restore":
+        delivery_directory = directory / "restore-delivery"
+        scoped = RestoreInputs.load(delivery_directory, owner=owner)
+        delivery = read(directory, "droplet-restore-delivery.json")
+        require(
+            delivery["trustedInputsDigest"] == scoped.digest
+            and delivery["activationScopeDigest"] == scoped.droplet_scope_digest
+            and delivery["publicationFiles"]
+            == publication_files(delivery_directory, scoped, owner=owner),
+            "droplet-restore-install-delivery-changed",
+        )
+        require(
+            scoped.droplet_scope is not None
+            and scoped.droplet_scope["destinationTargetSha256"] == target_sha256,
+            "droplet-restore-install-target-changed",
+        )
+        verify_bootstrap_inputs(delivery_directory, scoped, owner=owner)
+        stage.update(
+            host_recovery_restore_id=scoped.restore_id,
+            host_recovery_input_directory=str(delivery_directory),
+            static_host_agent_artifact_sha256=scoped.document["originalArtifactSha256"],
+        )
+    else:
+        require(
+            isinstance(fresh_artifact, str)
+            and re.fullmatch(r"[0-9a-f]{64}", fresh_artifact) is not None,
+            "droplet-fresh-candidate-invalid",
+        )
+        stage["static_host_agent_artifact_sha256"] = fresh_artifact
+    return stage
+
+
 def prepare_install_handoff(
     attempt: Attempt, endpoint: Endpoint, production_exclusions: bytes
 ) -> Path:
@@ -569,32 +616,13 @@ def prepare_install_handoff(
             attempt, role, endpoint, production_exclusions
         )
         owner = os.geteuid()
-        stage: Document = {
-            "caddy_generation_enabled": True,
-            "backup_static_recovery_enabled": True,
-            "backup_audit_rotation_enabled": False,
-            "static_publication_enabled": False,
-            "host_recovery_bootstrap_enabled": role == "restore",
-        }
-        if role == "restore":
-            delivery_directory = attempt.directory / "restore-delivery"
-            scoped = RestoreInputs.load(delivery_directory, owner=owner)
-            delivery = read(attempt.directory, "droplet-restore-delivery.json")
-            require(
-                delivery["trustedInputsDigest"] == scoped.digest
-                and delivery["activationScopeDigest"] == scoped.droplet_scope_digest
-                and delivery["publicationFiles"]
-                == publication_files(delivery_directory, scoped, owner=owner),
-                "droplet-restore-install-delivery-changed",
-            )
-            verify_bootstrap_inputs(delivery_directory, scoped, owner=owner)
-            stage.update(
-                host_recovery_restore_id=scoped.restore_id,
-                host_recovery_input_directory=str(delivery_directory),
-                static_host_agent_artifact_sha256=scoped.document["originalArtifactSha256"],
-            )
-        else:
-            stage["static_host_agent_artifact_sha256"] = prepared["expectedArtifactSha256"]
+        stage = install_stage(
+            attempt.directory,
+            role,
+            digest(completed[role]["target"]),
+            fresh_artifact=prepared.get("expectedArtifactSha256"),
+            owner=owner,
+        )
         after = _observe_same_host(attempt, endpoint, before)
         require(
             after["state"] in (COLD_STATE if role == "restore" else COLD_STATE[:1]),
@@ -626,20 +654,32 @@ def prepare_install_handoff(
 
 
 def inspect_restored_host(
-    attempt: Attempt, endpoint: Endpoint, production_exclusions: bytes
+    attempt: Attempt,
+    endpoint: Endpoint,
+    production_exclusions: bytes,
+    *,
+    executor: ReadExecutor | None = None,
+    expected_target_sha256: str | None = None,
 ) -> Document:
     """Join native status and delivered authority on the same pinned bootstrap."""
     with attempt.lock("controller.lock", blocking=False):
-        _, _, _, original = _retained_role(attempt, "restore", endpoint, production_exclusions)
+        _, completed, _, original = _retained_role(
+            attempt, "restore", endpoint, production_exclusions
+        )
+        require(
+            expected_target_sha256 is None
+            or digest(completed["restore"]["target"]) == expected_target_sha256,
+            "droplet-restore-installed-target-changed",
+        )
         staged = read(attempt.directory, "droplet-restore-delivery.json")
         approved = read(attempt.directory, "droplet-restore-target.json")
-        first = _observe_same_host(attempt, endpoint, original)
-        delivered = restore_delivery(endpoint)
+        first = _observe_same_host(attempt, endpoint, original, executor=executor)
+        delivered = restore_delivery(endpoint, executor=executor)
         require(
             delivered == {name: value for name, value in staged.items() if name != "format"},
             "droplet-restore-installed-delivery-changed",
         )
-        status = restore_status(endpoint)
+        status = restore_status(endpoint, executor=executor)
         if status != {"phase": "not-started"}:
             require(
                 set(status) == {"restoreId", "snapshotId", "phase", "activationPending"}
@@ -651,7 +691,7 @@ def inspect_restored_host(
                 and (status["phase"] == RestorePhase.COMPLETE or status["activationPending"]),
                 "droplet-restore-installed-status-changed",
             )
-        last = _observe_same_host(attempt, endpoint, original)
+        last = _observe_same_host(attempt, endpoint, original, executor=executor)
         require(
             first == last and last["state"]["artifactSha256"] == approved["originalArtifactSha256"],
             "droplet-restore-installed-observation-changed",

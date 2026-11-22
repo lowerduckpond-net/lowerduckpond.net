@@ -67,6 +67,41 @@ retained. Teardown depends on independently reopened original evidence.
 Sequence completion describes the adapter workflow only. It supplies no
 real-host or production qualification receipt.
 
+## Native adapter checks
+
+The [native boundary](../../scripts/m3_12_droplet_native.py) reopens the
+approved allocation and exact persisted phase intent before preparing
+a command. SSH reads use the same explicit host key and independently
+recheck the full enrolled guest identity. Restore readback opens the protected
+delivery through the existing destination adapter and requires its original
+target before reading either native command result.
+
+The Ansible preview reopens the one-host inventory, known-hosts file, and
+dark stage file under the original handoff digests. It rederives the stage
+from the authorized artifact or protected restore policy. The command
+selects only the owned host and uses `site.yml --list-hosts`. Native apply
+is blocked. The immutable Caddy route builder emits production apex and
+wildcard subjects and the tenant contracts still pin the production
+canonical suffix. The legacy `caddy_domain` variable does not change those
+paths.
+
+The [edge adapter](../../scripts/m3_12_droplet_edge.py) builds exact browser
+origins, apex and wildcard subjects, and origin-pull identity inputs from
+the manifest and original functional tenant fixture. Independent readback
+must match both approved zone IDs and names, strict SSL, Always Online off,
+proxied origin addresses and the expected certificate generation. The existing
+browser assertions accept the prepared disposable scopes. Their historical
+entry point keeps its existing host set.
+
+The [storage adapter](../../scripts/m3_12_droplet_storage.py) derives the
+regional HTTPS endpoint and exact bucket from the verified manifest. Restore
+maps to the original source resources. The Restic locator uses the reviewed
+prefix. The archive namespace is the native `archives/` prefix in a dedicated
+bucket. Full-bucket inventory retains evidence of foreign names, versions,
+delete markers and uploads. Restore rereads the original archive authority
+and uses the native exact-version verifier. The injected client must be a
+reader for that exact scoped bucket.
+
 ## Restore delivery and readback
 
 Cold preparation binds trusted policy and the original source fence to both
@@ -157,6 +192,15 @@ Any surviving or unverified observation remains unresolved. This covers the
 initial host allocation. Edge, DNS, archived objects, credentials, and
 their own teardown evidence remain separate obligations.
 
+The [journey teardown adapter](../../scripts/m3_12_droplet_teardown.py)
+reopens the scope and cleanup authority retained with the original evidence
+before accepting a per-host destroy plan. Its reconciliation joins the three
+native host absence proofs with independent DNS, storage and original grant
+observations. Unverified or surviving resources stay unresolved. A designated
+archive retention requires the original custody evidence, even if the
+corresponding bucket is now absent. The adapter verifies observations and
+prepares no provider deletions.
+
 ## Evidence still required
 
 The component tests exercise pinned client configuration, deterministic
@@ -165,14 +209,14 @@ gates. The remaining real-host journey needs authenticated provider captures,
 protected host-key provisioning, an accepted M3.11 source with its exact
 bootstrap inputs, and separately owned restore and fresh targets.
 
-The dependency runner is exercised with synthetic scopes and offline
-drivers. The native execution adapters still need to consume the reviewed
-scope at their command boundaries. In particular, the site adapter must
-derive its DNS, origin-pull and backup settings from the approved disposable
-policy and recheck the real host before convergence. The existing
-edge/browser tools pin their historical M3 names. Their P4 adapters need
-to use the manifest's owned scopes and independently observed associations.
-The qualification root currently owns only the initial host resources.
+The dependency runner and adapter boundaries are exercised offline. A
+protected disposable routing design is required for mutable convergence.
+It must establish whether the disposable host has its own canonical namespace
+from bootstrap or keeps the historical identity and translates approved
+public route subjects. That choice affects tenant creation, the accepted
+predecessor and restore continuity. The immutable generator must prove that
+it can issue only for the owned test subjects before native apply is admitted.
+The qualification root presently owns only initial host resources.
 
 The real-host sequence remains to be proven from the accepted predecessor
 through upgrade, interruption and reboot, the full lifecycle and actual

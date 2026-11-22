@@ -64,7 +64,7 @@ PHASES = (
     _phase(
         "restore",
         "restore",
-        ("cold-install",),
+        ("cold-install", "backup-fence"),
         "exactSnapshot",
         "archiveVersions",
         "excludedState",
@@ -85,6 +85,7 @@ PHASES = (
         ("restore-reboot", "fresh-reboot"),
         "originalEvidence",
         "independentReopen",
+        "cleanupAuthority",
     ),
     _phase(
         "teardown",
@@ -200,6 +201,21 @@ def _originals(attempt: Attempt, scope: Document) -> dict[str, Dispatch]:
                 break
             previous = receipt
     return entries
+
+
+def require_dispatch(
+    attempt: Attempt, raw: bytes, reviewed: ReviewedJourney, intent: bytes, phases: frozenset[str]
+) -> tuple[Document, Document]:
+    """Reopen exact scope and the current persisted intent at an adapter boundary."""
+    scope = approved_scope(attempt, raw, reviewed)
+    require(_load(attempt, "journey-allocation.json") == scope, "droplet-journey-original-changed")
+    matches = [
+        entry.intent
+        for name, entry in _originals(attempt, scope).items()
+        if name in phases and intent == encode(entry.intent)
+    ]
+    require(len(matches) == 1, "droplet-journey-adapter-intent-changed")
+    return scope, matches[0]
 
 
 def _retain_readback(attempt: Attempt, dispatch: Dispatch, record: Document) -> None:

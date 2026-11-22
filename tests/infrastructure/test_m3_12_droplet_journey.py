@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from dataclasses import replace
 from hashlib import sha256
@@ -20,6 +21,7 @@ from scripts.m3_12_droplet_inventory import (
     enrollment_records,
 )
 from scripts.m3_12_droplet_journey import PHASES, run_journey
+from scripts.m3_12_droplet_observe import ED25519_WIRE_HEADER, ed25519_key
 from scripts.m3_12_droplet_scope import ReviewedJourney
 from scripts.m3_12_successor import accepted_predecessor
 
@@ -29,6 +31,10 @@ PHASE_NAMES = tuple(phase.name for phase in PHASES)
 
 def proof(label: str) -> str:
     return sha256(label.encode()).hexdigest()
+
+
+def public_key(role: str) -> bytes:
+    return b"ssh-ed25519 " + base64.b64encode(ED25519_WIRE_HEADER + sha256(role.encode()).digest())
 
 
 def host(
@@ -44,7 +50,7 @@ def host(
         transaction_namespace_sha256=proof(role + " transaction"),
         identity=provider,
     )
-    key = proof(role + " public key")
+    _, key = ed25519_key(public_key(role))
     observed = ConnectedDroplet(
         provider=provider,
         metadata_id=index,
@@ -133,7 +139,11 @@ def fixture(
             },
             "storage": {
                 role: {
-                    kind: {"region": "abc7", "bucket": f"{role}-{kind}", "prefix": f"runs/{run}"}
+                    kind: {
+                        "region": "abc7",
+                        "bucket": f"{role}-{kind}",
+                        "prefix": "archives" if kind == "archive" else f"runs/{run}",
+                    }
                     for kind in ("restic", "archive")
                 }
                 for role in ("source", "fresh")
@@ -293,7 +303,7 @@ def test_no_adapter_can_run_until_the_entire_scope_is_verified(  # noqa: PLR0912
     elif changed == "incomplete":
         reviewed = replace(reviewed, predecessor_records=reviewed.predecessor_records[:-1])
     elif changed == "readback":
-        resources["storage"]["source"]["archive"]["prefix"] = "different/owned/prefix"
+        resources["storage"]["source"]["restic"]["prefix"] = "different/owned/prefix"
         reviewed = replace(reviewed, manifest_sha256=digest(scope))
     elif changed == "candidate":
         scope["candidate"]["hostAgentSha256"] = proof("substituted artifact")
@@ -400,7 +410,7 @@ def test_new_review_cannot_replace_the_original_attempt_scope(
     adapter.failed = "predecessor"
     run_journey(attempt, encode(scope), reviewed, adapter)
     original = (attempt.directory / "journey-allocation.json").read_bytes()
-    scope["resources"]["storage"]["fresh"]["archive"]["prefix"] = "another/private/prefix"
+    scope["resources"]["storage"]["fresh"]["restic"]["prefix"] = "another/private/prefix"
     new_review = replace(
         reviewed,
         manifest_sha256=digest(scope),

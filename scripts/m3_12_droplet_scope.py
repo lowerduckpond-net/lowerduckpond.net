@@ -132,7 +132,8 @@ def _storage(storage: Document, production: Document) -> None:
     require(
         len(buckets) == len(resources)
         and not buckets.intersection(production["buckets"])
-        and all(resource["region"] != HOST_FIELDS["region"] for resource in resources),
+        and all(resource["region"] != HOST_FIELDS["region"] for resource in resources)
+        and all(role["archive"]["prefix"] == "archives" for role in storage.values()),
         "droplet-journey-storage-crossover",
     )
 

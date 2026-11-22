@@ -67,6 +67,13 @@ readback-only recovery after caller loss. The regression also verifies
 original evidence retention and the source-fence prerequisite for restore.
 The synthetic completion belongs to the component layer.
 
+The [adapter regressions](../../tests/infrastructure/test_m3_12_droplet_adapters.py)
+exercise native Ansible host selection, pinned SSH denials, exact certificate
+association inputs, the installed archive readback contract and interrupted
+teardown without provider calls. Native apply remains gated on protected
+disposable routing. Actual public-edge, browser, Spaces and host receipts
+remain separate requirements.
+
 The [inventory validator](../../scripts/m3_12_requirements.py) checks source
 coverage, fingerprints, unique requirements/slots and existing mapped test
 nodes. The versioned requirement-proof binds the reviewed inventory, exact

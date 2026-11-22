@@ -720,7 +720,19 @@ def test_cold_restore_preflight_binds_the_original_policy_to_the_two_owned_hosts
     status_reply = f"{ssh.REMOTE_RESTORE} --status"
     native[delivery_reply] = {key: value for key, value in delivery.items() if key != "format"}
     native[status_reply] = {"phase": "not-started"}
-    before_native = inspect_restored_host(attempt, restore, excluded)
+    connections.clear()
+    with pytest.raises(ValidationError, match="droplet-restore-installed-target-changed"):
+        inspect_restored_host(
+            attempt, restore, excluded, executor=wire, expected_target_sha256=proof("other target")
+        )
+    assert connections == []
+    before_native = inspect_restored_host(
+        attempt,
+        restore,
+        excluded,
+        executor=wire,
+        expected_target_sha256=digest(targets["restore"][0]),
+    )
     assert before_native["restoreStatus"] == {"phase": "not-started"}
     native[status_reply] = {
         "phase": "complete",
