@@ -97,6 +97,61 @@
       ],
       "additionalProperties": false
     },
+    "droplet-enrollment": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-droplet-enrollment-v1"},
+        "runId": {"$ref": "#/$defs/uuid7"},
+        "allocationSha256": {"$ref": "#/$defs/sha256"},
+        "machineSha256": {"$ref": "#/$defs/sha256"},
+        "systemUuidSha256": {"$ref": "#/$defs/sha256"},
+        "hostKeySha256": {"$ref": "#/$defs/sha256"},
+        "ipv4": {"type": "string", "format": "ipv4"},
+        "productionExclusionsSha256": {"$ref": "#/$defs/sha256"}
+      },
+      "required": [
+        "format", "runId", "allocationSha256", "machineSha256", "systemUuidSha256",
+        "hostKeySha256", "ipv4", "productionExclusionsSha256"
+      ],
+      "additionalProperties": false
+    },
+    "droplet-production-exclusions": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-droplet-production-exclusions-v1"},
+        "dropletIds": {
+          "type": "array",
+          "items": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "addresses": {
+          "type": "array",
+          "items": {"type": "string", "format": "ipv4"},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "identityDigests": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/sha256"},
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": ["format", "dropletIds", "addresses", "identityDigests"],
+      "additionalProperties": false
+    },
+    "droplet-launch-attempt": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-droplet-launch-attempt-v1"},
+        "binding": {"$ref": "#/$defs/binding"},
+        "invocationId": {"$ref": "#/$defs/uuid7"},
+        "leaseSha256": {"$ref": "#/$defs/sha256"}
+      },
+      "required": ["format", "binding", "invocationId", "leaseSha256"],
+      "additionalProperties": false
+    },
     "target": {
       "oneOf": [
         {

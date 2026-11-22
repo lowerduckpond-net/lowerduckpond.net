@@ -361,6 +361,8 @@ files = [
   "scripts/m3_12_successor_journal.py",
   "scripts/m3_12_installed.py",
   "scripts/m3_12_installed_root.py",
+  "scripts/m3_12_droplet.py",
+  "scripts/m3_12_droplet_inventory.py",
   "scripts/m3_12_native.py",
   "scripts/m3_11_production_journal.py",
   "scripts/m3_11_production_gate.py",

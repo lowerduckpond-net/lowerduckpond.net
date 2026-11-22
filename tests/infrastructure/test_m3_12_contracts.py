@@ -1,11 +1,13 @@
 """Synthetic contract vectors. These records confer no real execution authority."""
 
+import base64
 import fcntl
 import os
 import sys
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from runpy import run_path
 from uuid import UUID
@@ -13,7 +15,7 @@ from uuid import UUID
 import pytest
 from jsonschema import Draft202012Validator
 from lowerduckpond_static_contracts import decode_json_object
-from lowerduckpond_static_host_agent import platform_launch
+from lowerduckpond_static_host_agent import droplet_enrollment, platform_launch
 from lowerduckpond_static_host_agent.durable import DurabilityBoundary, DurableDirectory
 from lowerduckpond_static_host_agent.platform_launch import (
     initialize_launch,
@@ -21,6 +23,9 @@ from lowerduckpond_static_host_agent.platform_launch import (
     verify_launch,
 )
 
+from scripts import m3_11_production_lease as lease
+from scripts import m3_12_droplet as droplet
+from scripts import m3_12_droplet_inventory as droplet_inventory
 from scripts import m3_12_native as native
 from scripts.m3_12_contracts import (
     COMMON_SLOTS,
@@ -831,6 +836,31 @@ def test_resumed_admission_orders_preflight_before_current_mutations(
             validate_admission(encode(bundle), context, Evidence(store))
 
 
+def _launch_paths(tmp_path: Path, namespace: Document) -> tuple[Path, Path]:
+    state = tmp_path / "state"
+    authority = tmp_path / "successor"
+    authority.mkdir(mode=0o700)
+    for name in (
+        "locks",
+        "platform",
+        "tenants",
+        "intents",
+        "audit",
+        "authorization/jobs",
+        "authorization/results",
+        "authorization/correlations",
+    ):
+        path = state / name
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        path.mkdir(mode=0o700)
+    for key in ("tenant-state.lock", "publication.lock"):
+        (state / "locks" / key).touch(mode=0o600)
+    record_path = state / "platform/namespace.json"
+    record_path.write_bytes(encode(namespace))
+    record_path.chmod(0o600)
+    return state, authority
+
+
 class LaunchInterruptedError(Exception):
     """Interrupt the writer at one descriptor-relative durability boundary."""
 
@@ -859,27 +889,7 @@ def test_native_launch_retry_keeps_the_original_intent(
         ("targetSafety", "target-safety", 81, 82),
     ):
         admission["prerequisites"][slot] = retain(records, receipt(admission, kind, start, end))
-    state = tmp_path / "state"
-    authority = tmp_path / "successor"
-    authority.mkdir(mode=0o700)
-    for name in (
-        "locks",
-        "platform",
-        "tenants",
-        "intents",
-        "audit",
-        "authorization/jobs",
-        "authorization/results",
-        "authorization/correlations",
-    ):
-        path = state / name
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        path.mkdir(mode=0o700)
-    for key in ("tenant-state.lock", "publication.lock"):
-        (state / "locks" / key).touch(mode=0o600)
-    record_path = state / "platform/namespace.json"
-    record_path.write_bytes(encode(namespace))
-    record_path.chmod(0o600)
+    state, authority = _launch_paths(tmp_path, namespace)
     owner = os.geteuid()
 
     def interrupt(observed: DurabilityBoundary) -> None:
@@ -915,7 +925,9 @@ def test_native_launch_retry_keeps_the_original_intent(
     assert (authority / "launch-intent.json").read_bytes() == original
     assert (authority / "admission.json").read_bytes() == raw
     assert verify_launch(state, authority, owner=owner) == result
-    record_path.write_bytes(encode({**namespace, "initializedAt": fixture_time(6)}))
+    (state / "platform/namespace.json").write_bytes(
+        encode({**namespace, "initializedAt": fixture_time(6)})
+    )
     with pytest.raises(ValidationError, match="launch-namespace-changed"):
         verify_launch(state, authority, owner=owner)
 
@@ -1200,3 +1212,289 @@ def test_native_durable_launch_requires_resume_after_the_intent_is_pinned(
             native.phase(journal, "reconcile", "a" * 64)
         assert journal.snapshot().history.head_sha256 == head
         assert journal.snapshot().history.pending
+
+
+@pytest.fixture
+def droplet_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Document, Path, Path]:
+    owner = os.geteuid()
+    identity_files = {
+        "MACHINE_ID": b"a" * 32 + b"\n",
+        "SYSTEM_UUID": b"11111111-2222-3333-4444-555555555555\n",
+        "HOST_KEY": (
+            b"ssh-ed25519 "
+            + base64.b64encode(droplet_enrollment.ED25519_WIRE_HEADER + b"A" * 32)
+            + b" synthetic\n"
+        ),
+    }
+    for name, content in identity_files.items():
+        path = tmp_path / name
+        path.write_bytes(content)
+        path.chmod(0o600)
+        monkeypatch.setattr(droplet_enrollment, name, path)
+    monkeypatch.setattr(droplet_enrollment, "DOCKER_MARKER", tmp_path / "not-a-container")
+    monkeypatch.setattr(droplet, "metadata_identity", lambda: (101, "192.0.2.14"))
+    monkeypatch.setattr(droplet, "require_dark_health", lambda: None)
+
+    namespace = {
+        "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
+        "kind": "PlatformNamespace",
+        "tenantOriginSuffix": SUFFIX,
+        "initializedAt": fixture_time(5),
+    }
+    state, authority = _launch_paths(tmp_path, namespace)
+    monkeypatch.setattr(droplet, "ROOT", authority)
+    monkeypatch.setattr(droplet, "STATE", state)
+    lease_path = tmp_path / "lease"
+    lease_path.mkdir(mode=0o700)
+    monkeypatch.setattr(droplet, "LEASE", lease_path)
+
+    admission, _, earlier = enroll(DISPOSABLE)
+    binding = admission["binding"]
+    original_target = admission["target"]
+    local = droplet_enrollment.host_identity(owner)
+    exclusions = record(
+        "droplet-production-exclusions",
+        dropletIds=[100],
+        addresses=["192.0.2.18"],
+        identityDigests=[proof("enrolled-production")],
+    )
+    identity = droplet_inventory.ProviderIdentity(
+        original_target["droplet"]["projectIdSha256"], 101, "192.0.2.14"
+    )
+    allocation = droplet_inventory.ApprovedAllocation(
+        run_id=binding["runId"],
+        state_sha256=original_target["stateSha256"],
+        allocation_sha256=original_target["allocationSha256"],
+        inventory_sha256=original_target["inventorySha256"],
+        transaction_namespace_sha256=original_target["transactionNamespaceSha256"],
+        identity=identity,
+    )
+    connected = droplet_inventory.ConnectedDroplet(
+        provider=identity,
+        metadata_id=101,
+        metadata_ipv4="192.0.2.14",
+        host_identity=local,
+        pinned_host_key_sha256=local["hostKeySha256"],
+    )
+    target, enrollment = droplet_inventory.enrollment_records(
+        allocation, connected, encode(exclusions)
+    )
+    admission["target"] = target
+    binding["targetSha256"] = digest(target)
+    admission["authoritySha256"] = digest(enrollment)
+    admission["platform"]["namespaceSha256"] = digest(namespace)
+    binding["platformSha256"] = digest(admission["platform"])
+
+    selection = tmp_path / "current"
+    candidate = tmp_path / admission["candidate"]["hostAgentSha256"]
+    candidate.mkdir()
+    selection.symlink_to(candidate)
+    monkeypatch.setattr(droplet, "SELECTION", selection)
+    with DurableDirectory.open(
+        authority, expected_owner=owner, expected_directory_mode=0o700
+    ) as fd:
+        for name, document in (
+            (droplet_enrollment.TARGET, target),
+            (droplet_enrollment.ENROLLMENT, enrollment),
+            (droplet_enrollment.EXCLUSIONS, exclusions),
+        ):
+            fd.create_immutable((name,), encode(document))
+        for slot, key in admission["prerequisites"].items():
+            original = earlier.read(key, "receipt")
+            original["binding"] = binding
+            updated = digest(original)
+            admission["prerequisites"][slot] = updated
+            fd.create_immutable((f"evidence-{updated}.json",), encode(original))
+    return admission, state, authority
+
+
+def _pin_droplet_attempt(authority: Path, admission: Document, token: str) -> None:
+    lease_digest = sha256(token.encode()).hexdigest()
+    admission["leaseSha256"] = lease_digest
+    with DurableDirectory.open(
+        authority, expected_owner=os.geteuid(), expected_directory_mode=0o700
+    ) as fd:
+        fd.create_immutable(
+            (f"droplet-attempt-{lease_digest}.json",),
+            encode(
+                record(
+                    "droplet-launch-attempt",
+                    binding=admission["binding"],
+                    invocationId=admission["invocationId"],
+                    leaseSha256=lease_digest,
+                )
+            ),
+        )
+
+
+def test_droplet_launch_uses_original_binding_and_active_attempt(
+    droplet_attempt: tuple[Document, Path, Path],
+) -> None:
+    admission, state, authority = droplet_attempt
+    owner = os.geteuid()
+    with lease.controller(droplet.LEASE, owner=owner, drain=lambda: None) as token:
+        _pin_droplet_attempt(authority, admission, token)
+        wrong_invocation = {**admission, "invocationId": uuid(91)}
+        with pytest.raises(ValidationError, match="droplet-launch-attempt-changed"):
+            droplet.launch(token, encode(wrong_invocation), owner=owner)
+        assert not (state / "platform/launch.json").exists()
+        receipt = droplet.launch(token, encode(admission), owner=owner)
+        assert droplet.launch(token, encode(admission), owner=owner) == receipt
+    with pytest.raises(ValueError, match="controller was superseded"):
+        droplet.launch(token, encode(admission), owner=owner)
+    assert verify_launch(state, authority, owner=owner) == receipt
+    require_local_launch_binding(authority, receipt, disposable=False, owner=owner)
+
+
+@pytest.mark.parametrize(
+    ("fact", "value"),
+    [
+        ("MACHINE_ID", b"b" * 32 + b"\n"),
+        ("SYSTEM_UUID", b"22222222-3333-4444-5555-666666666666\n"),
+        (
+            "HOST_KEY",
+            b"ssh-ed25519 " + base64.b64encode(droplet_enrollment.ED25519_WIRE_HEADER + b"B" * 32),
+        ),
+    ],
+)
+def test_copied_droplet_launch_and_enrollment_do_not_authorize_another_host(
+    droplet_attempt: tuple[Document, Path, Path], fact: str, value: bytes
+) -> None:
+    admission, state, authority = droplet_attempt
+    owner = os.geteuid()
+    with lease.controller(droplet.LEASE, owner=owner, drain=lambda: None) as token:
+        _pin_droplet_attempt(authority, admission, token)
+        receipt = droplet.launch(token, encode(admission), owner=owner)
+        getattr(droplet_enrollment, fact).write_bytes(value)
+        assert verify_launch(state, authority, owner=owner) == receipt
+        with pytest.raises(ValidationError, match="droplet-enrollment-changed"):
+            require_local_launch_binding(authority, receipt, disposable=False, owner=owner)
+        with pytest.raises(ValidationError, match="droplet-enrollment-changed"):
+            droplet.launch(token, encode(admission), owner=owner)
+
+
+@pytest.mark.parametrize("observed", [(999, "192.0.2.14"), (101, "192.0.2.19")])
+def test_droplet_launch_rechecks_provider_metadata(
+    droplet_attempt: tuple[Document, Path, Path],
+    observed: tuple[int, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admission, state, authority = droplet_attempt
+    owner = os.geteuid()
+    monkeypatch.setattr(droplet, "metadata_identity", lambda: observed)
+    with lease.controller(droplet.LEASE, owner=owner, drain=lambda: None) as token:
+        _pin_droplet_attempt(authority, admission, token)
+        with pytest.raises(ValidationError, match="droplet-metadata-changed"):
+            droplet.launch(token, encode(admission), owner=owner)
+    assert not (state / "platform/launch.json").exists()
+
+
+@pytest.mark.parametrize("identity", ["dropletIds", "addresses", "identityDigests"])
+def test_droplet_launch_and_publication_refuse_production_identities(
+    droplet_attempt: tuple[Document, Path, Path], identity: str
+) -> None:
+    admission, state, authority = droplet_attempt
+    owner = os.geteuid()
+    target = admission["target"]
+    excluded = authority / droplet_enrollment.EXCLUSIONS
+    exclusions = decode(excluded.read_bytes(), "droplet-production-exclusions")
+    registration_path = authority / droplet_enrollment.ENROLLMENT
+    registration = decode(registration_path.read_bytes(), "droplet-enrollment")
+    overlap = {
+        "dropletIds": target["droplet"]["dropletId"],
+        "addresses": registration["ipv4"],
+        "identityDigests": target["transport"]["identitySha256"],
+    }
+    exclusions[identity].append(overlap[identity])
+    registration["productionExclusionsSha256"] = digest(exclusions)
+    target["enrollmentSha256"] = digest(registration)
+    admission["authoritySha256"] = digest(registration)
+    admission["binding"]["targetSha256"] = digest(target)
+    excluded.write_bytes(encode(exclusions))
+    registration_path.write_bytes(encode(registration))
+    (authority / droplet_enrollment.TARGET).write_bytes(encode(target))
+    with pytest.raises(ValidationError, match="production-crossover"):
+        droplet.launch("a" * 64, encode(admission), owner=owner)
+    with pytest.raises(ValidationError, match="production-crossover"):
+        require_local_launch_binding(
+            authority, {"binding": admission["binding"]}, disposable=False, owner=owner
+        )
+    assert not (state / "platform/launch.json").exists()
+
+
+@pytest.mark.parametrize("drift", ["provider", "metadata", "ssh-pin"])
+def test_droplet_enrollment_refuses_independent_observation_mismatch(drift: str) -> None:
+    identity = droplet_inventory.ProviderIdentity(proof("project"), 101, "192.0.2.14")
+    allocation = droplet_inventory.ApprovedAllocation(
+        run_id=uuid(32),
+        state_sha256=proof("state"),
+        allocation_sha256=proof("plan"),
+        inventory_sha256=proof("inventory"),
+        transaction_namespace_sha256=proof("namespace"),
+        identity=identity,
+    )
+    observation = droplet_inventory.ConnectedDroplet(
+        provider=identity,
+        metadata_id=101,
+        metadata_ipv4="192.0.2.14",
+        host_identity={"hostKeySha256": proof("key")},
+        pinned_host_key_sha256=proof("key"),
+    )
+    changed = {
+        "provider": replace(
+            observation, provider=replace(identity, project_id_sha256=proof("swap"))
+        ),
+        "metadata": replace(observation, metadata_id=102),
+        "ssh-pin": replace(observation, pinned_host_key_sha256=proof("copied-key")),
+    }
+    excluded = record(
+        "droplet-production-exclusions",
+        dropletIds=[100],
+        addresses=["192.0.2.18"],
+        identityDigests=[proof("production-key")],
+    )
+    with pytest.raises(ValidationError, match="droplet-allocation-observation-changed"):
+        droplet_inventory.enrollment_records(allocation, changed[drift], encode(excluded))
+
+
+@pytest.mark.parametrize("conflict", ["transaction.json", "installed-target.json", "revoked"])
+def test_droplet_publication_refuses_conflicting_local_authority(
+    droplet_attempt: tuple[Document, Path, Path], conflict: str
+) -> None:
+    admission, state, authority = droplet_attempt
+    owner = os.geteuid()
+    with lease.controller(droplet.LEASE, owner=owner, drain=lambda: None) as token:
+        _pin_droplet_attempt(authority, admission, token)
+        receipt = droplet.launch(token, encode(admission), owner=owner)
+    (authority / conflict).touch(mode=0o600)
+    assert verify_launch(state, authority, owner=owner) == receipt
+    with pytest.raises(ValidationError, match="droplet-enrollment-conflicts"):
+        require_local_launch_binding(authority, receipt, disposable=False, owner=owner)
+
+
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        (("101", "192.0.2.14"), (101, "192.0.2.14")),
+        (("01", "192.0.2.14"), None),
+        (("101", "malformed-address"), None),
+    ],
+)
+def test_droplet_metadata_identity_uses_only_bound_fields(
+    values: tuple[str, str],
+    expected: tuple[int, str] | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    replies = dict(
+        zip(
+            ("/metadata/v1/id", "/metadata/v1/interfaces/public/0/ipv4/address"),
+            values,
+            strict=True,
+        )
+    )
+    monkeypatch.setattr(droplet, "_metadata_value", replies.__getitem__)
+    if expected is None:
+        with pytest.raises(ValidationError, match=r"^droplet-metadata-invalid$"):
+            droplet.metadata_identity()
+    else:
+        assert droplet.metadata_identity() == expected

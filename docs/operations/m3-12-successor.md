@@ -71,3 +71,26 @@ requires the completed dark effect and a fresh same-policy decision.
 The fence remains until native readback succeeds, including across caller
 loss. Tenant history, retained lifecycle work, or an unrelated active
 generation closes the rollback path.
+
+## Disposable Droplet admission
+
+The P4 enrollment producer compares the reviewed OpenTofu allocation with
+independent provider readback, guest metadata, and the pinned Ed25519 SSH
+identity. It derives a `disposable-droplet` target and a separate enrollment
+that binds the run, selected allocation, protected production exclusions,
+machine ID, system UUID, and SSH public-key digest. The root adapter consumes
+these canonical records, along with a protected launch-attempt record for the
+current lease. It checks the connected Droplet's public IPv4 and ID before
+passing the original admission to the common launch writer.
+
+After launch, publication reopens the immutable launch chain and checks the
+same local host identity without querying the network from a sandboxed
+worker. An active controller is required for launch. The already committed
+publication record survives controller release. Conflicting local production
+or installed authority, revocation, or changed host facts close this path.
+
+The component fixtures exercise this boundary with simulated provider
+observations and a real local lease and launch record. The controller must
+still establish the provider and SSH observations, distribute the protected
+records, and prove the required read-only identity and authority view inside
+the real worker sandbox. These fixtures confer no real-provider authority.
