@@ -403,9 +403,28 @@ def test_successor_archive_route_uses_only_the_original_shared_network(
     assert [call.args[-1] for call in docker.call_args_list] == ["host", "archive"]
 
 
-def test_successor_build_retains_the_artifact_required_for_final_accounting(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_successor_build_retains_the_artifact_required_for_final_accounting(tmp_path: Path) -> None:
+    # The Molecule suite uses bare test module names also collected by this suite.
+    # Load it in a fresh interpreter so these suites never share those modules.
+    subprocess.run(  # noqa: S603 - fixed Python probe and owned test paths
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-c",
+            "import sys; from pathlib import Path; from runpy import run_path; "
+            "from pytest import MonkeyPatch; sys.path.insert(0, str(Path.cwd())); "
+            "probe = run_path(sys.argv[1])['_check_successor_archive_binding']; "
+            "probe(Path(sys.argv[2]), MonkeyPatch())",
+            str(Path(__file__).resolve()),
+            str(tmp_path),
+        ],
+        cwd=ROOT,
+        check=True,
+    )
+
+
+def _check_successor_archive_binding(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from scripts import qualification_retirement as retirement  # noqa: PLC0415
     from scripts.qualification_context import ARTIFACT_ENV  # noqa: PLC0415
 
