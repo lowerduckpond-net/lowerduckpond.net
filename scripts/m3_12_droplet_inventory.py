@@ -108,3 +108,39 @@ def enrollment_records(
     )
     check_production_exclusions(production, target, host, identity.ipv4)
     return target, registration
+
+
+@dataclass(frozen=True)
+class OwnedDroplet:
+    allocation: ApprovedAllocation
+    observation: ConnectedDroplet
+
+
+def prepare_source_and_restore(
+    source: OwnedDroplet, restore: OwnedDroplet, production_exclusions: bytes
+) -> dict[str, tuple[Document, Document]]:
+    """Verify two independent owned hosts before any source/restore operation."""
+    require(
+        source.allocation.run_id == restore.allocation.run_id
+        and source.allocation.transaction_namespace_sha256
+        != restore.allocation.transaction_namespace_sha256,
+        "droplet-restore-scope-changed",
+    )
+    source_target, source_enrollment = enrollment_records(
+        source.allocation, source.observation, production_exclusions
+    )
+    restore_target, restore_enrollment = enrollment_records(
+        restore.allocation, restore.observation, production_exclusions
+    )
+    require(
+        source_target["droplet"]["dropletId"] != restore_target["droplet"]["dropletId"]
+        and all(
+            source_enrollment[field] != restore_enrollment[field]
+            for field in ("ipv4", "machineSha256", "systemUuidSha256", "hostKeySha256")
+        ),
+        "droplet-restore-must-be-independent",
+    )
+    return {
+        "source": (source_target, source_enrollment),
+        "restore": (restore_target, restore_enrollment),
+    }

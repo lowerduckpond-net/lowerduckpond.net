@@ -119,6 +119,7 @@ def test_successor_launch_check_does_not_write_into_the_selected_artifact(tmp_pa
     package = installation / "lowerduckpond_static_host_agent"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("")
+    (package / "droplet_enrollment.py").write_text('PUBLICATION_VIEW = "droplet-publication"\n')
     (package / "platform_launch.py").write_text(
         "def verify_launch(state, authority):\n"
         "    return 'verified-launch'\n"

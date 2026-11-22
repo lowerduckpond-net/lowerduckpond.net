@@ -1241,8 +1241,10 @@ def droplet_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Do
         "tenantOriginSuffix": SUFFIX,
         "initializedAt": fixture_time(5),
     }
-    state, authority = _launch_paths(tmp_path, namespace)
-    monkeypatch.setattr(droplet, "ROOT", authority)
+    state, root = _launch_paths(tmp_path, namespace)
+    authority = root / droplet_enrollment.PUBLICATION_VIEW
+    authority.mkdir(mode=0o700)
+    monkeypatch.setattr(droplet, "ROOT", root)
     monkeypatch.setattr(droplet, "STATE", state)
     lease_path = tmp_path / "lease"
     lease_path.mkdir(mode=0o700)
@@ -1299,6 +1301,7 @@ def droplet_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Do
             (droplet_enrollment.EXCLUSIONS, exclusions),
         ):
             fd.create_immutable((name,), encode(document))
+    with DurableDirectory.open(root, expected_owner=owner, expected_directory_mode=0o700) as fd:
         for slot, key in admission["prerequisites"].items():
             original = earlier.read(key, "receipt")
             original["binding"] = binding
@@ -1312,7 +1315,7 @@ def _pin_droplet_attempt(authority: Path, admission: Document, token: str) -> No
     lease_digest = sha256(token.encode()).hexdigest()
     admission["leaseSha256"] = lease_digest
     with DurableDirectory.open(
-        authority, expected_owner=os.geteuid(), expected_directory_mode=0o700
+        authority.parent, expected_owner=os.geteuid(), expected_directory_mode=0o700
     ) as fd:
         fd.create_immutable(
             (f"droplet-attempt-{lease_digest}.json",),
@@ -1498,3 +1501,68 @@ def test_droplet_metadata_identity_uses_only_bound_fields(
             droplet.metadata_identity()
     else:
         assert droplet.metadata_identity() == expected
+
+
+def _allocated_droplet(
+    droplet_id: int, ipv4: str, *, run_id: str
+) -> droplet_inventory.OwnedDroplet:
+    identity = droplet_inventory.ProviderIdentity(proof("project"), droplet_id, ipv4)
+    label = str(droplet_id)
+    host = {
+        "machineSha256": proof("machine" + label),
+        "systemUuidSha256": proof("system" + label),
+        "hostKeySha256": proof("key" + label),
+    }
+    return droplet_inventory.OwnedDroplet(
+        droplet_inventory.ApprovedAllocation(
+            run_id=run_id,
+            state_sha256=proof("run-state"),
+            allocation_sha256=proof("allocation" + label),
+            inventory_sha256=proof("inventory" + label),
+            transaction_namespace_sha256=proof("namespace" + label),
+            identity=identity,
+        ),
+        droplet_inventory.ConnectedDroplet(
+            provider=identity,
+            metadata_id=droplet_id,
+            metadata_ipv4=ipv4,
+            host_identity=host,
+            pinned_host_key_sha256=host["hostKeySha256"],
+        ),
+    )
+
+
+def test_source_and_cold_restore_require_separate_actual_host_identities() -> None:
+    source = _allocated_droplet(101, "192.0.2.14", run_id=uuid(31))
+    restore = _allocated_droplet(102, "192.0.2.19", run_id=uuid(31))
+    excluded = encode(
+        record(
+            "droplet-production-exclusions",
+            dropletIds=[100],
+            addresses=["192.0.2.18"],
+            identityDigests=[proof("production-key")],
+        )
+    )
+    pair = droplet_inventory.prepare_source_and_restore(source, restore, excluded)
+    assert pair["source"][0]["droplet"]["dropletId"] == source.observation.provider.droplet_id
+    assert pair["restore"][0]["droplet"]["dropletId"] == restore.observation.provider.droplet_id
+
+    wrong_run = _allocated_droplet(102, "192.0.2.19", run_id=uuid(32))
+    with pytest.raises(ValidationError, match="droplet-restore-scope-changed"):
+        droplet_inventory.prepare_source_and_restore(source, wrong_run, excluded)
+
+    for field in ("machineSha256", "systemUuidSha256", "hostKeySha256"):
+        restored = {
+            **restore.observation.host_identity,
+            field: source.observation.host_identity[field],
+        }
+        copied = replace(
+            restore,
+            observation=replace(
+                restore.observation,
+                host_identity=restored,
+                pinned_host_key_sha256=restored["hostKeySha256"],
+            ),
+        )
+        with pytest.raises(ValidationError, match="droplet-restore-must-be-independent"):
+            droplet_inventory.prepare_source_and_restore(source, copied, excluded)

@@ -10,9 +10,7 @@ from pathlib import Path
 from lowerduckpond_static_contracts import MAX_CANONICAL_BYTES, decode_contract
 
 from lowerduckpond_static_host_agent.audit import has_tenant_audit_history
-from lowerduckpond_static_host_agent.droplet_enrollment import ENROLLMENT as DROPLET_ENROLLMENT
-from lowerduckpond_static_host_agent.droplet_enrollment import TARGET as DROPLET_TARGET
-from lowerduckpond_static_host_agent.droplet_enrollment import read_enrollment
+from lowerduckpond_static_host_agent.droplet_enrollment import PUBLICATION_VIEW, read_enrollment
 from lowerduckpond_static_host_agent.durable import DurableDirectory, FailureHook
 from lowerduckpond_static_host_agent.locks import LockName
 from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
@@ -250,9 +248,7 @@ def require_local_launch_binding(
         authority_path, expected_owner=owner, expected_directory_mode=0o700
     ) as authority:
         binding = receipt["binding"]
-        if any(
-            os.path.lexists(authority_path / name) for name in (DROPLET_TARGET, DROPLET_ENROLLMENT)
-        ):
+        if authority_path.name == PUBLICATION_VIEW:
             require(not disposable, "droplet-enrollment-conflicts")
             read_enrollment(authority_path, authority, owner=owner).require_binding(binding)
             return

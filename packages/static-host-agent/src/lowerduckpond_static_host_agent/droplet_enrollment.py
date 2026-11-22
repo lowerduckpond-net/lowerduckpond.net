@@ -27,6 +27,7 @@ DOCKER_MARKER = Path("/.dockerenv")
 MACHINE_ID = Path("/etc/machine-id")
 SYSTEM_UUID = Path("/sys/devices/virtual/dmi/id/product_uuid")
 HOST_KEY = Path("/etc/ssh/ssh_host_ed25519_key.pub")
+PUBLICATION_VIEW = "droplet-publication"
 TARGET = "droplet-target.json"
 ENROLLMENT = "droplet-enrollment.json"
 EXCLUSIONS = "droplet-production-exclusions.json"
@@ -111,9 +112,11 @@ def lease_domain(run_id: str, system_uuid_sha256: str) -> str:
 
 def read_enrollment(path: Path, authority: DurableDirectory, *, owner: int) -> DropletEnrollment:
     require(
-        not os.path.lexists(DOCKER_MARKER)
+        path.name == PUBLICATION_VIEW
+        and not os.path.lexists(DOCKER_MARKER)
         and not any(
-            os.path.lexists(path / name)
+            os.path.lexists(directory / name)
+            for directory in (path, path.parent)
             for name in ("transaction.json", "installed-target.json", "revoked")
         ),
         "droplet-enrollment-conflicts",

@@ -94,3 +94,20 @@ observations and a real local lease and launch record. The controller must
 still establish the provider and SSH observations, distribute the protected
 records, and prove the required read-only identity and authority view inside
 the real worker sandbox. These fixtures confer no real-provider authority.
+
+The Droplet worker and emergency reconciler mount the dedicated protected
+`droplet-publication` directory and three local identity files read-only.
+The private controller attempt and prerequisite receipts stay in the parent
+outside both service views. Revocation and the publication fence belong in
+the dedicated directory so a worker sees changes through the existing mount.
+Standalone installed Docker and production successor layouts keep their
+existing selection path.
+
+On a verified local Docker daemon with a cached Ubuntu 26.04 Molecule systemd
+image, run the offline worker witness with
+`uv run --frozen python -m scripts.check_m3_12_worker_view IMAGE`. It builds
+and verifies the locked artifact, renders the actual worker unit, and runs
+the installed gate after the unit's normal sudo transition. The guest has no
+network or host binds. The witness checks a valid identity, missing and
+mismatched identity, revocation, read-only mount flags, and exclusion of the
+controller directory and SSH private key. Its Droplet facts are synthetic.

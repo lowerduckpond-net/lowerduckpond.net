@@ -11,6 +11,7 @@ from ipaddress import IPv4Address
 from pathlib import Path
 
 from lowerduckpond_static_host_agent.droplet_enrollment import (
+    PUBLICATION_VIEW,
     DropletEnrollment,
     protected_record,
     read_enrollment,
@@ -85,23 +86,29 @@ def _selected_candidate(candidate: Document) -> bool:
 def launch(token: str, raw: bytes, *, owner: int = 0) -> Document:
     """Use the original protected enrollment and current action lease for the common writer."""
     admission = decode(raw, "admission")
-    with DurableDirectory.open(ROOT, expected_owner=owner, expected_directory_mode=0o700) as root:
-        enrolled = read_enrollment(ROOT, root, owner=owner)
+    with (
+        DurableDirectory.open(ROOT, expected_owner=owner, expected_directory_mode=0o700) as root,
+        root.open_descendant((PUBLICATION_VIEW,)) as publication,
+    ):
+        enrolled = read_enrollment(ROOT / PUBLICATION_VIEW, publication, owner=owner)
         enrolled.require_binding(admission["binding"])
         # This read can be interrupted before any action or publication lock is held.
         observed = metadata_identity()
         _require_metadata(enrolled, observed)
         with lease.action(LEASE, owner=owner, token=token):
-            return _launch_locked(root, enrolled, admission, raw, token, owner=owner)
+            return _launch_locked(
+                root, publication, enrolled, admission, raw=raw, token=token, owner=owner
+            )
 
 
 def _launch_locked(  # noqa: PLR0913 - bind protected files, original admission and active lease
     root: DurableDirectory,
+    publication: DurableDirectory,
     enrolled: DropletEnrollment,
     admission: Document,
+    *,
     raw: bytes,
     token: str,
-    *,
     owner: int,
 ) -> Document:
     lease_digest = sha256(token.encode()).hexdigest()
@@ -127,7 +134,7 @@ def _launch_locked(  # noqa: PLR0913 - bind protected files, original admission 
     def observe() -> AdmissionContext:
         lease.require_action(LEASE, owner=owner, token=token)
         require(
-            read_enrollment(ROOT, root, owner=owner) == enrolled
+            read_enrollment(ROOT / PUBLICATION_VIEW, publication, owner=owner) == enrolled
             and _selected_candidate(admission["candidate"]),
             "droplet-enrollment-changed",
         )
@@ -150,4 +157,4 @@ def _launch_locked(  # noqa: PLR0913 - bind protected files, original admission 
             observed_disposable_identifiers=enrolled.observed_identifiers,
         )
 
-    return initialize_launch(STATE, ROOT, raw, evidence, observe, owner=owner)
+    return initialize_launch(STATE, ROOT / PUBLICATION_VIEW, raw, evidence, observe, owner=owner)

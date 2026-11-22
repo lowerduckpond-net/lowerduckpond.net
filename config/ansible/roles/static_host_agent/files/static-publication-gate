@@ -71,6 +71,9 @@ def require_successor_launch() -> None:
         return
     sys.path.insert(0, str(INSTALLATION))
     try:
+        from lowerduckpond_static_host_agent.droplet_enrollment import (  # noqa: PLC0415
+            PUBLICATION_VIEW,
+        )
         from lowerduckpond_static_host_agent.platform_launch import (  # noqa: PLC0415
             require_local_launch_binding,
             verify_launch,
@@ -80,8 +83,10 @@ def require_successor_launch() -> None:
         )
 
         require_unfenced_publication(SUCCESSOR)
-        receipt = verify_launch(STATE, SUCCESSOR)
-        require_local_launch_binding(SUCCESSOR, receipt, disposable=os.path.lexists("/.dockerenv"))
+        droplet = SUCCESSOR / PUBLICATION_VIEW
+        authority = droplet if os.path.lexists(droplet) else SUCCESSOR
+        receipt = verify_launch(STATE, authority)
+        require_local_launch_binding(authority, receipt, disposable=os.path.lexists("/.dockerenv"))
     except Exception:
         fail("launch_authority_unavailable", 78)
 
