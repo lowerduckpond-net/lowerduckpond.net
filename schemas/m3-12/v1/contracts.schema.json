@@ -373,6 +373,29 @@
       "required": ["allocatedBytes", "uniqueInodes"],
       "additionalProperties": false
     },
+    "droplet-browser-observation": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-restored-browser-request-v1"},
+        "observation": {"$ref": "#/$defs/droplet-observation"},
+        "origin": {"type": "string", "pattern": "^https://t-[0-9a-f]{32}\\.[a-z0-9.-]+$"},
+        "requestId": {"type": "string", "pattern": "^[0-9a-f]{32}$"}
+      },
+      "required": ["format", "observation", "origin", "requestId"],
+      "type": "object"
+    },
+    "droplet-fence-observation": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-disposable-fence-observation-v1"},
+        "observation": {"$ref": "#/$defs/droplet-observation"},
+        "gateSha256": {"$ref": "#/$defs/sha256"},
+        "ingressClosed": {"type": "boolean"},
+        "caddyInactive": {"type": "boolean"}
+      },
+      "required": ["format", "observation", "gateSha256", "ingressClosed", "caddyInactive"],
+      "additionalProperties": false
+    },
     "droplet-enrollment": {
       "type": "object",
       "properties": {

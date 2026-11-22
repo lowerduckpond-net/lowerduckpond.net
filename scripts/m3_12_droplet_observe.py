@@ -30,6 +30,15 @@ LAUNCH = Path("/var/lib/lowerduckpond/static/platform/launch.json")
 PUBLICATION = Path("/etc/lowerduckpond/static-publication.json")
 RELEASES = Path("/srv/lowerduckpond/sites")
 CGROUP = Path("/sys/fs/cgroup")
+RESTORE_GATE = Path("/var/lib/lowerduckpond/recovery/restore-gate.json")
+RESTORE_GATE_FORMAT = "lowerduckpond-host-restore-gate-v1"
+UUID_VERSION = 7
+FENCE_FORMAT = "lowerduckpond-m3-12-disposable-fence-observation-v1"
+BROWSER_FORMAT = "lowerduckpond-m3-12-restored-browser-request-v1"
+BROWSER_QUERY = "ldp_restore_witness"
+BROWSER_ARGUMENT_COUNT = 3
+DNS_NAME_MAXIMUM = 253
+TENANT_NAME_MINIMUM_LABELS = 3
 CAPACITY_UNITS = {
     "caddy": "system.slice/caddy.service",
     "workers": "lowerduckpond.slice/lowerduckpond-static.slice/lowerduckpond-static-workers.slice",
@@ -73,7 +82,7 @@ def ed25519_key(raw: bytes) -> tuple[bytes, str]:
     return b"ssh-ed25519 " + key, sha256(wire_key).hexdigest()
 
 
-def _system_file(path: Path, owner: int) -> bytes:
+def _system_file(path: Path, owner: int, *, mode: int | None = None) -> bytes:
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     with os.fdopen(fd, "rb") as source:
         status = os.fstat(source.fileno())
@@ -81,12 +90,13 @@ def _system_file(path: Path, owner: int) -> bytes:
             stat.S_ISREG(status.st_mode)
             and status.st_uid == owner
             and status.st_nlink == 1
-            and not status.st_mode & 0o022,
+            and not status.st_mode & 0o022
+            and (mode is None or stat.S_IMODE(status.st_mode) == mode),
             "droplet-host-identity-unsafe",
         )
         value = source.read(IDENTITY_LIMIT + 1)
     require(0 < len(value) <= IDENTITY_LIMIT, "droplet-host-identity-unsafe")
-    return value.strip()
+    return value if mode is not None else value.strip()
 
 
 def host_identity(owner: int = 0) -> dict[str, str]:
@@ -264,7 +274,7 @@ def _cgroup(path: Path) -> dict[str, object] | None:
 
 
 def _command(*args: str) -> str:
-    result = subprocess.run(  # noqa: S603 - fixed read-only capacity commands
+    result = subprocess.run(  # noqa: S603 - fixed read-only guest commands
         args,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -273,7 +283,7 @@ def _command(*args: str) -> str:
         check=False,
         env={"LANG": "C", "PATH": "/usr/bin:/bin"},
     )
-    require(result.returncode == 0, "droplet-capacity-command-failed")
+    require(result.returncode == 0, "droplet-guest-command-failed")
     return result.stdout.strip()
 
 
@@ -343,6 +353,155 @@ def capacity(owner: int = 0, *, allocation: bool = False) -> dict[str, object]:
     return {**measured, "sampleFinishedUsec": time.monotonic_ns() // 1000}
 
 
+def _restore_firewall(value: object) -> bool:
+    if not isinstance(value, dict) or not isinstance(value.get("nftables"), list):
+        return False
+    table = {"family": "inet", "name": "lowerduckpond_restore"}
+    base = {"family": "inet", "table": "lowerduckpond_restore"}
+    rows = []
+    for row in value["nftables"]:
+        if not isinstance(row, dict) or len(row) != 1:
+            return False
+        name, body = next(iter(row.items()))
+        if not isinstance(body, dict):
+            return False
+        if name != "metainfo":
+            rows.append({name: {key: val for key, val in body.items() if key != "handle"}})
+    # There must be exactly one table, input chain and drop rule, with no
+    # bypass for public HTTP/HTTPS. Kernel-assigned handles carry no policy.
+    return any(
+        rows
+        == [
+            {"table": table},
+            {
+                "chain": {
+                    **base,
+                    "name": "input",
+                    "type": "filter",
+                    "hook": "input",
+                    "prio": -200,
+                    "policy": "accept",
+                }
+            },
+            {
+                "rule": {
+                    **base,
+                    "chain": "input",
+                    "expr": [
+                        {
+                            "match": {
+                                "op": "!=",
+                                "left": {"meta": {"key": "iifname"}},
+                                "right": "lo",
+                            }
+                        },
+                        {
+                            "match": {
+                                "op": "==",
+                                "left": {"payload": {"protocol": "tcp", "field": "dport"}},
+                                "right": {"set": ports},
+                            }
+                        },
+                        {"drop": None},
+                    ],
+                }
+            },
+        ]
+        for ports in ([80, 443], [443, 80])
+    )
+
+
+def fence_status(owner: int = 0) -> dict[str, object]:
+    """Read the exact native restore drop and service state without mutating either."""
+    before = observe(owner)
+    raw = _system_file(RESTORE_GATE, owner, mode=0o600)
+    gate = json.loads(raw)
+    require(
+        isinstance(gate, dict)
+        and set(gate) == {"schema", "restoreId"}
+        and gate["schema"] == RESTORE_GATE_FORMAT,
+        "droplet-restore-gate-invalid",
+    )
+    restore = UUID(gate["restoreId"]) if isinstance(gate["restoreId"], str) else UUID(int=0)
+    require(
+        restore.version == UUID_VERSION and str(restore) == gate["restoreId"],
+        "droplet-restore-gate-invalid",
+    )
+    nft = json.loads(
+        _command("/usr/sbin/nft", "--json", "list", "table", "inet", "lowerduckpond_restore")
+    )
+    state = _command(
+        "/usr/bin/systemctl", "show", "caddy.service", "--property=ActiveState", "--value"
+    )
+    require(observe(owner) == before, "droplet-fence-observation-changed")
+    return {
+        "format": FENCE_FORMAT,
+        "observation": before,
+        "gateSha256": sha256(
+            RESTORE_GATE_FORMAT.encode() + b"\0" + len(raw).to_bytes(8, "big") + raw
+        ).hexdigest(),
+        "ingressClosed": _restore_firewall(nft),
+        "caddyInactive": state in {"inactive", "failed"},
+    }
+
+
+def _browser_log_matches(raw: str, hostname: str, marker: str) -> bool:
+    rows = raw.splitlines()
+    if len(rows) != 1:
+        return False
+    row = json.loads(rows[0])
+    if not isinstance(row, dict) or row.get("_SYSTEMD_UNIT") != "caddy.service":
+        return False
+    message = row.get("MESSAGE")
+    if not isinstance(message, str):
+        return False
+    access = json.loads(message)
+    if not isinstance(access, dict):
+        return False
+    request = access.get("request")
+    return (
+        isinstance(request, dict)
+        and access.get("logger") == "http.log.access.log0"
+        and access.get("status") == HTTPStatus.OK
+        and request.get("host") == hostname
+        and request.get("method") == "GET"
+        and request.get("uri") == f"/?{BROWSER_QUERY}={marker}"
+        and isinstance(request.get("tls"), dict)
+    )
+
+
+def browser_status(hostname: str, marker: str, owner: int = 0) -> dict[str, object]:
+    """Return only the exact disposable browser request observed in this boot."""
+    labels = hostname.split(".")
+    require(
+        len(hostname) <= DNS_NAME_MAXIMUM
+        and len(labels) >= TENANT_NAME_MINIMUM_LABELS
+        and re.fullmatch(r"t-[0-9a-f]{32}", labels[0]) is not None
+        and all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", item) for item in labels)
+        and re.fullmatch(r"[0-9a-f]{32}", marker) is not None,
+        "droplet-browser-witness-invalid",
+    )
+    before = observe(owner)
+    raw = _command(
+        "/usr/bin/journalctl",
+        "--boot",
+        "--unit=caddy.service",
+        "--no-pager",
+        "--output=json",
+        "--output-fields=MESSAGE,_SYSTEMD_UNIT",
+        f"--grep={BROWSER_QUERY}={marker}",
+        "--lines=2",
+    )
+    require(_browser_log_matches(raw, hostname, marker), "droplet-browser-request-missing")
+    require(observe(owner) == before, "droplet-browser-observation-changed")
+    return {
+        "format": BROWSER_FORMAT,
+        "observation": before,
+        "origin": f"https://{hostname}",
+        "requestId": marker,
+    }
+
+
 def main() -> int:
     try:
         require(os.geteuid() == 0 and not os.path.lexists("/.dockerenv"), "droplet-guest-required")
@@ -351,6 +510,10 @@ def main() -> int:
             document = observe()
         elif arguments in (["--capacity"], ["--capacity-allocation"]):
             document = capacity(allocation=arguments == ["--capacity-allocation"])
+        elif arguments == ["--restore-fence"]:
+            document = fence_status()
+        elif len(arguments) == BROWSER_ARGUMENT_COUNT and arguments[0] == "--browser-request":
+            document = browser_status(arguments[1], arguments[2])
         else:
             raise ValueError("droplet-observation-operation-invalid")
         sys.stdout.write(json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n")

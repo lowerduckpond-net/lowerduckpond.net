@@ -17,6 +17,10 @@ from lowerduckpond_static_host_agent.caddy_routes import (
     build_tenant_caddy_routes,
     configured_origin_pull_policy,
 )
+from lowerduckpond_static_host_agent.disposable_routes import (
+    DisposableRoutes,
+    project_native_routes,
+)
 from lowerduckpond_static_host_agent.route_snapshot import TenantRouteSnapshot
 
 
@@ -29,6 +33,7 @@ def derive_tenant_generation_payload(
     snapshot: TenantRouteSnapshot,
     *,
     candidate_generation_id: object,
+    disposable: DisposableRoutes | None = None,
 ) -> CaddyDerivedGenerationPayload:
     """Replace routes while retaining the exact pinned host binary and environment."""
 
@@ -63,6 +68,8 @@ def derive_tenant_generation_payload(
             origin_pull_ca_der=origin_pull_ca_der,
             origin_pull_required=origin_pull_required,
         )
+        if disposable is not None:
+            routes = project_native_routes(routes, disposable)
     except CaddyRouteError as error:
         raise TenantGenerationError("tenant Caddy route derivation failed") from error
     return CaddyDerivedGenerationPayload(

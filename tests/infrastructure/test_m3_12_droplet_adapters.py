@@ -20,6 +20,7 @@ from infrastructure.test_m3_12_droplet_journey import fixture as fixture  # noqa
 from infrastructure.test_m3_12_droplet_journey import records as records  # noqa: PLC0414
 from scripts.m3_12_contracts import Document, ValidationError, digest, encode
 from scripts.m3_12_diagnostic_store import Attempt, publish, read
+from scripts.m3_12_disposable_routing import POLICY_FORMAT
 from scripts.m3_12_droplet_cleanup import InitialRetirement
 from scripts.m3_12_droplet_controller import install_stage
 from scripts.m3_12_droplet_edge import prepare_edge_proof, prove_edge_associations
@@ -231,20 +232,39 @@ def test_pinned_native_read_rejects_a_changed_intent_or_guest_identity(
         inspect_host(prepared, original, execute)
 
 
+@pytest.mark.parametrize("enrolled", [True, False])
 def test_edge_subjects_and_associations_cannot_cross_the_reviewed_zones(
-    fixture: tuple[Attempt, Document, ReviewedJourney],
+    fixture: tuple[Attempt, Document, ReviewedJourney], enrolled: bool
 ) -> None:
-    attempt, scope, _ = fixture
+    attempt, scope, review = fixture
     tenant = {
         "format": "lowerduckpond-m3-12-edge-tenant-v1",
         "tenantId": "01997763-4600-7000-8000-000000000001",
         "alias": "sample-tenant",
         "unknown": "unissued",
     }
+    canonical = "https://t-" + tenant["tenantId"].replace("-", "") + ".source.tenant.example"
+    policy = {
+        "format": POLICY_FORMAT,
+        "runId": scope["runId"],
+        "invocationId": scope["invocationId"],
+        "platform": "source.platform.example",
+        "tenantScope": "source.tenant.example",
+        "tenants": [{"tenantId": tenant["tenantId"], "origin": canonical}] if enrolled else [],
+    }
+    scope["sitePolicySha256"] = digest(policy)
+    review = replace(review, manifest_sha256=digest(scope), site_policy_sha256=digest(policy))
     runner = Captures(attempt, scope)
     runner.evidence["functional"] = {"lifecycle": digest(tenant)}
-    prepared = adapter(fixture, "edge", runner)
-    subjects = prepare_edge_proof(prepared, encode(tenant))
+    prepared = adapter((attempt, scope, review), "edge", runner)
+    if not enrolled:
+        with pytest.raises(ValidationError, match="droplet-edge-tenant-not-enrolled"):
+            prepare_edge_proof(prepared, encode(tenant), encode(policy))
+        return
+    subjects = prepare_edge_proof(prepared, encode(tenant), encode(policy))
+    assert subjects.browser.tenant_immutable == canonical
+    with pytest.raises(ValidationError, match="droplet-routing-policy-changed"):
+        prepare_edge_proof(prepared, encode(tenant), encode({**policy, "tenants": []}))
     assert subjects.browser.platform == "https://source.platform.example"
     assert subjects.browser.tenant_alias == "https://sample-tenant.source.tenant.example"
     assert subjects.browser.tenant_parent_domain == "source.tenant.example"
@@ -253,7 +273,7 @@ def test_edge_subjects_and_associations_cannot_cross_the_reviewed_zones(
         "*.source.tenant.example",
     )
     with pytest.raises(ValidationError, match="droplet-edge-original-fixture-changed"):
-        prepare_edge_proof(prepared, encode({**tenant, "alias": "another"}))
+        prepare_edge_proof(prepared, encode({**tenant, "alias": "another"}), encode(policy))
 
     captured: Document = {
         zone: {

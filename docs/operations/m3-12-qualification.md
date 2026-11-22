@@ -209,14 +209,30 @@ gates. The remaining real-host journey needs authenticated provider captures,
 protected host-key provisioning, an accepted M3.11 source with its exact
 bootstrap inputs, and separately owned restore and fresh targets.
 
-The dependency runner and adapter boundaries are exercised offline. A
-protected disposable routing design is required for mutable convergence.
-It must establish whether the disposable host has its own canonical namespace
-from bootstrap or keeps the historical identity and translates approved
-public route subjects. That choice affects tenant creation, the accepted
-predecessor and restore continuity. The immutable generator must prove that
-it can issue only for the owned test subjects before native apply is admitted.
-The qualification root presently owns only initial host resources.
+The dependency runner and adapter boundaries are exercised offline.
+[ADR 0023](../adr/0023-separate-reusable-slugs-from-tenant-origins.md#disposable-qualification-exception)
+permits one disposable HTTPS presentation for each specifically enrolled
+test tenant. The reviewed site policy pins the exact derived origins and
+the two owned domain scopes. The native renderer projects only HTTP matchers,
+redirect targets, logging names and TLS subjects. It retains the original
+logical route-state digest separately from the projected generation digest.
+
+The source and cold destination must reopen the same allocation and
+presentation. The controller seals the cutover only after it verifies
+the original restore fence and observes the exact native drop rule on both
+pinned boots and inactive source Caddy. It refuses future source projection
+and requires the matching cutover before preparing the destination payload.
+The browser proof distinguishes retained local storage from a new TLS
+request. The pinned SSH probe correlates its unique marker to one Caddy
+access entry in the restored host's current boot. Only the proof fields
+leave the guest. Raw journal entries and request headers stay on the host.
+
+The ordinary Ansible apply refusal is still active. Native provisioning,
+delivery of protected routing authority to the installed service and actual
+provider proof need their own verified handoff. This offline suite exercises
+generation selection under the exact projected scope and tests the controller
+boundary and browser protocol with synthetic transport. The qualification
+root presently owns only the initial host resources.
 
 The real-host sequence remains to be proven from the accepted predecessor
 through upgrade, interruption and reboot, the full lifecycle and actual

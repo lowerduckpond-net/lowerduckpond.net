@@ -74,6 +74,12 @@ teardown without provider calls. Native apply remains gated on protected
 disposable routing. Actual public-edge, browser, Spaces and host receipts
 remain separate requirements.
 
+The [disposable routing regression](../../tests/infrastructure/test_m3_12_disposable_routing.py)
+separates same-browser state continuity from a fresh, restored-host
+request proof. Local native generation tests check that only the exact
+projected scope can select the payload and that the original tenant
+records remain intact. These are component observations.
+
 The [inventory validator](../../scripts/m3_12_requirements.py) checks source
 coverage, fingerprints, unique requirements/slots and existing mapped test
 nodes. The versioned requirement-proof binds the reviewed inventory, exact

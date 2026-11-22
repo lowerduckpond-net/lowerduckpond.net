@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import stat
 from dataclasses import dataclass, field
@@ -213,6 +214,35 @@ def capacity_sample(endpoint: Endpoint, *, allocation: bool) -> Document:
         "droplet-capacity-sample-inconsistent",
     )
     return sample
+
+
+def observe_restore_fence(endpoint: Endpoint, *, executor: ReadExecutor) -> Document:
+    raw = _call(
+        endpoint, f"{REMOTE_PROBE} --restore-fence", stdin=PROBE.read_bytes(), executor=executor
+    )
+    record = decode(raw, "droplet-fence-observation")
+    require_observation(endpoint, record["observation"])
+    return record
+
+
+def observe_browser_request(
+    endpoint: Endpoint, hostname: str, marker: str, *, executor: ReadExecutor
+) -> Document:
+    require(
+        endpoint.allocation.role == "restore"
+        and re.fullmatch(r"t-[0-9a-f]{32}\.[a-z0-9.-]+", hostname) is not None
+        and re.fullmatch(r"[0-9a-f]{32}", marker) is not None,
+        "droplet-browser-witness-invalid",
+    )
+    raw = _call(
+        endpoint,
+        f"{REMOTE_PROBE} --browser-request {hostname} {marker}",
+        stdin=PROBE.read_bytes(),
+        executor=executor,
+    )
+    record = decode(raw, "droplet-browser-observation")
+    require_observation(endpoint, record["observation"])
+    return record
 
 
 def restore_delivery(endpoint: Endpoint, *, executor: ReadExecutor | None = None) -> Document:

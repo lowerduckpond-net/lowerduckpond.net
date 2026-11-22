@@ -52,6 +52,10 @@ from lowerduckpond_static_host_agent.caddy_routes import (
     build_tenant_caddy_routes,
     configured_origin_pull_policy,
 )
+from lowerduckpond_static_host_agent.disposable_routes import (
+    DisposableRoutes,
+    project_native_routes,
+)
 from lowerduckpond_static_host_agent.issuance import PublicationGate
 from lowerduckpond_static_host_agent.locks import LockMode, LockName
 from lowerduckpond_static_host_agent.route_snapshot import (
@@ -190,6 +194,7 @@ class CaddyRuntime:
         creation_group: int,
         expected_binary_sha256: str | None,
         candidate_validator: CandidateValidator,
+        disposable: DisposableRoutes | None,
     ) -> None:
         self._root_fd = root_fd
         self._lock_fd = lock_fd
@@ -202,6 +207,7 @@ class CaddyRuntime:
             else _validate_expected_binary_sha256(expected_binary_sha256)
         )
         self._candidate_validator = candidate_validator
+        self._disposable = disposable
         self._context_mutex = threading.RLock()
         self._locked = False
         self._lock_owner_thread: int | None = None
@@ -223,6 +229,7 @@ class CaddyRuntime:
         root_mode: int = CADDY_RUNTIME_ROOT_MODE,
         lock_mode: int = CADDY_PUBLICATION_LOCK_MODE,
         candidate_validator: CandidateValidator | None = None,
+        disposable: DisposableRoutes | None = None,
     ) -> Self:
         """Pin the trusted runtime root and publication-lock inode."""
 
@@ -254,6 +261,7 @@ class CaddyRuntime:
             group=expected_group,
             creation_group=os.getegid(),
             expected_binary_sha256=expected_binary_sha256,
+            disposable=disposable,
             candidate_validator=(
                 partial(
                     _validate_generation_candidate,
@@ -281,6 +289,7 @@ class CaddyRuntime:
         root_mode: int = CADDY_RUNTIME_ROOT_MODE,
         lock_mode: int = CADDY_PUBLICATION_LOCK_MODE,
         candidate_validator: CandidateValidator | None = None,
+        disposable: DisposableRoutes | None = None,
     ) -> Self:
         """Pin a systemd-opened global publication lock without path traversal."""
 
@@ -312,6 +321,7 @@ class CaddyRuntime:
             group=expected_group,
             creation_group=os.getegid(),
             expected_binary_sha256=expected_binary_sha256,
+            disposable=disposable,
             candidate_validator=(
                 partial(
                     _validate_generation_candidate,
@@ -415,7 +425,7 @@ class CaddyRuntime:
             try:
                 if self._expected_binary_sha256 is not None:
                     _validate_trusted_binary(generation, self._expected_binary_sha256)
-                _validate_route_binding(generation)
+                _validate_route_binding(generation, disposable=self._disposable)
             except BaseException:
                 generation.close()
                 raise
@@ -468,6 +478,7 @@ class CaddyRuntime:
                     deployment_transition_tenant_id=deployment_transition_tenant_id,
                 ),
                 candidate_generation_id=candidate_id,
+                disposable=self._disposable,
             )
 
             store = self._open_generation_store()
@@ -481,7 +492,7 @@ class CaddyRuntime:
                     with store.open_verified(candidate_id) as candidate:
                         if self._expected_binary_sha256 is not None:
                             _validate_trusted_binary(candidate, self._expected_binary_sha256)
-                        _validate_route_binding(candidate)
+                        _validate_route_binding(candidate, disposable=self._disposable)
                         environment = _read_generation_environment(candidate)
                         self._candidate_validator(candidate, environment)
                 except BaseException:
@@ -515,7 +526,7 @@ class CaddyRuntime:
             with store.open_verified(canonical_id) as generation:
                 if self._expected_binary_sha256 is not None:
                     _validate_trusted_binary(generation, self._expected_binary_sha256)
-                _validate_route_binding(generation)
+                _validate_route_binding(generation, disposable=self._disposable)
                 environment = _read_generation_environment(generation)
                 self._candidate_validator(generation, environment)
         finally:
@@ -1008,7 +1019,9 @@ def _parse_environment(data: bytes) -> dict[str, str]:
     return result
 
 
-def _validate_route_binding(generation: PinnedCaddyGeneration) -> None:
+def _validate_route_binding(
+    generation: PinnedCaddyGeneration, *, disposable: DisposableRoutes | None = None
+) -> None:
     configuration_fd = generation.duplicate_payload_descriptor(CADDY_CONFIGURATION_NAME)
     route_metadata_fd: int | None = None
     try:
@@ -1056,6 +1069,8 @@ def _validate_route_binding(generation: PinnedCaddyGeneration) -> None:
             )
         else:
             raise CaddyRuntimeError("selected Caddy generation class is not recognized")
+        if disposable is not None:
+            expected = project_native_routes(expected, disposable)
     except (ContractError, CaddyRouteError, KeyError, TypeError, ValueError) as error:
         raise CaddyRuntimeError("selected Caddy route state is malformed") from error
     if configuration != expected.configuration or route_metadata != expected.route_metadata:

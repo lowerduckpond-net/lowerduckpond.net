@@ -112,6 +112,32 @@ redirect, but a stale or non-conforming client can at worst reach the old,
 separate canonical origin; it cannot give the old tenant control of the new
 tenant's origin.
 
+### Disposable qualification exception
+
+An explicitly enrolled disposable test tenant may serve browser proof at
+one exclusive HTTPS origin derived from its original tenant UUIDv7 and the
+reviewed disposable tenant scope. The projection replaces the HTTP host,
+alias redirect target, logger subjects, and TLS subjects for that fixture.
+The canonical origin, namespace, tenant ID, launch, backup, and archive
+authority remain the original bytes. Production and ordinary installed
+routing retain their existing canonical-origin policy.
+
+The exact reviewed projection binds the allocation, attempt, both enrolled
+roles, and their independent host identities. The source and cold restore
+use the same map. The source must be durably fenced and observed inactive
+with closed public ingress before the restore may open ingress. A missing
+or changed map, identity, original fence, or role binding closes admission.
+A destination must verify the original captured route selection and bind
+its projected presentation separately. A projection creates no authority
+to retarget an old browser origin or expand a certificate association.
+
+Same-browser continuity observes origin-local state in the same context.
+Proving that the restored host served content also requires a fresh,
+TLS-verified context with service workers blocked, a unique request, and
+independent correlation of that request to the restored host after fencing.
+Disposable-origin receipts cover the isolated subjects and do not qualify
+the production apex or wildcard, or substitute for actual provider evidence.
+
 ## Consequences
 
 Slugs can be allocated by deterministic availability and lifecycle rules

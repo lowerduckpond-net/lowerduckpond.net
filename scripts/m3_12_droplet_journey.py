@@ -72,7 +72,7 @@ PHASES = (
     _phase(
         "restore-reboot",
         "restore",
-        ("restore",),
+        ("restore", "backup-fence"),
         "bootTransition",
         "statusReadback",
         "ingress",

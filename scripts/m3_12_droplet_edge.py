@@ -11,6 +11,7 @@ from lowerduckpond_static_contracts import (
     validate_slug,
     validate_uuid7,
 )
+from lowerduckpond_static_host_agent.caddy_routes import CaddyRouteError
 
 from scripts.m3_12_contracts import (
     MAX_RECORD_BYTES,
@@ -21,6 +22,7 @@ from scripts.m3_12_contracts import (
     require,
 )
 from scripts.m3_12_diagnostic_store import read
+from scripts.m3_12_disposable_routing import reviewed_routing_policy
 from scripts.m3_12_droplet_native import AdapterInputs
 
 EDGE_PHASES = frozenset({"edge"})
@@ -36,9 +38,12 @@ class EdgeSubjects:
     certificate_ids: dict[str, dict[str, str]]
 
 
-def prepare_edge_proof(inputs: AdapterInputs, fixture_raw: bytes) -> EdgeSubjects:
+def prepare_edge_proof(
+    inputs: AdapterInputs, fixture_raw: bytes, policy_raw: bytes
+) -> EdgeSubjects:
     """Use a test tenant and unknown name from the original functional receipt."""
     scope, intent = inputs.open(EDGE_PHASES)
+    policy = reviewed_routing_policy(scope, policy_raw)
     original = intent["prerequisites"]["functional"]
     receipt = read(inputs.attempt.directory, original["file"])
     try:
@@ -59,18 +64,16 @@ def prepare_edge_proof(inputs: AdapterInputs, fixture_raw: bytes) -> EdgeSubject
 
     resource = scope["resources"]
     zones = resource["edge"]
-    platform_scope, tenant_scope = (
-        zones[name]["source"]["name"] for name in ("platform", "tenant")
-    )
-    # The existing browser assertions run unchanged against these exact origins.
-    hosts = (
-        platform_scope,
-        f"{alias}.{tenant_scope}",
-        f"t-{tenant_id.replace('-', '')}.{tenant_scope}",
-        f"{unknown}.{tenant_scope}",
-    )
+    platform_scope, tenant_scope = policy.platform, policy.tenant_scope
+    try:
+        canonical = policy.expected_origin(tenant_id)
+    except CaddyRouteError:
+        raise ValidationError("droplet-edge-tenant-not-enrolled") from None
     browser = BrowserOrigins(
-        *(f"https://{host}" for host in hosts),
+        f"https://{platform_scope}",
+        f"https://{alias}.{tenant_scope}",
+        canonical,
+        f"https://{unknown}.{tenant_scope}",
         approved_scopes=(platform_scope, tenant_scope),
     )
     return EdgeSubjects(

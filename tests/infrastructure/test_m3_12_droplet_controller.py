@@ -68,7 +68,7 @@ def endpoints(tmp_path: Path) -> tuple[Attempt, Endpoint, Endpoint, Document]:
     attempt = Attempt.allocate(tmp_path / "attempts")
     key = tmp_path / "synthetic-client-identity"
     key.touch(mode=0o600)
-    pair = []
+    pair: list[Endpoint] = []
     for target, address, symbol in ((101, "11.1.2.10", b"A"), (102, "11.1.2.11", b"B")):
         identity = ProviderIdentity(proof("reviewed-project"), target, address)
         allocation = ApprovedAllocation(
@@ -616,13 +616,13 @@ def test_cold_restore_preflight_binds_the_original_policy_to_the_two_owned_hosts
     connections = []
     native: dict[str, Document] = {}
 
-    def wire(args: list[str], *, stdin: bytes, **_kwargs: object) -> bytes:
-        address = args[-2].partition("@")[2]
+    def wire(arguments: list[str], *, stdin: bytes, **_kwargs: object) -> bytes:
+        address = arguments[-2].partition("@")[2]
         connections.append(address)
-        if args[-1] == ssh.REMOTE_PROBE:
+        if arguments[-1] == ssh.REMOTE_PROBE:
             return encode(reports[address])
         assert address == restore.provider.ipv4 and stdin == b""
-        return encode(native[args[-1]])
+        return encode(native[arguments[-1]])
 
     excluded = encode(exclusions)
     monkeypatch.setattr(ssh, "bounded_command", wire)
