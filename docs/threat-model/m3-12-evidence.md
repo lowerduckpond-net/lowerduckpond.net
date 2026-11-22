@@ -78,7 +78,12 @@ The [disposable routing regression](../../tests/infrastructure/test_m3_12_dispos
 separates same-browser state continuity from a fresh, restored-host
 request proof. Local native generation tests check that only the exact
 projected scope can select the payload and that the original tenant
-records remain intact. These are component observations.
+records remain intact. The native recovery regression
+`test_projected_ingress_reopens_only_for_enrolled_role_and_current_boot`
+runs the installed boot gate with synthetic boot identities and firewall
+calls. It verifies that status stays pending until both current-boot
+authority and actual gate removal are observed in the fixture. These are
+component observations.
 
 The [inventory validator](../../scripts/m3_12_requirements.py) checks source
 coverage, fingerprints, unique requirements/slots and existing mapped test

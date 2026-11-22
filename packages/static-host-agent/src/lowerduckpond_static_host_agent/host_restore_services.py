@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import Final
@@ -152,6 +153,34 @@ def start_caddy() -> None:
         failure="restore_caddy_start_failed",
         timeout=120,
     )
+
+
+def public_gate_present() -> bool:
+    """Inspect the current kernel gate without clearing it or parsing stderr."""
+    raw = require_command(
+        ("/usr/sbin/nft", "--json", "list", "tables"),
+        failure="restore_firewall_readback_failed",
+    )
+    try:
+        response = json.loads(raw)
+    except ValueError:
+        raise HostRestoreError("restore_firewall_inventory_invalid") from None
+    rows = response.get("nftables") if isinstance(response, dict) else None
+    if not isinstance(rows, list):
+        raise HostRestoreError("restore_firewall_inventory_invalid")
+    tables = set()
+    for row in rows:
+        if not isinstance(row, dict) or len(row) != 1:
+            raise HostRestoreError("restore_firewall_inventory_invalid")
+        if "metainfo" in row:
+            continue
+        table = row.get("table")
+        if not isinstance(table, dict) or not all(
+            isinstance(table.get(key), str) for key in ("family", "name")
+        ):
+            raise HostRestoreError("restore_firewall_inventory_invalid")
+        tables.add((table["family"], table["name"]))
+    return ("inet", "lowerduckpond_restore") in tables
 
 
 def remove_public_gate() -> None:

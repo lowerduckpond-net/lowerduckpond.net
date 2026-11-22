@@ -240,7 +240,9 @@ opening public ingress. After reboot, the installed gate closes ingress
 when the prior boot's receipt no longer applies. Renew the receipt only
 after pinned readback of the fenced source and the still-closed destination
 kernel rule. Retain old receipts and resume the completed destination
-recovery to clear the gate through the existing activation path.
+recovery to clear the gate through the existing activation path. Native
+status reports activation pending while either the current receipt is
+unverified or the kernel gate remains installed.
 
 Native provider apply is still refused. The local fixtures exercise actual
 generation selection, recovery admission and the installed boot script with

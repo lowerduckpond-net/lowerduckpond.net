@@ -101,6 +101,19 @@ def test_completion_restores_only_reviewed_schedules_and_does_not_reset_start_at
     assert not any("reset-failed" in call for call in calls)
 
 
+@pytest.mark.parametrize(
+    "output",
+    [b"not JSON", b"{}", b'{"nftables":[{"table":{"name":"lowerduckpond_restore"}}]}'],
+)
+def test_public_gate_inventory_refuses_to_infer_absence_from_invalid_readback(
+    output: bytes,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(services, "require_command", lambda *_args, **_kwargs: output)
+    with pytest.raises(HostRestoreError, match="restore_firewall_inventory_invalid"):
+        services.public_gate_present()
+
+
 @pytest.mark.parametrize("caddy", [False, True])
 def test_recovery_drains_health_reader_before_installed_archive_verification(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caddy: bool

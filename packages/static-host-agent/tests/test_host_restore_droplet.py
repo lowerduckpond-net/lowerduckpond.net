@@ -379,6 +379,18 @@ def test_projected_ingress_reopens_only_for_enrolled_role_and_current_boot(  # n
     calls: list[str] = []
     monkeypatch.setattr(services, "restore_schedules", lambda **_: calls.append("timers"))
     monkeypatch.setattr(services, "remove_public_gate", lambda: calls.append("opened"))
+
+    def firewall_tables(command: tuple[str, ...], **_options: object) -> bytes:
+        assert command == ("/usr/sbin/nft", "--json", "list", "tables")
+        tables = [
+            {"metainfo": {"version": "synthetic"}},
+            {"table": {"family": "inet", "name": "ordinary_firewall"}},
+        ]
+        if calls[-1] == "closed":
+            tables.append({"table": {"family": "inet", "name": "lowerduckpond_restore"}})
+        return encode({"nftables": tables})
+
+    monkeypatch.setattr(services, "require_command", firewall_tables)
     config = tmp_path / "static-publication.json"
     write(
         config,
@@ -440,10 +452,13 @@ def test_projected_ingress_reopens_only_for_enrolled_role_and_current_boot(  # n
         activate()
         assert calls == ["timers", "opened"]
         assert restore_admission(root, owner=owner, boot=True)
+        assert not activation.activation_pending(store)
 
         write(boot_file, b"22222222-3333-4444-5555-666666666666\n")
         assert restore_admission(root, owner=owner, boot=True) is False
+        assert activation.activation_pending(store)
         assert _installed_boot(root, calls, monkeypatch) == 0
+        assert activation.activation_pending(store)
         with pytest.raises(FileNotFoundError):
             restore_admission(root, owner=owner, caddy=True)
         with pytest.raises(FileNotFoundError):
@@ -457,7 +472,9 @@ def test_projected_ingress_reopens_only_for_enrolled_role_and_current_boot(  # n
         write(refreshed, encode({**original, "restoreBootSha256": observe.boot_sha256(owner)}))
         assert restore_admission(root, owner=owner, boot=True)
         assert _installed_boot(root, calls, monkeypatch) == 0
+        assert activation.activation_pending(store)
         activation.finish_public_ingress(store)
+        assert not activation.activation_pending(store)
         assert calls == ["timers", "opened", "closed", "opened"]
         assert cutover.read_bytes() == encode(original)
         assert store.read_bytes(f"source-fence-{inputs.restore_id}.json") == fence_raw

@@ -35,7 +35,17 @@ def activation_pending(store: RestoreStore) -> bool:
     journal = store.read()
     if journal is None or journal.phase is not RestorePhase.COMPLETE:
         raise HostRestoreError("restore_activation_requires_complete")
-    return gate_pending(store) or ingress_pending(store)
+    if gate_pending(store) or ingress_pending(store):
+        return True
+    if not projected_recovery(store):
+        return False
+    if services.public_gate_present():
+        return True
+    try:
+        require_scoped_activation(store)
+    except OSError, RuntimeError, ValueError:
+        return True
+    return False
 
 
 def finish_public_ingress(
