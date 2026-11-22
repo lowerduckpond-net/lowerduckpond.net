@@ -14,13 +14,10 @@ from pathlib import Path
 sys.path.insert(0, "/opt/lowerduckpond/static-host-agent/current/site-packages")
 
 from lowerduckpond_static_host_agent.droplet_enrollment import (
-    ED25519_WIRE_HEADER,
     ENROLLMENT,
     EXCLUSIONS,
-    HOST_KEY,
     PUBLICATION_VIEW,
     TARGET,
-    host_identity,
     lease_domain,
 )
 from lowerduckpond_static_host_agent.durable import DurableDirectory
@@ -36,6 +33,7 @@ from scripts.m3_12_contracts import (
     encode,
     require,
 )
+from scripts.m3_12_droplet_observe import ED25519_WIRE_HEADER, HOST_KEY, host_identity
 
 ROOT = Path("/var/lib/lowerduckpond/convergence/m3-12")
 STATE = Path("/var/lib/lowerduckpond/static")

@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime
 from hashlib import sha256
-from http import HTTPStatus
-from http.client import HTTPConnection, HTTPException
-from ipaddress import IPv4Address
 from pathlib import Path
 
 from lowerduckpond_static_host_agent.droplet_enrollment import (
@@ -24,46 +20,17 @@ from scripts.m3_12_contracts import (
     AdmissionContext,
     Document,
     Evidence,
-    ValidationError,
     decode,
     digest,
     require,
 )
+from scripts.m3_12_droplet_observe import metadata_identity
 from scripts.m3_12_native import require_dark_health
 
 ROOT = Path("/var/lib/lowerduckpond/convergence/m3-12")
 STATE = Path("/var/lib/lowerduckpond/static")
 SELECTION = Path("/opt/lowerduckpond/static-host-agent/current")
 LEASE = Path("/run/lowerduckpond-m3-12-droplet/lease")
-METADATA_LIMIT = 64
-
-
-def _metadata_value(path: str) -> str:
-    connection = HTTPConnection("169.254.169.254")
-    try:
-        connection.request("GET", path)
-        with connection.getresponse() as response:
-            require(response.status == HTTPStatus.OK, "droplet-metadata-unavailable")
-            raw = response.read(METADATA_LIMIT + 1)
-        require(0 < len(raw) <= METADATA_LIMIT, "droplet-metadata-invalid")
-        return raw.decode("ascii").strip()
-    except (OSError, HTTPException) as error:
-        raise ValidationError("droplet-metadata-unavailable") from error
-    except UnicodeDecodeError:
-        raise ValidationError("droplet-metadata-invalid") from None
-    finally:
-        connection.close()
-
-
-def metadata_identity() -> tuple[int, str]:
-    """Read only the two non-secret fields required to bind this public IPv4 Droplet."""
-    droplet_id = _metadata_value("/metadata/v1/id")
-    require(re.fullmatch(r"[1-9][0-9]*", droplet_id) is not None, "droplet-metadata-invalid")
-    ipv4 = _metadata_value("/metadata/v1/interfaces/public/0/ipv4/address")
-    try:
-        return int(droplet_id), str(IPv4Address(ipv4))
-    except ValueError:
-        raise ValidationError("droplet-metadata-invalid") from None
 
 
 def _require_metadata(enrolled: DropletEnrollment, observed: tuple[int, str]) -> None:

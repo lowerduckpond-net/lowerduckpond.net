@@ -111,3 +111,27 @@ the installed gate after the unit's normal sudo transition. The guest has no
 network or host binds. The witness checks a valid identity, missing and
 mismatched identity, revocation, read-only mount flags, and exclusion of the
 controller directory and SSH private key. Its Droplet facts are synthetic.
+
+### Pinned SSH preparation
+
+The P4 controller accepts two independently reobserved allocations and the
+Ed25519 host keys from their authenticated provisioning chain. It records
+the exact source and restore scopes in the private attempt before connecting.
+Each read uses a fresh SSH connection to the approved numeric IPv4 address,
+a private single-host key file, and the caller's approved client identity.
+The transport disables forwarding and reuse of prior SSH sessions.
+
+The controller runs a fixed standard-library probe over SSH stdin. This
+lets the cold restore target report metadata, local identity digests, boot
+identity, and selected state before installing the candidate. Both roles
+must match their original provider allocation and SSH pin. Preparation
+requires an independent restore host with no selected artifact, no launch
+record, and publication absent or dark. The controller seals each role's
+observation separately so a later transfer failure preserves the first
+receipt. Repeated preparation compares the retained originals.
+
+Boot inspection reopens the same approved role and preserves the original
+preparation. A changed boot digest on the same host is an observation.
+A full reboot assertion still needs the approved operation and service
+readback. Provider provisioning, protected enrollment delivery, paired
+restore, and ingress verification remain separate controller phases.

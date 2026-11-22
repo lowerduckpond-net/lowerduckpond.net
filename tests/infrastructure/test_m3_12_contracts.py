@@ -26,6 +26,7 @@ from lowerduckpond_static_host_agent.platform_launch import (
 from scripts import m3_11_production_lease as lease
 from scripts import m3_12_droplet as droplet
 from scripts import m3_12_droplet_inventory as droplet_inventory
+from scripts import m3_12_droplet_observe as droplet_observe
 from scripts import m3_12_native as native
 from scripts.m3_12_contracts import (
     COMMON_SLOTS,
@@ -1222,7 +1223,7 @@ def droplet_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Do
         "SYSTEM_UUID": b"11111111-2222-3333-4444-555555555555\n",
         "HOST_KEY": (
             b"ssh-ed25519 "
-            + base64.b64encode(droplet_enrollment.ED25519_WIRE_HEADER + b"A" * 32)
+            + base64.b64encode(droplet_observe.ED25519_WIRE_HEADER + b"A" * 32)
             + b" synthetic\n"
         ),
     }
@@ -1230,7 +1231,7 @@ def droplet_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Do
         path = tmp_path / name
         path.write_bytes(content)
         path.chmod(0o600)
-        monkeypatch.setattr(droplet_enrollment, name, path)
+        monkeypatch.setattr(droplet_observe, name, path)
     monkeypatch.setattr(droplet_enrollment, "DOCKER_MARKER", tmp_path / "not-a-container")
     monkeypatch.setattr(droplet, "metadata_identity", lambda: (101, "192.0.2.14"))
     monkeypatch.setattr(droplet, "require_dark_health", lambda: None)
@@ -1356,7 +1357,7 @@ def test_droplet_launch_uses_original_binding_and_active_attempt(
         ("SYSTEM_UUID", b"22222222-3333-4444-5555-666666666666\n"),
         (
             "HOST_KEY",
-            b"ssh-ed25519 " + base64.b64encode(droplet_enrollment.ED25519_WIRE_HEADER + b"B" * 32),
+            b"ssh-ed25519 " + base64.b64encode(droplet_observe.ED25519_WIRE_HEADER + b"B" * 32),
         ),
     ],
 )
@@ -1368,7 +1369,7 @@ def test_copied_droplet_launch_and_enrollment_do_not_authorize_another_host(
     with lease.controller(droplet.LEASE, owner=owner, drain=lambda: None) as token:
         _pin_droplet_attempt(authority, admission, token)
         receipt = droplet.launch(token, encode(admission), owner=owner)
-        getattr(droplet_enrollment, fact).write_bytes(value)
+        getattr(droplet_observe, fact).write_bytes(value)
         assert verify_launch(state, authority, owner=owner) == receipt
         with pytest.raises(ValidationError, match="droplet-enrollment-changed"):
             require_local_launch_binding(authority, receipt, disposable=False, owner=owner)
@@ -1495,12 +1496,12 @@ def test_droplet_metadata_identity_uses_only_bound_fields(
             strict=True,
         )
     )
-    monkeypatch.setattr(droplet, "_metadata_value", replies.__getitem__)
+    monkeypatch.setattr(droplet_observe, "_metadata_value", replies.__getitem__)
     if expected is None:
-        with pytest.raises(ValidationError, match=r"^droplet-metadata-invalid$"):
-            droplet.metadata_identity()
+        with pytest.raises(ValueError, match=r"^droplet-metadata-invalid$"):
+            droplet_observe.metadata_identity()
     else:
-        assert droplet.metadata_identity() == expected
+        assert droplet_observe.metadata_identity() == expected
 
 
 def _allocated_droplet(

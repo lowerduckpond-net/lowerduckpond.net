@@ -97,6 +97,44 @@
       ],
       "additionalProperties": false
     },
+    "droplet-observation": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-droplet-observation-v1"},
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "dropletId": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+            "ipv4": {"type": "string", "format": "ipv4"}
+          },
+          "required": ["dropletId", "ipv4"],
+          "additionalProperties": false
+        },
+        "hostIdentity": {
+          "type": "object",
+          "properties": {
+            "machineSha256": {"$ref": "#/$defs/sha256"},
+            "systemUuidSha256": {"$ref": "#/$defs/sha256"},
+            "hostKeySha256": {"$ref": "#/$defs/sha256"}
+          },
+          "required": ["machineSha256", "systemUuidSha256", "hostKeySha256"],
+          "additionalProperties": false
+        },
+        "bootSha256": {"$ref": "#/$defs/sha256"},
+        "state": {
+          "type": "object",
+          "properties": {
+            "artifactSelected": {"type": "boolean"},
+            "launchPresent": {"type": "boolean"},
+            "publication": {"enum": ["absent", "dark", "enabled"]}
+          },
+          "required": ["artifactSelected", "launchPresent", "publication"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["format", "metadata", "hostIdentity", "bootSha256", "state"],
+      "additionalProperties": false
+    },
     "droplet-enrollment": {
       "type": "object",
       "properties": {
