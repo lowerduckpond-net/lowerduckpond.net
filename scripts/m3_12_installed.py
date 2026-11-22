@@ -7,6 +7,7 @@ import re
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
+from ipaddress import IPv4Address
 from pathlib import Path
 from typing import cast
 from uuid import UUID
@@ -208,3 +209,36 @@ def recheck_installed(directory: Path, environment: dict[str, str]) -> Document:
     original = document(directory / RECEIPT)
     require(original == observe_installed(directory, environment), "installed-fixture-replaced")
     return original
+
+
+def installed_archive_hosts_line(directory: Path, environment: dict[str, str]) -> str:
+    """Use the original local MinIO sidecar on the owned guest's Docker network."""
+    roles = recheck_installed(directory, environment)["docker"]["roles"]
+    template = "{{range .NetworkSettings.Networks}}{{println .NetworkID .IPAddress}}{{end}}"
+
+    def endpoint(role: str) -> tuple[str, IPv4Address]:
+        fields = (
+            _docker(environment, "inspect", "--format", template, roles[role]["id"])
+            .decode("ascii")
+            .split()
+        )
+        try:
+            network, address = fields
+            address_v4 = IPv4Address(address)
+        except ValueError:
+            raise ValueError("installed-archive-network-invalid") from None
+        require(SHA256.fullmatch(network) is not None, "installed-archive-network-invalid")
+        return network, address_v4
+
+    network, guest = endpoint("host")
+    archive_network, archive = endpoint("archive")
+    require(
+        network == archive_network
+        and guest != archive
+        and archive.is_private
+        and not archive.is_unspecified
+        and not archive.is_loopback
+        and not archive.is_link_local,
+        "installed-archive-network-changed",
+    )
+    return f"{archive} ams3.digitaloceanspaces.com"

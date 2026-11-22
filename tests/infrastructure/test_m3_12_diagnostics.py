@@ -369,3 +369,32 @@ def test_public_guest_collection_reopens_the_original_bound_lease(
     assert transfer.call_args.args[0][:3] == ["docker", "exec", host_id]
     assert transfer.call_args.kwargs["timeout"] is None
     assert not (attempt.directory / "original.json").exists()
+
+
+@pytest.mark.parametrize(
+    ("archive_endpoint", "expected"),
+    [
+        (f"{'a' * 64} 172.21.0.3", "172.21.0.3 ams3.digitaloceanspaces.com"),
+        (f"{'b' * 64} 172.21.0.3", None),
+        (f"{'a' * 64} 8.8.8.8", None),
+        (f"{'a' * 64} 172.21.0.2", None),
+        (f"{'a' * 64} 172.21.0.3\n{'b' * 64} 172.22.0.3", None),
+    ],
+)
+def test_successor_archive_route_uses_only_the_original_shared_network(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, archive_endpoint: str, expected: str | None
+) -> None:
+    allocation = Mock(
+        return_value={"docker": {"roles": {"host": {"id": "host"}, "archive": {"id": "archive"}}}}
+    )
+    monkeypatch.setattr(installed, "recheck_installed", allocation)
+    docker = Mock(side_effect=[f"{'a' * 64} 172.21.0.2".encode(), archive_endpoint.encode()])
+    monkeypatch.setattr(installed, "_docker", docker)
+    environment = {"M3_10_ARCHIVE_BACKEND": "minio"}
+    if expected is None:
+        with pytest.raises(ValueError, match=r"^installed-archive-network-(changed|invalid)$"):
+            installed.installed_archive_hosts_line(tmp_path, environment)
+    else:
+        assert installed.installed_archive_hosts_line(tmp_path, environment) == expected
+    allocation.assert_called_once_with(tmp_path, environment)
+    assert [call.args[-1] for call in docker.call_args_list] == ["host", "archive"]

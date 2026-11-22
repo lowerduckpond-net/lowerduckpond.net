@@ -15,6 +15,7 @@ from pathlib import Path
 import backup_capture_support as captures
 import pytest
 import test_backup_identity as backup
+import test_reboot as reboot
 import yaml
 from production_rollout_fixture import ROOT, Fixture
 from testinfra.host import Host
@@ -29,6 +30,7 @@ from scripts.m3_12_diagnostic_store import publish, read
 from scripts.m3_12_installed import (
     APPLY_STAGE_ENV,
     PROGRESS_ROOT_ENV,
+    installed_archive_hosts_line,
     predecessor_progress,
     recheck_installed,
     successor_stage,
@@ -42,6 +44,7 @@ GATE = "/usr/local/libexec/lowerduckpond/static-publication-gate"
 VERIFY = "/usr/local/libexec/lowerduckpond/check-caddy-publication-open"
 PYTHON = "/usr/bin/python3"
 INSTALLED_HOST = "installed-m3-12-successor"
+ARCHIVE_ENDPOINT = "m3-12-successor-archive-endpoint.json"
 
 
 def timestamp() -> str:
@@ -132,9 +135,9 @@ class Rollout:
             assert result.returncode == 0, "Reviewed candidate component prerequisites failed."
         return sha(self.artifact.read_bytes())
 
-    def capture_predecessor_generation(self) -> None:
+    def active_generation(self) -> Document:
         raw = self.remote(
-            "retain-original-platform-generation",
+            "read-verified-platform-generation",
             [
                 PYTHON,
                 "-I",
@@ -150,12 +153,33 @@ class Rollout:
                 "g.close();c.__exit__(None,None,None);r.close()",
             ],
         )
-        self.preceding_generation = json.loads(raw)
-        self.seal("preceding-generation.json", self.preceding_generation)
+        return json.loads(raw)  # type: ignore[no-any-return]
+
+    def stage_distinct_platform_generation(self) -> Document:
+        source = Path(__file__).with_name("m3_12_caddy_witness.py").read_bytes()
+        self.remote(
+            "stage-distinct-platform-generation",
+            [
+                PYTHON,
+                "-I",
+                "-B",
+                "-c",
+                "import sys;sys.path.insert(0,"
+                "'/opt/lowerduckpond/static-host-agent/current/site-packages');"
+                "exec(compile(sys.stdin.buffer.read(),'m3_12_caddy_witness.py','exec'))",
+                self.session.token,
+            ],
+            data=source,
+        )
+        self.health(enabled=False)
+        generation = self.active_generation()
+        assert generation["generation"] != self.preceding_generation["generation"]
+        return generation
 
     def setup(self) -> None:
         self.observe("component", self.build)
-        self.capture_predecessor_generation()
+        self.preceding_generation = self.active_generation()
+        self.seal("preceding-generation.json", self.preceding_generation)
         revision = inputs.git(ROOT, "rev-parse", "HEAD").decode("ascii").strip()
         revocations = inputs.current_candidate(ROOT, revision)
         artifact = self.measurements["component"][2]
@@ -421,7 +445,7 @@ class Rollout:
         return json.loads(self.remote("installed-" + action, command))  # type: ignore[no-any-return]
 
 
-def test_installed_m3_12_successor_from_accepted_m3_11(
+def test_installed_m3_12_successor_from_accepted_m3_11(  # noqa: PLR0915 - one installed proof
     host: Host,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -443,6 +467,7 @@ def test_installed_m3_12_successor_from_accepted_m3_11(
             rollout.setup()
         with successor_stage(origin, "dark-staging"):
             rollout.observe("darkStage", lambda: rollout.converge("dark-staging", enabled=False))
+            successor_generation = rollout.stage_distinct_platform_generation()
         with successor_stage(origin, "dark-repeat"):
             rollout.observe(
                 "darkRepeat", lambda: rollout.converge("dark-repeat", enabled=False, repeated=True)
@@ -455,7 +480,9 @@ def test_installed_m3_12_successor_from_accepted_m3_11(
         with successor_stage(origin, "enabled-repeat"):
             rollout.converge("enabled-repeat", enabled=True, repeated=True)
         with successor_stage(origin, "rollback-handoff"):
+            assert rollout.active_generation() == successor_generation
             rollout.physical("restore-platform-only", interrupt=True)
+            assert rollout.active_generation() == rollout.preceding_generation
             rollout.remote("interrupted-issuance-fenced", [GATE, "job-issuance"], expect=78)
         original_lease = sha(session.token.encode())
 
@@ -466,11 +493,15 @@ def test_installed_m3_12_successor_from_accepted_m3_11(
             assert sha(session.token.encode()) != original_lease
             rollout.session = session
             restored = rollout.physical("restore-platform-only")
+            assert restored["source"] == successor_generation
             assert restored["desired"] == rollout.preceding_generation
+            assert rollout.active_generation() == rollout.preceding_generation
             rollout.health(enabled=False)
         with successor_stage(origin, "same-policy-reactivation"):
             reactivated = rollout.physical("reactivate-same-policy")
-            assert reactivated["desired"] == restored["source"]
+            assert reactivated["source"] == rollout.preceding_generation
+            assert reactivated["desired"] == successor_generation
+            assert rollout.active_generation() == successor_generation
             rollout.health(enabled=True)
         assert rollout.remote(
             "verify-accepted-predecessor-unchanged",
@@ -483,6 +514,9 @@ def test_installed_m3_12_successor_from_accepted_m3_11(
             == launch
         )
 
+        archive_line = installed_archive_hosts_line(origin, fixture.environment)
+        assert reboot._archive_hosts_line(host) == archive_line, "Owned archive mapping changed."
+        publish(origin, ARCHIVE_ENDPOINT, {"line": archive_line})
         publish(
             rollout.origin,
             "m3-12-successor-before-reboot.json",
@@ -494,7 +528,10 @@ def test_installed_m3_12_successor_from_accepted_m3_11(
                 "rollbackEffectSha256": digest(restored),
                 "reactivationEffectSha256": digest(reactivated),
                 "rollbackResumedAfterHandoff": True,
-                "rollbackSelectorChanged": restored["source"] != restored["desired"],
+                "rollbackSelectorChanged": True,
+                "reactivatedSelectorSha256": sha(
+                    (successor_generation["generation"] + "\n").encode("ascii")
+                ),
             },
         )
 
@@ -503,7 +540,15 @@ def test_installed_m3_12_successor_survives_reboot_and_backup(host: Host) -> Non
     fixture = Path(os.environ[ARTIFACT_ENV]).parent.parent
     launch_path = "/var/lib/lowerduckpond/static/platform/launch.json"
     with successor_stage(fixture, "post-reboot"):
+        # The Docker restart can recreate /etc/hosts. Recheck the original
+        # sidecar and saved route before the successor or accounting use it.
+        archive_line = installed_archive_hosts_line(fixture, dict(os.environ))
+        assert read(fixture, ARCHIVE_ENDPOINT) == {"line": archive_line}, (
+            "Owned archive endpoint changed."
+        )
+        reboot._restore_archive_hosts_line(host, archive_line)
         proof = read(fixture, "m3-12-successor-before-reboot.json")
+        assert sha(host.file("/etc/caddy/active").content) == proof["reactivatedSelectorSha256"]
         result = host.run("%s job-issuance", GATE)
         assert result.rc == 0, "Publication authority was not restored after reboot."
         assert sha(host.file(launch_path).content) == proof["launchRecordSha256"]

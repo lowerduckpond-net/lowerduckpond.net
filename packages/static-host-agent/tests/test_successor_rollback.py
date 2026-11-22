@@ -13,9 +13,20 @@ import pytest
 from lowerduckpond_static_contracts import decode_json_object
 from lowerduckpond_static_host_agent import successor_rollback as rollback
 from lowerduckpond_static_host_agent.caddy_admin import CaddyAdminError
+from lowerduckpond_static_host_agent.caddy_bootstrap import ensure_platform_generation
+from lowerduckpond_static_host_agent.caddy_generation import (
+    CADDY_GENERATION_ROOT_MODE,
+    CaddyBinarySource,
+    CaddyGenerationStore,
+)
+from lowerduckpond_static_host_agent.caddy_runtime import (
+    CADDY_RUNTIME_ROOT_MODE,
+    CaddyRuntime,
+)
 from lowerduckpond_static_host_agent.platform_launch import INTENT, LAUNCH
 from lowerduckpond_static_host_agent.repository import StateRepository
 
+from config.ansible.molecule.m3_8.tests.m3_12_caddy_witness import select_peer
 from scripts.m3_12_contracts import ValidationError, encode
 
 PRIOR = "00000000-0000-7000-8000-000000000001"
@@ -154,3 +165,58 @@ def test_physical_rollback_and_resume_keep_the_original_launch(  # noqa: PLR0915
         engine.reconcile(decision)
     assert engine.gate() is True
     assert selected == CURRENT
+
+
+def test_installed_witness_keeps_two_compatible_real_selectors(tmp_path: Path) -> None:
+    owner, group = os.geteuid(), os.getegid()
+    root = tmp_path / "caddy"
+    root.mkdir()
+    root.chmod(CADDY_RUNTIME_ROOT_MODE)
+    generations = root / "generations"
+    generations.mkdir()
+    generations.chmod(CADDY_GENERATION_ROOT_MODE)
+    lock = tmp_path / "publication.lock"
+    lock.touch(mode=0o600)
+    binary = tmp_path / "caddy-binary"
+    private(binary, Path("/usr/bin/true").read_bytes(), mode=0o755)
+
+    with (
+        CaddyRuntime.open(
+            root,
+            lock,
+            expected_owner=owner,
+            expected_group=group,
+            validation_uid=owner,
+            validation_gid=group,
+            expected_binary_sha256=sha256(binary.read_bytes()).hexdigest(),
+            candidate_validator=lambda _, __: None,
+        ) as runtime,
+        CaddyGenerationStore.open(generations, expected_owner=owner, expected_group=group) as store,
+    ):
+        assert ensure_platform_generation(
+            runtime,
+            store,
+            generation_id=PRIOR,
+            binary=CaddyBinarySource(binary, owner=owner, group=group),
+            environment=b"CLOUDFLARE_API_TOKEN=fixture-placeholder\n",
+            origin_pull_ca_der=(b"fixture-ca",),
+            origin_pull_required=True,
+        )
+        with runtime.locked():
+            with runtime.open_verified_generation(PRIOR) as original:
+                predecessor = rollback._generation(original, preceding=True)
+                original_manifest = original.manifest.to_bytes()
+                original_files = original.manifest.files
+            assert select_peer(runtime, predecessor, CURRENT)
+            assert runtime.read_active() == CURRENT
+            with runtime.open_verified_generation(CURRENT) as candidate:
+                assert candidate.manifest.files == original_files
+                assert candidate.manifest.to_bytes() != original_manifest
+            assert not select_peer(runtime, predecessor, CURRENT)
+            runtime.select_active(PRIOR)
+            assert runtime.read_active() == PRIOR
+            with runtime.open_verified_generation(PRIOR) as restored:
+                assert restored.manifest.to_bytes() == original_manifest
+            runtime.select_active(CURRENT)
+            assert runtime.read_active() == CURRENT
+            assert store.list_verified() == (PRIOR, CURRENT)
