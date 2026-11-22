@@ -18,6 +18,7 @@ from lowerduckpond_static_host_agent.host_restore_activation import (
     finish_public_ingress,
 )
 from lowerduckpond_static_host_agent.host_restore_authority import require_saved_authority
+from lowerduckpond_static_host_agent.host_restore_bootstrap import verify_bootstrap_inputs
 from lowerduckpond_static_host_agent.host_restore_coordinator import (
     COORDINATOR_SECONDS,
     HostRestore,
@@ -41,6 +42,17 @@ from lowerduckpond_static_host_agent.host_restore_process import require_command
 from lowerduckpond_static_host_agent.host_restore_snapshot import select_restore_snapshot
 
 
+def _verify_delivery(inputs: RestoreInputs, artifact: str) -> dict[str, object]:
+    if inputs.droplet_scope is None:
+        raise ValueError("restore delivery requires a scoped Droplet")
+    from lowerduckpond_static_host_agent.host_restore_delivery import (  # noqa: PLC0415
+        delivery_readback,
+    )
+
+    verify_bootstrap_inputs(INPUT_ROOT, inputs, owner=0)
+    return delivery_readback(inputs, artifact, owner=0)
+
+
 def restore_cli_main(artifact: str) -> int:
     if os.geteuid() != 0:
         return 77
@@ -48,11 +60,19 @@ def restore_cli_main(artifact: str) -> int:
     choice = parser.add_mutually_exclusive_group(required=True)
     choice.add_argument("--snapshot", type=full_id)
     choice.add_argument("--status", action="store_true")
+    choice.add_argument("--verify-delivery", action="store_true")
     arguments = parser.parse_args()
     try:
+        if arguments.verify_delivery:
+            inputs = RestoreInputs.load()
+            inputs.require_destination(local_machine_id(), artifact, inputs.snapshot_id)
+            sys.stdout.buffer.write(canonical_json_bytes(_verify_delivery(inputs, artifact)))
+            return 0
         if arguments.snapshot is not None:
             inputs = RestoreInputs.load()
             inputs.require_destination(local_machine_id(), artifact, arguments.snapshot)
+            if inputs.droplet_scope is not None:
+                _verify_delivery(inputs, artifact)
             require_command(
                 ("/usr/bin/systemctl", "start", "lowerduckpond-host-restore.service"),
                 timeout=COORDINATOR_SECONDS + 30,
@@ -87,6 +107,8 @@ def restore_coordinator_main(selection_descriptor: int, artifact: str) -> int:
         inputs = RestoreInputs.load()
         destination = local_machine_id()
         inputs.require_destination(destination, artifact, inputs.snapshot_id)
+        if inputs.droplet_scope is not None:
+            _verify_delivery(inputs, artifact)
         with (
             inherit_restic_leases((9, selection_descriptor)),
             RestoreStore.locked(RECOVERY_ROOT) as store,

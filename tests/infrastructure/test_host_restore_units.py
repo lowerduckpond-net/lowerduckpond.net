@@ -203,3 +203,54 @@ def test_bootstrap_replaces_package_flush_ruleset_before_installing_boot_guard()
     policy_text = (ROLE.parent / "firewall/templates/lowerduckpond.nft.j2").read_text()
     assert "flush ruleset" not in policy_text
     assert "destroy table inet lowerduckpond\n" in policy_text
+
+
+def test_droplet_restore_delivers_immutable_authority_behind_the_native_gate() -> None:
+    main = yaml.safe_load((ROLE / "tasks/main.yml").read_text())
+    preflight = next(
+        index
+        for index, task in enumerate(main)
+        if task.get("register") == "host_recovery_bootstrap_inputs"
+    )
+    gate = next(
+        index
+        for index, task in enumerate(main)
+        if task.get("ansible.builtin.command", {}).get("argv")
+        == ["/usr/local/libexec/lowerduckpond/host-restore-gate", "--boot"]
+    )
+    delivery = next(
+        index
+        for index, task in enumerate(main)
+        if task.get("ansible.builtin.include_tasks") == "droplet-authority.yml"
+    )
+    boot = next(
+        index
+        for index, task in enumerate(main)
+        if task.get("ansible.builtin.systemd_service", {}).get("name")
+        == "lowerduckpond-restore-gate.service"
+    )
+    assert preflight < gate < boot < delivery
+
+    authority = yaml.safe_load((ROLE / "tasks/droplet-authority.yml").read_text())
+    copy = next(task for task in authority if "ansible.builtin.copy" in task)
+    assert copy["ansible.builtin.copy"]["force"] is False
+    assert copy["ansible.builtin.copy"]["follow"] is False
+    assert copy["when"] == "not item.stat.exists"
+
+    commands = yaml.safe_load((ROLE / "tasks/commands.yml").read_text())
+    readback = next(
+        index
+        for index, task in enumerate(commands)
+        if task.get("ansible.builtin.command", {}).get("argv")
+        == ["/usr/local/sbin/restore-static-host", "--verify-delivery"]
+    )
+    assert all(
+        index < readback
+        for index, task in enumerate(commands)
+        if "ansible.builtin.template" in task
+    )
+    expected = (
+        "host_recovery_delivery.publicationFiles == "
+        "host_recovery_droplet_preflight.publicationFiles"
+    )
+    assert expected in commands[readback + 1]["ansible.builtin.assert"]["that"]

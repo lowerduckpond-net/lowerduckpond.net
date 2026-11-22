@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import shlex
 import ssl
 import stat
 import subprocess
+import sys
 from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
@@ -32,13 +34,16 @@ from lowerduckpond_static_host_agent.host_restore_services import (
 from scripts import m3_12_droplet_observe as guest
 from scripts import m3_12_droplet_ssh as ssh
 from scripts.m3_12_contracts import Document, ValidationError, decode, digest, encode
-from scripts.m3_12_diagnostic_store import PRIVATE_FILE, Attempt, clock, read
+from scripts.m3_12_diagnostic_store import PRIVATE_DIR, PRIVATE_FILE, Attempt, clock, read
 from scripts.m3_12_droplet_controller import (
     inspect_boot,
     inspect_fresh_dark,
+    inspect_restored_host,
     prepare,
     prepare_cold_restore,
     prepare_fresh,
+    prepare_install_handoff,
+    stage_restore_delivery,
 )
 from scripts.m3_12_droplet_inventory import ApprovedAllocation, ProviderIdentity
 from scripts.m3_12_droplet_ssh import Endpoint
@@ -449,6 +454,53 @@ def test_guest_selection_is_an_owned_content_address_not_a_link_to_unreviewed_by
         guest.selected_artifact(owner)
 
 
+def test_fresh_install_handoff_loads_as_a_single_pinned_ansible_host(
+    endpoints: tuple[Attempt, Endpoint, Endpoint, Document], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempt, source, _, exclusions = endpoints
+    fresh = replace(source, allocation=replace(source.allocation, role="fresh"))
+    report = observation(fresh)
+    monkeypatch.setattr(ssh, "bounded_command", lambda *_args, **_kwargs: encode(report))
+    excluded = encode(exclusions)
+    prepare_fresh(attempt, fresh, excluded, artifact_sha256=CANDIDATE_SHA256)
+    site = prepare_install_handoff(attempt, fresh, excluded)
+    assert prepare_install_handoff(attempt, fresh, excluded) == site
+    stage = read(site, "stage.json")
+    assert stage["static_publication_enabled"] is False
+    assert stage["host_recovery_bootstrap_enabled"] is False
+    assert stage["static_host_agent_artifact_sha256"] == CANDIDATE_SHA256
+    assert (site / "known_hosts").read_bytes() == (
+        fresh.provider.ipv4.encode() + b" " + fresh.host_public_key + b"\n"
+    )
+    inventory = subprocess.check_output(  # noqa: S603 - local inventory parsing, no SSH
+        [
+            str(Path(sys.executable).with_name("ansible-inventory")),
+            "-i",
+            str(site / "inventory.json"),
+            "--list",
+        ],
+        text=True,
+    )
+    parsed = json.loads(inventory)
+    assert parsed["hosting_nodes"]["hosts"] == ["m312-fresh"]
+    host = parsed["_meta"]["hostvars"]["m312-fresh"]
+    assert host["ansible_host"] == fresh.provider.ipv4
+    assert host["ansible_ssh_transfer_method"] == "piped"
+    config = subprocess.check_output(  # noqa: S603 - OpenSSH client configuration only
+        ["/usr/bin/ssh", "-G", *shlex.split(host["ansible_ssh_args"]), host["ansible_host"]],
+        text=True,
+    ).splitlines()
+    assert {
+        "stricthostkeychecking true",
+        "controlmaster false",
+        "forwardagent no",
+        f"userknownhostsfile {site / 'known_hosts'}",
+    } <= set(config)
+    report["state"]["artifactSha256"] = CANDIDATE_SHA256
+    with pytest.raises(ValidationError, match="droplet-install-target-is-not-cold"):
+        prepare_install_handoff(attempt, fresh, excluded)
+
+
 def recovery_policy(
     attempt: Attempt, *, snapshot: str = "c" * 64, source_machine: str = "a" * 32
 ) -> tuple[Document, bytes]:
@@ -533,11 +585,15 @@ def test_cold_restore_preflight_binds_the_original_policy_to_the_two_owned_hosts
     reports[source.provider.ipv4]["hostIdentity"]["machineSha256"] = proof("a" * 32)
     reports[restore.provider.ipv4]["hostIdentity"]["machineSha256"] = proof("b" * 32)
     connections = []
+    native: dict[str, Document] = {}
 
-    def wire(args: list[str], **_kwargs: object) -> bytes:
+    def wire(args: list[str], *, stdin: bytes, **_kwargs: object) -> bytes:
         address = args[-2].partition("@")[2]
         connections.append(address)
-        return encode(reports[address])
+        if args[-1] == ssh.REMOTE_PROBE:
+            return encode(reports[address])
+        assert address == restore.provider.ipv4 and stdin == b""
+        return encode(native[args[-1]])
 
     excluded = encode(exclusions)
     monkeypatch.setattr(ssh, "bounded_command", wire)
@@ -585,6 +641,31 @@ def test_cold_restore_preflight_binds_the_original_policy_to_the_two_owned_hosts
     observed = reports[restore.provider.ipv4]
     accepted_readback = f"droplet-cold-restore-readback-{digest(observed)}.json"
     assert read(attempt.directory, accepted_readback)["inputsSha256"] == digest(original)
+    staged = stage_restore_delivery(attempt, restore, excluded, inputs_directory=trusted)
+    assert stage_restore_delivery(attempt, restore, excluded, inputs_directory=trusted) == staged
+    assert stat.S_IMODE(staged.stat().st_mode) == PRIVATE_DIR
+    assert {path.name for path in staged.iterdir()} == {
+        "target.json",
+        f"source-fence-{policy['restoreId']}.json",
+        "original-origin-pull-ca-0.pem",
+        "droplet-target.json",
+        "droplet-enrollment.json",
+        "droplet-production-exclusions.json",
+    }
+    assert all(stat.S_IMODE(path.stat().st_mode) == PRIVATE_FILE for path in staged.iterdir())
+    delivery = read(attempt.directory, "droplet-restore-delivery.json")
+    assert delivery["trustedInputsDigest"] == scoped.digest
+    assert delivery["publicationFiles"]["droplet-target.json"] == digest(targets["restore"][0])
+    install = read(prepare_install_handoff(attempt, restore, excluded), "stage.json")
+    assert install["host_recovery_bootstrap_enabled"] is True
+    assert install["static_publication_enabled"] is False
+    assert install["host_recovery_input_directory"] == str(staged)
+    assert install["static_host_agent_artifact_sha256"] == policy["originalArtifactSha256"]
+    changed_record = staged / "droplet-target.json"
+    changed_record.write_bytes(b"{}\n")
+    with pytest.raises(ValidationError, match="droplet-restore-delivery-original-changed"):
+        stage_restore_delivery(attempt, restore, excluded, inputs_directory=trusted)
+    assert changed_record.read_bytes() == b"{}\n"
 
     replacement, replacement_fence = recovery_policy(attempt, snapshot="e" * 64)
     with pytest.raises(ValidationError, match="droplet-preparation-original-changed"):
@@ -596,3 +677,31 @@ def test_cold_restore_preflight_binds_the_original_policy_to_the_two_owned_hosts
     assert list(attempt.directory.glob("droplet-cold-restore-readback-*.json")) == [
         attempt.directory / accepted_readback
     ]
+
+    observed["state"]["artifactSha256"] = policy["originalArtifactSha256"]
+    observed["state"]["publication"] = "dark"
+    delivery_reply = f"{ssh.REMOTE_RESTORE} --verify-delivery"
+    status_reply = f"{ssh.REMOTE_RESTORE} --status"
+    native[delivery_reply] = {key: value for key, value in delivery.items() if key != "format"}
+    native[status_reply] = {"phase": "not-started"}
+    before_native = inspect_restored_host(attempt, restore, excluded)
+    assert before_native["restoreStatus"] == {"phase": "not-started"}
+    native[status_reply] = {
+        "phase": "complete",
+        "activationPending": False,
+        "restoreId": policy["restoreId"],
+        "snapshotId": policy["snapshotId"],
+    }
+    after_native = inspect_restored_host(attempt, restore, excluded)
+    assert after_native["restoreStatus"] == native[status_reply]
+    assert after_native["deliverySha256"] == digest(delivery)
+    observed["state"]["publication"] = "enabled"
+    with pytest.raises(ValidationError, match="droplet-restore-installed-publication-changed"):
+        inspect_restored_host(attempt, restore, excluded)
+    observed["state"]["publication"] = "dark"
+    native[status_reply]["snapshotId"] = "f" * 64
+    with pytest.raises(ValidationError, match="droplet-restore-installed-status-changed"):
+        inspect_restored_host(attempt, restore, excluded)
+    native[delivery_reply]["restoreId"] = "unrelated"
+    with pytest.raises(ValidationError, match="droplet-restore-installed-delivery-changed"):
+        inspect_restored_host(attempt, restore, excluded)

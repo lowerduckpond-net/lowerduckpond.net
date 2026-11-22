@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import cast
 
 from lowerduckpond_static_host_agent.droplet_enrollment import (
-    PUBLICATION_VIEW,
     protected_record,
     read_enrollment,
 )
 from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.host_restore_authority import require_saved_authority
+from lowerduckpond_static_host_agent.host_restore_gate import DROPLET_PUBLICATION_ROOT
 from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
 from lowerduckpond_static_host_agent.host_restore_journal import (
     DROPLET_BINDING,
@@ -25,7 +25,7 @@ from scripts.m3_12_contracts import DISPOSABLE, Document, decode, digest
 from scripts.m3_12_droplet_observe import selected_artifact
 
 STATE = Path("/var/lib/lowerduckpond/static")
-AUTHORITY = Path("/var/lib/lowerduckpond/convergence/m3-12") / PUBLICATION_VIEW
+AUTHORITY = DROPLET_PUBLICATION_ROOT
 
 
 def require_activation(
@@ -41,13 +41,7 @@ def require_activation(
         raise HostRestoreError("droplet_restore_completion_required")
     authority_path = AUTHORITY if authority_path is None else authority_path
     if DROPLET_BINDING not in journal.bindings:
-        if (
-            receipt is not None
-            or (inputs is not None and inputs.droplet_scope is not None)
-            or (os.path.lexists(authority_path))
-        ):
-            raise HostRestoreError("droplet_restore_scope_missing")
-        return
+        raise HostRestoreError("droplet_restore_scope_missing")
 
     saved, _ = require_saved_authority(store)
     scope = saved.droplet_scope
@@ -75,10 +69,10 @@ def require_activation(
             )
 
             receipt = verify_launch(STATE, authority_path, owner=store.owner)
-        _require_source_launch(authority, store.owner, scope, saved, receipt)
+        require_source_launch(authority, store.owner, scope, saved, receipt)
 
 
-def _require_source_launch(
+def require_source_launch(
     authority: DurableDirectory,
     owner: int,
     scope: dict[str, object],

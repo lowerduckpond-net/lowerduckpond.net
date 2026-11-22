@@ -11,7 +11,8 @@ from hashlib import sha256
 from pathlib import Path
 
 # The controller installs and independently verifies the fixture artifact first.
-sys.path.insert(0, "/opt/lowerduckpond/static-host-agent/current/site-packages")
+if __name__ == "__main__":
+    sys.path.insert(0, "/opt/lowerduckpond/static-host-agent/current/site-packages")
 
 from lowerduckpond_static_host_agent.droplet_enrollment import (
     ENROLLMENT,
@@ -46,15 +47,15 @@ NOW = "2026-01-01T00:00:00Z"
 FIXTURE_PUBLIC_KEY = b"ssh-ed25519 " + base64.b64encode(ED25519_WIRE_HEADER + b"A" * 32) + b"\n"
 
 
-def record(kind: str, **fields: object) -> Document:
-    return {"format": f"lowerduckpond-m3-12-{kind}-v1", **fields}
+def record(record_type: str, **fields: object) -> Document:
+    return {"format": f"lowerduckpond-m3-12-{record_type}-v1", **fields}
 
 
 def proof(subject: str) -> str:
     return sha256(subject.encode()).hexdigest()
 
 
-def create_launch(artifact: str) -> None:
+def create_launch(artifact: str, *, owner: int = 0) -> None:
     """Create synthetic local authority via the common initializer for this witness only."""
     ROOT.mkdir(mode=0o700, parents=True)
     VIEW.mkdir(mode=0o700)
@@ -62,7 +63,7 @@ def create_launch(artifact: str) -> None:
     (ROOT / "controller-only-witness").touch(mode=0o600)
     (HOST_KEY.parent / "ssh_host_ed25519_key").touch(mode=0o600, exist_ok=False)
     HOST_KEY.write_bytes(FIXTURE_PUBLIC_KEY)
-    local = host_identity()
+    local = host_identity(owner)
     namespace = {
         "apiVersion": "hosting.lowerduckpond.net/v1alpha1",
         "kind": "PlatformNamespace",
@@ -84,7 +85,7 @@ def create_launch(artifact: str) -> None:
         directory.mkdir(mode=0o700)
     for name in ("tenant-state.lock", "publication.lock"):
         (STATE / "locks" / name).touch(mode=0o600)
-    with DurableDirectory.open(STATE, expected_owner=0, expected_directory_mode=0o700) as fd:
+    with DurableDirectory.open(STATE, expected_owner=owner, expected_directory_mode=0o700) as fd:
         fd.create_immutable(("platform", "namespace.json"), encode(namespace))
 
     exclusions = record(
@@ -119,7 +120,7 @@ def create_launch(artifact: str) -> None:
             "metadataIdentitySha256": proof("fixture-metadata"),
         },
     }
-    with DurableDirectory.open(VIEW, expected_owner=0, expected_directory_mode=0o700) as fd:
+    with DurableDirectory.open(VIEW, expected_owner=owner, expected_directory_mode=0o700) as fd:
         for name, document in (
             (TARGET, target),
             (ENROLLMENT, enrollment),
@@ -202,6 +203,7 @@ def create_launch(artifact: str) -> None:
         encode(admission),
         Evidence({digest(receipt): encode(receipt) for receipt in receipts.values()}),
         lambda: context,
+        owner=owner,
     )
 
 

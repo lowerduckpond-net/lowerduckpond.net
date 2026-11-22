@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from lowerduckpond_static_contracts import canonical_json_bytes, decode_json_object, validate_uuid7
 
@@ -20,6 +20,13 @@ from lowerduckpond_static_host_agent.host_restore_journal import (
     RestorePhase,
     RestoreStore,
     exact_object,
+)
+
+if TYPE_CHECKING:
+    from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
+
+DROPLET_PUBLICATION_ROOT: Final = Path(
+    "/var/lib/lowerduckpond/convergence/m3-12/droplet-publication"
 )
 
 RECOVERY_ROOT: Final = Path("/var/lib/lowerduckpond/recovery")
@@ -135,11 +142,7 @@ def _completed_admission(store: RestoreStore, journal: RestoreJournal, *, boot: 
     if journal.phase is not RestorePhase.COMPLETE or (boot and pending):
         return False
     if boot and DROPLET_BINDING in journal.bindings:
-        from lowerduckpond_static_host_agent.host_restore_droplet import (  # noqa: PLC0415 - break restore/launch import cycle
-            require_activation,
-        )
-
-        require_activation(store)
+        require_scoped_activation(store)
     return True
 
 
@@ -148,15 +151,29 @@ def require_restore_admission(*, caddy: bool = False) -> None:
         raise HostRestoreError("host_restore_pending")
 
 
+def require_scoped_activation(store: RestoreStore, inputs: RestoreInputs | None = None) -> None:
+    """Load the Droplet-only dependency only for a durable scoped transaction."""
+    journal = store.read()
+    if journal is None or journal.phase is not RestorePhase.COMPLETE:
+        raise HostRestoreError("restore completion is not durable")
+    if DROPLET_BINDING not in journal.bindings:
+        if os.path.lexists(DROPLET_PUBLICATION_ROOT) or (
+            inputs is not None and inputs.droplet_scope is not None
+        ):
+            raise HostRestoreError("droplet_restore_scope_missing")
+        return
+    from lowerduckpond_static_host_agent.host_restore_droplet import (  # noqa: PLC0415
+        require_activation,
+    )
+
+    require_activation(store, inputs)
+
+
 def open_gate(store: RestoreStore) -> None:
     journal = store.read()
     if journal is None or journal.phase is not RestorePhase.COMPLETE:
         raise HostRestoreError("restore completion is not durable")
-    from lowerduckpond_static_host_agent.host_restore_droplet import (  # noqa: PLC0415 - break restore/launch import cycle
-        require_activation,
-    )
-
-    require_activation(store)
+    require_scoped_activation(store)
     # Commit ordinary admission before opening public ingress. A separate
     # durable intent keeps unfinished firewall cleanup resumable across reboot.
     store.directory.remove(GATE, missing_ok=True)

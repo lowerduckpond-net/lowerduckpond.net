@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import replace
 from hashlib import sha256
 
 import pytest
 
-from scripts.m3_12_contracts import Document, ValidationError
+from scripts.m3_12_contracts import Document, ValidationError, encode
 from scripts.m3_12_droplet_plan import (
     CONFIGURATION_FIELDS,
     EGRESS,
@@ -19,6 +20,7 @@ from scripts.m3_12_droplet_plan import (
     ApprovedHostPlan,
     verify_initial_host_plan,
 )
+from scripts.m3_12_droplet_provider import ReviewedReadback, bind_initial_allocation
 
 CLOUD_INIT = "#cloud-config\nssh_pwauth: false\n"
 
@@ -181,3 +183,110 @@ def test_droplet_plan_rejects_existing_changes_imports_and_unreviewed_graph(
     }
     with pytest.raises(ValidationError, match="droplet-plan-unsafe-unknown"):
         verify_initial_host_plan(plan, scope)
+
+
+@pytest.fixture
+def readback(
+    reviewed_plan: tuple[Document, ApprovedHostPlan],
+) -> tuple[Document, Document, Document]:
+    plan, scope = reviewed_plan
+    resources = [
+        {
+            **{key: row[key] for key in ("address", "mode", "name", "type", "provider_name")},
+            "values": deepcopy(row["change"]["after"]),
+        }
+        for row in plan["resource_changes"]
+    ]
+    host, firewall, membership = [row["values"] for row in resources]
+    host.update(ipv4_address="11.1.2.11", urn="do:droplet:101")
+    firewall["id"] = "00000000-0000-4000-8000-000000000003"
+    state = {
+        "format_version": "1.0",
+        "values": {
+            "root_module": {"resources": resources},
+            "outputs": {
+                "allocation": {
+                    "sensitive": False,
+                    "value": {
+                        "run_id": scope.run_id,
+                        "role": scope.role,
+                        "project_id": scope.project_id,
+                        "droplet_id": "101",
+                        "urn": host["urn"],
+                        "ipv4": host["ipv4_address"],
+                        "firewall": firewall["id"],
+                    },
+                },
+            },
+        },
+    }
+    observed = {
+        "droplet": {
+            "id": 101,
+            "name": scope.name,
+            "ipv4": host["ipv4_address"],
+            "status": "active",
+            **{key: host[key] for key in ("region", "image", "size", "ipv6", "backups")},
+        },
+        "firewalls": [{**deepcopy(firewall), "settled": True}],
+        "projectMembership": deepcopy(membership),
+    }
+    exclusions = {
+        "format": "lowerduckpond-m3-12-droplet-production-exclusions-v1",
+        "dropletIds": [999],
+        "addresses": ["11.1.2.20"],
+        "identityDigests": ["1" * 64],
+    }
+    return state, observed, exclusions
+
+
+def test_initial_provider_readback_joins_only_the_exact_reviewed_role(
+    reviewed_plan: tuple[Document, ApprovedHostPlan], readback: tuple[Document, Document, Document]
+) -> None:
+    plan, scope = reviewed_plan
+    state, observed, exclusions = readback
+    plan_raw = encode(plan)
+    state_raw = encode(state)
+    review = ReviewedReadback(
+        scope,
+        sha256(plan_raw).hexdigest(),
+        sha256(state_raw).hexdigest(),
+        f"qualification/m3-12/{scope.run_id}/{scope.role}.tfstate",
+    )
+    result = bind_initial_allocation(review, plan_raw, state_raw, observed, encode(exclusions))
+    assert result.run_id == scope.run_id
+    assert result.role == scope.role
+    assert result.identity.ipv4 == "11.1.2.11"
+    assert result.state_sha256 == review.state_json_sha256
+    with pytest.raises(ValidationError, match="droplet-readback-review-changed"):
+        bind_initial_allocation(
+            replace(review, state_key=review.state_key.replace("restore", "source")),
+            plan_raw,
+            state_raw,
+            observed,
+            encode(exclusions),
+        )
+    foreign = deepcopy(state)
+    foreign["values"]["root_module"]["resources"].append(
+        {"address": "digitalocean_reserved_ip.foreign"}
+    )
+    foreign_raw = encode(foreign)
+    with pytest.raises(ValidationError, match="droplet-plan-resource-set-changed"):
+        bind_initial_allocation(
+            replace(review, state_json_sha256=sha256(foreign_raw).hexdigest()),
+            plan_raw,
+            foreign_raw,
+            observed,
+            encode(exclusions),
+        )
+    observed["firewalls"][0]["settled"] = False
+    with pytest.raises(ValidationError, match="droplet-readback-provider-firewall-changed"):
+        bind_initial_allocation(review, plan_raw, state_raw, observed, encode(exclusions))
+    observed["firewalls"][0]["settled"] = True
+    observed["projectMembership"]["resources"] = []
+    with pytest.raises(ValidationError, match="droplet-readback-provider-identity-changed"):
+        bind_initial_allocation(review, plan_raw, state_raw, observed, encode(exclusions))
+    observed["projectMembership"]["resources"] = ["do:droplet:101"]
+    exclusions["dropletIds"] = [101]
+    with pytest.raises(ValidationError, match="production-crossover"):
+        bind_initial_allocation(review, plan_raw, state_raw, observed, encode(exclusions))

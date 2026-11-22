@@ -364,6 +364,7 @@ files = [
   "scripts/m3_12_droplet.py",
   "scripts/m3_12_droplet_inventory.py",
   "scripts/m3_12_droplet_plan.py",
+  "scripts/m3_12_droplet_provider.py",
   "scripts/m3_12_droplet_observe.py",
   "scripts/m3_12_droplet_ssh.py",
   "scripts/m3_12_droplet_controller.py",

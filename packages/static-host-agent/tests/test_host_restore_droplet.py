@@ -36,6 +36,10 @@ from lowerduckpond_static_host_agent.backup_descriptor import (
 )
 from lowerduckpond_static_host_agent.backup_identity import framed_digest
 from lowerduckpond_static_host_agent.host_restore_authority import begin_restore_authority
+from lowerduckpond_static_host_agent.host_restore_delivery import (
+    delivery_readback,
+    publication_files,
+)
 from lowerduckpond_static_host_agent.host_restore_gate import (
     INGRESS,
     close_gate,
@@ -447,3 +451,25 @@ def test_droplet_scope_remains_required_even_when_activation_files_are_missing(
         with pytest.raises(FileNotFoundError):
             activation.activate_completed_restore(store, inputs, root / "no-caddy")
         assert (root / GATE[0]).exists()
+
+
+def test_installed_delivery_readback_requires_the_original_bundle_and_present_host(
+    native_recovery: tuple[Path, RestoreInputs],
+) -> None:
+    _, inputs = native_recovery
+    owner = os.geteuid()
+    authority = droplet_restore.AUTHORITY
+    artifact = cast(str, inputs.document["originalArtifactSha256"])
+    manifest = publication_files(authority, inputs, owner=owner)
+    confirmed = delivery_readback(inputs, artifact, owner=owner, authority=authority)
+    assert confirmed == {
+        "restoreId": inputs.restore_id,
+        "trustedInputsDigest": inputs.digest,
+        "activationScopeDigest": inputs.droplet_scope_digest,
+        "publicationFiles": manifest,
+    }
+    with pytest.raises(HostRestoreError, match="droplet_restore_destination_changed"):
+        delivery_readback(inputs, "d" * 64, owner=owner, authority=authority)
+    observe.MACHINE_ID.write_bytes(b"d" * 32 + b"\n")
+    with pytest.raises(ValidationError, match="droplet-enrollment-changed"):
+        delivery_readback(inputs, artifact, owner=owner, authority=authority)

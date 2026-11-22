@@ -10,13 +10,13 @@ from lowerduckpond_static_contracts import canonical_json_bytes, decode_json_obj
 from lowerduckpond_static_host_agent import host_restore_services as services
 from lowerduckpond_static_host_agent.caddy_startup import CaddyStartupStore
 from lowerduckpond_static_host_agent.durable import DurableDirectory
-from lowerduckpond_static_host_agent.host_restore_droplet import require_activation
 from lowerduckpond_static_host_agent.host_restore_gate import (
     INGRESS,
     gate_pending,
     ingress_pending,
     ingress_record,
     open_gate,
+    require_scoped_activation,
 )
 from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
 from lowerduckpond_static_host_agent.host_restore_journal import (
@@ -45,7 +45,7 @@ def finish_public_ingress(
     if gate_pending(store):
         raise HostRestoreError("restore_ingress_requires_admission_commit")
     if ingress_pending(store):
-        require_activation(store)
+        require_scoped_activation(store)
         services.remove_public_gate()
         failure_hook("firewall")
         store.directory.remove(INGRESS, missing_ok=True)
@@ -94,7 +94,7 @@ def activate_completed_restore(  # noqa: PLR0913 - fixed inputs and interruption
     assert journal is not None  # noqa: S101 - activation_pending requires it
     if inputs.digest != journal.bindings["trustedInputs"]:
         raise HostRestoreError("restore_activation_policy_unbound")
-    require_activation(store, inputs)
+    require_scoped_activation(store, inputs)
     if not gate_pending(store):
         finish_public_ingress(store, failure_hook=failure_hook)
         return
@@ -104,7 +104,7 @@ def activate_completed_restore(  # noqa: PLR0913 - fixed inputs and interruption
             complete_restore_startup(store, startup, intent)
     failure_hook("startup")
     if inputs.droplet_scope is not None:
-        require_activation(store, inputs)
+        require_scoped_activation(store, inputs)
     _publication(configuration, bool(inputs.document["publicationEnabled"]), store.owner)
     failure_hook("publication")
     private_directory(ready.parent, owner=store.owner)

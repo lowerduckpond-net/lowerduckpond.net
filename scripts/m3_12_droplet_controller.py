@@ -9,13 +9,17 @@ from hashlib import sha256
 from pathlib import Path
 from typing import cast
 
-from lowerduckpond_static_host_agent.durable import DurableDirectory
+from lowerduckpond_static_host_agent.droplet_enrollment import ENROLLMENT, EXCLUSIONS, TARGET
+from lowerduckpond_static_host_agent.durable import DurableDirectory, StateAlreadyExistsError
 from lowerduckpond_static_host_agent.host_restore_bootstrap import verify_bootstrap_inputs
+from lowerduckpond_static_host_agent.host_restore_delivery import LAUNCH_FILES, publication_files
 from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
 from lowerduckpond_static_host_agent.host_restore_journal import (
     DROPLET_BINDING,
     DROPLET_SCOPE_FORMAT,
+    RestorePhase,
 )
+from lowerduckpond_static_host_agent.host_restore_paths import private_directory
 
 from scripts.m3_12_contracts import (
     DISPOSABLE,
@@ -34,7 +38,13 @@ from scripts.m3_12_droplet_inventory import (
     enrollment_records,
     prepare_source_and_restore,
 )
-from scripts.m3_12_droplet_ssh import Endpoint, observe
+from scripts.m3_12_droplet_ssh import (
+    Endpoint,
+    installation_inventory,
+    observe,
+    restore_delivery,
+    restore_status,
+)
 
 COLD_STATE = (
     {"artifactSha256": None, "launchPresent": False, "publication": "absent"},
@@ -404,6 +414,201 @@ def prepare_cold_restore(
         )
         _seal(attempt.directory, "droplet-restore-target.json", scoped.document)
         return plan
+
+
+def stage_restore_delivery(
+    attempt: Attempt, endpoint: Endpoint, production_exclusions: bytes, *, inputs_directory: Path
+) -> Path:
+    """Build the fixed private native bootstrap directory from the sealed restore plan."""
+    with attempt.lock("controller.lock", blocking=False):
+        _, completed, _, original = _retained_role(
+            attempt, "restore", endpoint, production_exclusions
+        )
+        plan = read(attempt.directory, "droplet-cold-restore-inputs.json")
+        scoped = RestoreInputs.from_bytes(
+            encode(read(attempt.directory, "droplet-restore-target.json"))
+        )
+        owner = os.geteuid()
+        original_inputs = RestoreInputs.load(inputs_directory, owner=owner)
+        ca_count = verify_bootstrap_inputs(inputs_directory, original_inputs, owner=owner)
+        require(
+            ca_count == plan["originalCaCount"]
+            and scoped.digest == plan["trustedInputs"]
+            and digest(completed) == plan["preparationSha256"]
+            and {**original_inputs.document, DROPLET_BINDING: scoped.droplet_scope}
+            == scoped.document
+            and original_inputs.droplet_scope in (None, scoped.droplet_scope),
+            "droplet-restore-delivery-inputs-changed",
+        )
+        after = _observe_same_host(endpoint, original)
+        require(after["state"] in COLD_STATE, "droplet-restore-target-is-not-cold")
+        site = attempt.directory / "restore-delivery"
+        private_directory(site, owner=owner)
+        bound = completed["restore"]
+        files = {
+            "target.json": encode(scoped.document),
+            TARGET: encode(bound["target"]),
+            ENROLLMENT: encode(bound["enrollment"]),
+            EXCLUSIONS: production_exclusions,
+        }
+        with DurableDirectory.open(
+            inputs_directory, expected_owner=owner, expected_directory_mode=0o700
+        ) as source:
+            names = {
+                f"source-fence-{scoped.restore_id}.json": f"source-fence-{scoped.restore_id}.json"
+            }
+            names.update(
+                {
+                    f"original-origin-pull-ca-{i}.pem": f"original-origin-pull-ca-{i}.pem"
+                    for i in range(ca_count)
+                }
+            )
+            if scoped.document["launch"] is not None:
+                names.update({f"source-{name}": name for name in LAUNCH_FILES})
+            for original_name, destination_name in names.items():
+                files[destination_name] = source.read_regular(
+                    (original_name,),
+                    expected_owner=owner,
+                    expected_mode=0o600,
+                    maximum_bytes=MAX_RECORD_BYTES,
+                )
+        _retain_files(site, files, owner=owner)
+        verify_bootstrap_inputs(site, scoped, owner=owner)
+        published = publication_files(site, scoped, owner=owner)
+        _seal(
+            attempt.directory,
+            "droplet-restore-delivery.json",
+            {
+                "format": "lowerduckpond-m3-12-restore-delivery-v1",
+                "restoreId": scoped.restore_id,
+                "trustedInputsDigest": scoped.digest,
+                "activationScopeDigest": scoped.droplet_scope_digest,
+                "publicationFiles": published,
+            },
+        )
+        return site
+
+
+def _retain_files(site: Path, files: dict[str, bytes], *, owner: int) -> None:
+    with DurableDirectory.open(
+        site, expected_owner=owner, expected_directory_mode=0o700
+    ) as destination:
+        for name, raw in files.items():
+            try:
+                destination.create_immutable((name,), raw)
+            except StateAlreadyExistsError:
+                previous = destination.read_regular(
+                    (name,),
+                    expected_owner=owner,
+                    expected_mode=0o600,
+                    maximum_bytes=MAX_RECORD_BYTES,
+                )
+                require(previous == raw, "droplet-restore-delivery-original-changed")
+
+
+def prepare_install_handoff(
+    attempt: Attempt, endpoint: Endpoint, production_exclusions: bytes
+) -> Path:
+    """Seal the pinned Ansible inventory and fixed dark vars for one owned role."""
+    role = endpoint.allocation.role
+    require(role in {"fresh", "restore"}, "droplet-install-role-invalid")
+    with attempt.lock("controller.lock", blocking=False):
+        prepared, _, _, before = _retained_role(attempt, role, endpoint, production_exclusions)
+        owner = os.geteuid()
+        stage: Document = {
+            "caddy_generation_enabled": True,
+            "backup_static_recovery_enabled": True,
+            "backup_audit_rotation_enabled": False,
+            "static_publication_enabled": False,
+            "host_recovery_bootstrap_enabled": role == "restore",
+        }
+        if role == "restore":
+            delivery_directory = attempt.directory / "restore-delivery"
+            scoped = RestoreInputs.load(delivery_directory, owner=owner)
+            delivery = read(attempt.directory, "droplet-restore-delivery.json")
+            require(
+                delivery["trustedInputsDigest"] == scoped.digest
+                and delivery["activationScopeDigest"] == scoped.droplet_scope_digest
+                and delivery["publicationFiles"]
+                == publication_files(delivery_directory, scoped, owner=owner),
+                "droplet-restore-install-delivery-changed",
+            )
+            verify_bootstrap_inputs(delivery_directory, scoped, owner=owner)
+            stage.update(
+                host_recovery_restore_id=scoped.restore_id,
+                host_recovery_input_directory=str(delivery_directory),
+                static_host_agent_artifact_sha256=scoped.document["originalArtifactSha256"],
+            )
+        else:
+            stage["static_host_agent_artifact_sha256"] = prepared["expectedArtifactSha256"]
+        after = _observe_same_host(endpoint, before)
+        require(
+            after["state"] in (COLD_STATE if role == "restore" else COLD_STATE[:1]),
+            "droplet-install-target-is-not-cold",
+        )
+        site = attempt.directory / f"install-{role}"
+        private_directory(site, owner=owner)
+        key, _ = endpoint.validate()
+        inventory = installation_inventory(endpoint, site / "known_hosts")
+        _retain_files(
+            site,
+            {
+                "inventory.json": encode(inventory),
+                "stage.json": encode(stage),
+                "known_hosts": endpoint.provider.ipv4.encode("ascii") + b" " + key + b"\n",
+            },
+            owner=owner,
+        )
+        return site
+
+
+def inspect_restored_host(
+    attempt: Attempt, endpoint: Endpoint, production_exclusions: bytes
+) -> Document:
+    """Join native status and delivered authority on the same pinned bootstrap."""
+    with attempt.lock("controller.lock", blocking=False):
+        _, _, _, original = _retained_role(attempt, "restore", endpoint, production_exclusions)
+        staged = read(attempt.directory, "droplet-restore-delivery.json")
+        approved = read(attempt.directory, "droplet-restore-target.json")
+        first = _observe_same_host(endpoint, original)
+        delivered = restore_delivery(endpoint)
+        require(
+            delivered == {name: value for name, value in staged.items() if name != "format"},
+            "droplet-restore-installed-delivery-changed",
+        )
+        status = restore_status(endpoint)
+        if status != {"phase": "not-started"}:
+            require(
+                set(status) == {"restoreId", "snapshotId", "phase", "activationPending"}
+                and status["restoreId"] == approved["restoreId"]
+                and status["snapshotId"] == approved["snapshotId"]
+                and type(status["phase"]) is str
+                and status["phase"] in set(RestorePhase)
+                and type(status["activationPending"]) is bool
+                and (status["phase"] == RestorePhase.COMPLETE or status["activationPending"]),
+                "droplet-restore-installed-status-changed",
+            )
+        last = _observe_same_host(endpoint, original)
+        require(
+            first == last and last["state"]["artifactSha256"] == approved["originalArtifactSha256"],
+            "droplet-restore-installed-observation-changed",
+        )
+        if status.get("phase") == RestorePhase.COMPLETE and status["activationPending"] is False:
+            require(
+                last["state"]["publication"]
+                == ("enabled" if approved["publicationEnabled"] else "dark")
+                and last["state"]["launchPresent"] == (approved["launch"] is not None),
+                "droplet-restore-installed-publication-changed",
+            )
+        result = {
+            "format": "lowerduckpond-m3-12-restore-status-observation-v1",
+            "deliverySha256": digest(staged),
+            "bootSha256": last["bootSha256"],
+            "guestObservationSha256": digest(last),
+            "restoreStatus": status,
+        }
+        _seal(attempt.directory, f"droplet-restore-status-{digest(result)}.json", result)
+        return result
 
 
 def inspect_fresh_dark(

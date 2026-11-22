@@ -46,12 +46,23 @@ def main() -> int:
         ):
             raise ValueError("restore_bootstrap_target_mismatch")
         original_ca_count = verify_bootstrap_inputs(arguments.directory, inputs, owner=owner)
+        delivery: dict[str, object] = {}
+        if inputs.droplet_scope is not None:
+            from lowerduckpond_static_host_agent.host_restore_delivery import (  # noqa: PLC0415
+                publication_files,
+            )
+
+            delivery = {
+                "activationScopeDigest": inputs.droplet_scope_digest,
+                "publicationFiles": publication_files(arguments.directory, inputs, owner=owner),
+            }
         sys.stdout.buffer.write(
             canonical_json_bytes(
                 {
                     "restoreId": inputs.restore_id,
                     "originalCaCount": original_ca_count,
                     "trustedInputsDigest": inputs.digest,
+                    **delivery,
                 }
             )
         )

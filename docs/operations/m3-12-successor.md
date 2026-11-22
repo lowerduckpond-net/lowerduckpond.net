@@ -165,8 +165,9 @@ identity and selected artifact before setting publication and committing
 admission. Ingress cleanup and boot reopen the same proof. The publication
 gate requires completed destination admission for the restored source receipt.
 The source receipt and restored launch bytes keep their original identity.
-Protected record delivery and real destination acceptance still need an
-installed journey.
+The [disposable preparation guide](m3-12-qualification.md) describes protected
+delivery and readback through the native role. The installed destination
+journey still needs real-host evidence.
 
 Fresh installation uses a separate attempt and pins the reviewed artifact
 digest before connecting. The controller requires publication configuration,
