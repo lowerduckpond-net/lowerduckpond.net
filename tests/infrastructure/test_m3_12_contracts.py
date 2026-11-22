@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from runpy import run_path
+from typing import Literal
 from uuid import UUID
 
 import pytest
@@ -1266,6 +1267,7 @@ def droplet_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Do
     )
     allocation = droplet_inventory.ApprovedAllocation(
         run_id=binding["runId"],
+        role="source",
         state_sha256=original_target["stateSha256"],
         allocation_sha256=original_target["allocationSha256"],
         inventory_sha256=original_target["inventorySha256"],
@@ -1431,6 +1433,7 @@ def test_droplet_enrollment_refuses_independent_observation_mismatch(drift: str)
     identity = droplet_inventory.ProviderIdentity(proof("project"), 101, "192.0.2.14")
     allocation = droplet_inventory.ApprovedAllocation(
         run_id=uuid(32),
+        role="source",
         state_sha256=proof("state"),
         allocation_sha256=proof("plan"),
         inventory_sha256=proof("inventory"),
@@ -1505,7 +1508,7 @@ def test_droplet_metadata_identity_uses_only_bound_fields(
 
 
 def _allocated_droplet(
-    droplet_id: int, ipv4: str, *, run_id: str
+    droplet_id: int, ipv4: str, *, run_id: str, role: Literal["source", "restore"]
 ) -> droplet_inventory.OwnedDroplet:
     identity = droplet_inventory.ProviderIdentity(proof("project"), droplet_id, ipv4)
     label = str(droplet_id)
@@ -1517,6 +1520,7 @@ def _allocated_droplet(
     return droplet_inventory.OwnedDroplet(
         droplet_inventory.ApprovedAllocation(
             run_id=run_id,
+            role=role,
             state_sha256=proof("run-state"),
             allocation_sha256=proof("allocation" + label),
             inventory_sha256=proof("inventory" + label),
@@ -1534,8 +1538,8 @@ def _allocated_droplet(
 
 
 def test_source_and_cold_restore_require_separate_actual_host_identities() -> None:
-    source = _allocated_droplet(101, "192.0.2.14", run_id=uuid(31))
-    restore = _allocated_droplet(102, "192.0.2.19", run_id=uuid(31))
+    source = _allocated_droplet(101, "192.0.2.14", run_id=uuid(31), role="source")
+    restore = _allocated_droplet(102, "192.0.2.19", run_id=uuid(31), role="restore")
     excluded = encode(
         record(
             "droplet-production-exclusions",
@@ -1548,7 +1552,7 @@ def test_source_and_cold_restore_require_separate_actual_host_identities() -> No
     assert pair["source"][0]["droplet"]["dropletId"] == source.observation.provider.droplet_id
     assert pair["restore"][0]["droplet"]["dropletId"] == restore.observation.provider.droplet_id
 
-    wrong_run = _allocated_droplet(102, "192.0.2.19", run_id=uuid(32))
+    wrong_run = _allocated_droplet(102, "192.0.2.19", run_id=uuid(32), role="restore")
     with pytest.raises(ValidationError, match="droplet-restore-scope-changed"):
         droplet_inventory.prepare_source_and_restore(source, wrong_run, excluded)
 

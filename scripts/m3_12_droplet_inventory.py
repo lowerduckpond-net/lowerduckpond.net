@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from lowerduckpond_static_host_agent.droplet_enrollment import (
     check_production_exclusions,
@@ -31,6 +32,7 @@ class ApprovedAllocation:
     """The reviewed per-run state and provider binding from exact OpenTofu readback."""
 
     run_id: str
+    role: Literal["source", "restore", "fresh"]
     state_sha256: str
     allocation_sha256: str
     inventory_sha256: str
@@ -122,6 +124,8 @@ def prepare_source_and_restore(
     """Verify two independent owned hosts before any source/restore operation."""
     require(
         source.allocation.run_id == restore.allocation.run_id
+        and source.allocation.role == "source"
+        and restore.allocation.role == "restore"
         and source.allocation.transaction_namespace_sha256
         != restore.allocation.transaction_namespace_sha256,
         "droplet-restore-scope-changed",

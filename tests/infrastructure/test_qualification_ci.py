@@ -38,6 +38,7 @@ def test_selection_runs_before_workspace_dependencies_are_installed(
     )
     assert result.returncode == 0, result.stderr
     assert CASE in result.stdout
+    assert "worker_view=true" in (tmp_path / "outputs").read_text().splitlines()
 
 
 def receipt(directory: Path, case: str) -> Path:

@@ -302,6 +302,7 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix }}
       required: ${{ steps.plan.outputs.required }}
       complete: ${{ steps.plan.outputs.complete }}
+      worker_view: ${{ steps.plan.outputs.worker_view }}
     steps:
       - name: Check out complete history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -324,6 +325,31 @@ jobs:
         run: |
           python -m scripts.qualification_ci plan --event "$EVENT_NAME" \
             --base "$BASE_REVISION" --head "$HEAD_REVISION"
+
+  ansible-worker-view:
+    name: Ansible installed worker publication view
+    needs: [installed-selection]
+    if: needs.installed-selection.outputs.worker_view == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned witness tools
+        uses: jdx/mise-action@82a612c5ab8bcda7cc5db6b7e81a8e7584c3dc6e # v5.2.3
+        with:
+          version: 2026.8.8
+          install_args: python uv
+          persist_github_token: false
+          cache_save: false
+      - name: Exercise publication in the installed worker sandbox
+        env:
+          DOCKER_HOST: unix:///var/run/docker.sock
+        run: |
+          fixture=config/ansible/molecule/m3_8
+          docker build --file "$fixture/Dockerfile.j2" --tag ldp-worker-view:local "$fixture"
+          uv run --frozen python -m scripts.check_m3_12_worker_view ldp-worker-view:local
 
   ansible-m3-8:
     name: Ansible installed ${{ matrix.case }}
@@ -493,7 +519,7 @@ jobs:
   ansible:
     name: Ansible
     if: always()
-    needs: [ansible-static, installed-selection, ansible-m3-8, ansible-complete]
+    needs: [ansible-static, installed-selection, ansible-m3-8, ansible-complete, ansible-worker-view]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -521,10 +547,17 @@ jobs:
           INSTALLED_SELECTION: ${{ needs.installed-selection.outputs.selection }}
           STATIC_RESULT: ${{ needs.ansible-static.result }}
           MATRIX_RESULT: ${{ needs.ansible-m3-8.result }}
+          WORKER_VIEW_REQUIRED: ${{ needs.installed-selection.outputs.worker_view }}
+          WORKER_VIEW_RESULT: ${{ needs.ansible-worker-view.result }}
           COMPLETE_RESULT: ${{ needs.ansible-complete.result }}
           RESULT_DIRECTORY: ${{ runner.temp }}/installed-results
         run: |
           test "$SELECTION_RESULT" = success
+          case "$WORKER_VIEW_REQUIRED" in
+            true) test "$WORKER_VIEW_RESULT" = success ;;
+            false) test "$WORKER_VIEW_RESULT" = skipped ;;
+            *) exit 1 ;;
+          esac
           python -m scripts.qualification_ci verify --event "$EVENT_NAME" \
             --directory "$RESULT_DIRECTORY"
 

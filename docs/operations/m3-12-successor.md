@@ -135,3 +135,23 @@ preparation. A changed boot digest on the same host is an observation.
 A full reboot assertion still needs the approved operation and service
 readback. Provider provisioning, protected enrollment delivery, paired
 restore, and ingress verification remain separate controller phases.
+
+For cold restore, the controller preflights the canonical native recovery
+inputs and the source fencing receipt transferred from trusted custody.
+The machine identities in those inputs must match the independently observed
+source and restore hosts. The attempt retains the exact snapshot and input
+digests and reads back the same cold destination before bootstrap. This step
+validates the original restore policy and fencing receipt. Repository and
+archive reads, live fence and ingress verification, and materialization
+remain part of the restore journey.
+
+Fresh installation uses a separate attempt and the same pinned read path.
+The controller requires publication configuration, artifact selection, and
+durable launch to be absent before recording the fresh role. The role can be
+reobserved after reboot against its original provider and host identity.
+
+Normal CI runs the worker service witness in a separate GitHub-hosted job
+when installed selection includes successor rollout. The job builds the
+Ubuntu 26.04 systemd fixture and runs the worker with the guest network
+disabled. The Ansible aggregate requires the witness alongside the other
+selected checks. The witness uses synthetic Droplet identity inputs.
