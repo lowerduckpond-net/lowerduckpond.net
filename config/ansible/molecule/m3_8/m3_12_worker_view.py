@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
+import re
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from uuid import uuid4
 
 # The controller installs and independently verifies the fixture artifact first.
 if __name__ == "__main__":
@@ -207,17 +211,107 @@ def create_launch(artifact: str, *, owner: int = 0) -> None:
     )
 
 
-def run_worker(expected: int) -> None:
-    argv = ["/usr/bin/systemctl"]
-    result = subprocess.run(  # noqa: S603 - fixed owned worker unit
-        [*argv, "start", "--wait", UNIT], check=False
+def systemctl(*arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(  # noqa: S603 - fixed commands for the owned test unit
+        ["/usr/bin/systemctl", *arguments], capture_output=True, text=True, check=False
     )
-    observed = subprocess.check_output(  # noqa: S603 - fixed service status query
-        [*argv, "show", UNIT, "--property=ExecMainStatus", "--value"], text=True
-    ).strip()
+
+
+def command_result(result: subprocess.CompletedProcess[str]) -> str:
+    return (
+        f"{' '.join(result.args)} exit={result.returncode} "
+        f"stdout={result.stdout.strip()[:500]!r} stderr={result.stderr.strip()[:1000]!r}"
+    )
+
+
+def worker_state() -> subprocess.CompletedProcess[str]:
+    return systemctl(
+        "show", UNIT, "--property=LoadState,ActiveState,SubState,Result,ExecMainCode,ExecMainStatus"
+    )
+
+
+def active_state(result: subprocess.CompletedProcess[str]) -> str:
+    return next(
+        (
+            line.removeprefix("ActiveState=")
+            for line in result.stdout.splitlines()
+            if line.startswith("ActiveState=")
+        ),
+        "",
+    )
+
+
+def run_worker(expected: int) -> None:
+    manager = systemctl("show", "--property=SystemState", "--value")
+    state = worker_state()
     require(
-        (result.returncode == 0) == (expected == 0) and observed == str(expected),
-        f"worker exit {observed}, expected {expected}",
+        manager.returncode == 0
+        and manager.stdout.strip() in {"running", "degraded"}
+        and state.returncode == 0
+        and "LoadState=loaded" in state.stdout.splitlines()
+        and active_state(state) in {"inactive", "failed"},
+        f"worker not ready: {command_result(manager)}; {command_result(state)}",
+    )
+    root = STATE / "worker-view-witness"
+    root.mkdir(mode=0o700, exist_ok=True)
+    receipt_path = root / "receipt.json"
+    stderr_path = root / "stderr"
+    for path in (root / "entered", receipt_path, stderr_path):
+        path.unlink(missing_ok=True)
+    nonce = uuid4().hex
+    (root / "request").write_text(nonce)
+
+    # The start job uses systemd's private manager connection. An ExecStopPost receipt
+    # survives successful unit unloading and records the main process exit for this request.
+    started = systemctl("start", UNIT)
+    state = worker_state()
+    while (
+        started.returncode == 0
+        and state.returncode == 0
+        and active_state(state) in {"activating", "active", "deactivating"}
+    ):
+        time.sleep(0.1)
+        state = worker_state()
+
+    receipt = None
+    if receipt_path.is_file():
+        try:
+            value = json.loads(receipt_path.read_text())
+            if isinstance(value, dict):
+                receipt = value
+        except UnicodeError, json.JSONDecodeError:
+            pass
+
+    worker_error = ""
+    if stderr_path.is_file():
+        with stderr_path.open(errors="replace") as stream:
+            worker_error = stream.read(1000).strip()
+    if (
+        started.returncode == 0
+        and state.returncode == 0
+        and active_state(state) in {"inactive", "failed"}
+        and receipt is not None
+        and receipt.get("request") == nonce
+        and receipt.get("entered") is True
+        and isinstance(invocation := receipt.get("invocation"), str)
+        and re.fullmatch(r"[0-9a-f]{32}", invocation)
+        and invocation != "0" * 32
+        and receipt.get("result") == ("success" if expected == 0 else "exit-code")
+        and receipt.get("code") == "exited"
+        and receipt.get("status") == str(expected)
+        and (expected == 0 or "launch_authority_unavailable" in worker_error.splitlines())
+    ):
+        return
+
+    summary = (
+        None
+        if receipt is None
+        else {key: receipt.get(key) for key in ("entered", "result", "code", "status")}
+    )
+    raise ValueError(
+        f"worker execution receipt did not prove exit {expected}: {command_result(manager)}; "
+        f"{command_result(started)}; {command_result(state)}; "
+        f"receipt={summary!r} worker_stderr={worker_error!r}"
     )
 
 

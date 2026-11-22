@@ -111,6 +111,11 @@ the installed gate after the unit's normal sudo transition. The guest has no
 network or host binds. The witness checks a valid identity, missing and
 mismatched identity, revocation, read-only mount flags, and exclusion of the
 controller directory and SSH private key. Its Droplet facts are synthetic.
+The witness queries the booted systemd manager on its private connection.
+Each start must produce a fresh test-only stop receipt after the sandbox
+checks reach the gate. The receipt records the actual worker exit even if
+systemd has already unloaded the unit. Identity and revocation cases must
+report the launch-authority denial from the gate.
 
 ### Pinned SSH preparation
 

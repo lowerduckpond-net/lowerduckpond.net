@@ -28,9 +28,16 @@ JOB = "00000000-0000-7000-8000-000000000003"
 GATE = f"{LIBEXEC}/static-publication-gate"
 VIEW = "/var/lib/lowerduckpond/convergence/m3-12/droplet-publication"
 STAGING = "/worker-view-staging"
+WITNESS = f"{STATE}/worker-view-witness"
+STOP_PROBE = f"{LIBEXEC}/m3-12-worker-view-stop"
+WORKER_DROPIN = f"""[Service]
+StandardError=file:{WITNESS}/stderr
+ExecStopPost=!{STOP_PROBE}
+"""
 PROBE_SOURCE = f"""#!/usr/bin/python3 -I
 import os
 import sys
+from pathlib import Path
 assert os.geteuid() == 0
 assert not os.path.lexists("/.dockerenv")
 assert not os.path.lexists("/var/lib/lowerduckpond/convergence/m3-12/controller-only-witness")
@@ -43,7 +50,30 @@ for path in (
 ):
     if os.path.lexists(path):
         assert os.statvfs(path).f_flag & os.ST_RDONLY
+root = Path("{WITNESS}")
+with (root / "entered").open("x") as entered:
+    entered.write((root / "request").read_text())
 os.execv("{GATE}", ["{GATE}", "worker", sys.argv[1]])
+"""
+STOP_SOURCE = f"""#!/usr/bin/python3 -I
+import json
+import os
+from pathlib import Path
+root = Path("{WITNESS}")
+nonce = (root / "request").read_text()
+entered = root / "entered"
+with (root / "receipt.json").open("x") as result:
+    json.dump(
+        {{
+            "request": nonce,
+            "entered": entered.is_file() and entered.read_text() == nonce,
+            "invocation": os.environ.get("INVOCATION_ID"),
+            "result": os.environ.get("SERVICE_RESULT"),
+            "code": os.environ.get("EXIT_CODE"),
+            "status": os.environ.get("EXIT_STATUS"),
+        }},
+        result,
+    )
 """
 SETUP = f"""set -eu
 stage=guest-users
@@ -62,7 +92,11 @@ install -m 0755 {STAGING}/static-publication-gate {GATE}
 install -m 0755 {STAGING}/host-restore-gate {LIBEXEC}/host-restore-gate
 install -m 0755 {STAGING}/verify-static-host-agent-artifact {LIBEXEC}/
 install -m 0755 {STAGING}/m3-12-worker-view-probe {PROBE}
+install -m 0755 {STAGING}/m3-12-worker-view-stop {STOP_PROBE}
 install -m 0644 {STAGING}/lowerduckpond-static-worker@.service /etc/systemd/system/
+install -d -m 0755 /etc/systemd/system/lowerduckpond-static-worker@.service.d
+install -m 0644 {STAGING}/worker-view-receipt.conf \
+    /etc/systemd/system/lowerduckpond-static-worker@.service.d/worker-view-receipt.conf
 sudo_rule="ldp-provisioner ALL=(root:caddy) NOPASSWD: {PROBE} {JOB}"
 printf '%s\\n' "$sudo_rule" > /etc/sudoers.d/worker-view
 chmod 0440 /etc/sudoers.d/worker-view
@@ -132,6 +166,8 @@ def artifact_and_unit(directory: Path) -> str:
     )
     (directory / "lowerduckpond-static-worker@.service").write_text(enrolled)
     (directory / "m3-12-worker-view-probe").write_text(PROBE_SOURCE)
+    (directory / "m3-12-worker-view-stop").write_text(STOP_SOURCE)
+    (directory / "worker-view-receipt.conf").write_text(WORKER_DROPIN)
     return digest
 
 
@@ -142,6 +178,8 @@ def install(container: str, directory: Path, digest: str) -> None:
         directory / "worker-artifact.tar",
         directory / "lowerduckpond-static-worker@.service",
         directory / "m3-12-worker-view-probe",
+        directory / "m3-12-worker-view-stop",
+        directory / "worker-view-receipt.conf",
         ROLE / "files/static-publication-gate",
         ROLE / "files/verify-static-host-agent-artifact",
         ROOT / "config/ansible/roles/host_recovery/files/host-restore-gate",
@@ -159,7 +197,14 @@ def install(container: str, directory: Path, digest: str) -> None:
             re.MULTILINE,
         )
         stage = "transport" if known is None else known.group(1)
-        raise ValueError(f"offline witness setup failed at {stage} (exit {result.returncode})")
+        detail = (
+            f"; systemctl daemon-reload stderr={result.stderr.strip()[:1000]!r}"
+            if stage == "unit-reload"
+            else ""
+        )
+        raise ValueError(
+            f"offline witness setup failed at {stage} (exit {result.returncode}){detail}"
+        )
 
 
 def wait_for_systemd(container: str) -> None:
@@ -176,11 +221,25 @@ def wait_for_systemd(container: str) -> None:
             "exec", container, "/usr/bin/test", "-S", "/run/systemd/private", check=False
         )
         if socket_ready.returncode == 0:
-            break
+            result = docker(
+                "exec",
+                container,
+                "/usr/bin/systemctl",
+                "show",
+                "--property=SystemState",
+                "--value",
+                check=False,
+            )
+            state = result.stdout.strip()
+            if result.returncode == 0 and state in {"running", "degraded"}:
+                return
+            if result.returncode or state not in {"initializing", "starting"}:
+                raise ValueError(
+                    "/usr/bin/systemctl show --property=SystemState --value "
+                    f"exit={result.returncode} manager={state[:80]!r} "
+                    f"stderr={result.stderr.strip()[:1000]!r}"
+                )
         time.sleep(0.1)
-    boot = docker("exec", container, "systemctl", "is-system-running", "--wait", check=False)
-    if boot.stdout.strip() not in {"running", "degraded"}:
-        raise ValueError("the offline guest systemd manager did not finish booting")
 
 
 def witness(image: str, directory: Path) -> None:
