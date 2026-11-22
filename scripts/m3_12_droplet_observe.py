@@ -8,9 +8,12 @@ from __future__ import annotations
 import base64
 import json
 import os
+import platform
 import re
 import stat
+import subprocess
 import sys
+import time
 from hashlib import sha256
 from http import HTTPStatus
 from http.client import HTTPConnection, HTTPException
@@ -25,6 +28,19 @@ BOOT_ID = Path("/proc/sys/kernel/random/boot_id")
 SELECTION = Path("/opt/lowerduckpond/static-host-agent/current")
 LAUNCH = Path("/var/lib/lowerduckpond/static/platform/launch.json")
 PUBLICATION = Path("/etc/lowerduckpond/static-publication.json")
+RELEASES = Path("/srv/lowerduckpond/sites")
+CGROUP = Path("/sys/fs/cgroup")
+CAPACITY_UNITS = {
+    "caddy": "system.slice/caddy.service",
+    "workers": "lowerduckpond.slice/lowerduckpond-static.slice/lowerduckpond-static-workers.slice",
+    "backup": "system.slice/lowerduckpond-backup.service",
+    "restore": "system.slice/lowerduckpond-host-restore.service",
+}
+MEMORY_FIELDS = ("MemTotal", "MemAvailable", "SwapTotal", "SwapFree")
+VM_FIELDS = ("oom_kill", "pswpin", "pswpout")
+REQUIRED_PACKAGES = ("systemd", "openssh-server", "sudo", "python3", "e2fsprogs")
+CPU_QUOTA_FIELDS = 2
+RESOURCE_FORMAT = "lowerduckpond-m3-12-droplet-capacity-sample-v1"
 IDENTITY_LIMIT = 4096
 METADATA_LIMIT = 64
 ED25519_WIRE_HEADER = b"\0\0\0\x0bssh-ed25519\0\0\0\x20"
@@ -180,10 +196,164 @@ def observe(owner: int = 0) -> dict[str, object]:
     }
 
 
+def _counters(
+    path: Path, names: tuple[str, ...], *, memory: bool = False, optional: tuple[str, ...] = ()
+) -> dict[str, int]:
+    result = {}
+    for line in path.read_text(encoding="ascii").splitlines():
+        fields = line.split()
+        key = fields[0].removesuffix(":") if fields else ""
+        if key in names or key in optional:
+            require(key not in result, "droplet-capacity-counter-duplicate")
+            require(
+                len(fields) == (3 if memory else 2)
+                and fields[1].isascii()
+                and fields[1].isdigit()
+                and (not memory or fields[2] == "kB"),
+                "droplet-capacity-counter-invalid",
+            )
+            result[key] = int(fields[1]) * (1024 if memory else 1)
+    require(set(names) <= result.keys(), "droplet-capacity-counter-missing")
+    return result
+
+
+def _cpu_pressure() -> int:
+    raw = Path("/proc/pressure/cpu").read_text(encoding="ascii")
+    match = re.search(r"^some [^\n]* total=([0-9]+)$", raw, re.MULTILINE)
+    if match is None:
+        raise ValueError("droplet-capacity-pressure-missing")
+    return int(match[1])
+
+
+def _cgroup(path: Path) -> dict[str, object] | None:
+    # An already stopped transient service has no readable cgroup. Its missing
+    # kernel peak must stay missing in the original sample.
+    try:
+        values: dict[str, int | None] = {}
+        for field in (
+            "memory.peak",
+            "memory.swap.peak",
+            "memory.max",
+            "memory.swap.max",
+            "pids.max",
+        ):
+            value = (path / field).read_text(encoding="ascii").strip()
+            unlimited = field.endswith(".max") and value == "max"
+            require(
+                unlimited or re.fullmatch(r"[0-9]+", value) is not None, "invalid-cgroup-counter"
+            )
+            values[field] = None if unlimited else int(value)
+        cpu = (path / "cpu.max").read_text(encoding="ascii").split()
+        require(
+            len(cpu) == CPU_QUOTA_FIELDS
+            and (cpu[0] == "max" or cpu[0].isdigit())
+            and cpu[1].isdigit(),
+            "invalid-cgroup-cpu-quota",
+        )
+        usage = _counters(path / "cpu.stat", ("usage_usec",), optional=("throttled_usec",))
+        return {
+            **values,
+            "residentAnonBytes": _counters(path / "memory.stat", ("anon",))["anon"],
+            "cpuQuotaUsec": None if cpu[0] == "max" else int(cpu[0]),
+            "cpuPeriodUsec": int(cpu[1]),
+            "cpu": {"throttled_usec": None, **usage},
+            "memoryEvents": _counters(path / "memory.events", ("oom", "oom_kill")),
+        }
+    except FileNotFoundError:
+        return None
+
+
+def _command(*args: str) -> str:
+    result = subprocess.run(  # noqa: S603 - fixed read-only capacity commands
+        args,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+        env={"LANG": "C", "PATH": "/usr/bin:/bin"},
+    )
+    require(result.returncode == 0, "droplet-capacity-command-failed")
+    return result.stdout.strip()
+
+
+def _package_versions() -> dict[str, str]:
+    rows = _command(
+        "/usr/bin/dpkg-query", "--show", "--showformat=${Package}\t${Version}\n", *REQUIRED_PACKAGES
+    )
+    result = dict(line.split("\t", 1) for line in rows.splitlines())
+    require(set(result) == set(REQUIRED_PACKAGES), "droplet-capacity-packages-missing")
+    return result
+
+
+def _allocation(path: Path) -> dict[str, int]:
+    # GNU du counts each hard-linked inode once across this one traversal.
+    blocks = _command(
+        "/usr/bin/du", "--one-file-system", "--summarize", "--block-size=1", "--", str(path)
+    )
+    inodes = _command(
+        "/usr/bin/du", "--one-file-system", "--summarize", "--inodes", "--", str(path)
+    )
+    return {
+        "allocatedBytes": int(blocks.split("\t", 1)[0]),
+        "uniqueInodes": int(inodes.split("\t", 1)[0]),
+    }
+
+
+def capacity(owner: int = 0, *, allocation: bool = False) -> dict[str, object]:
+    """Sample the host with no workload, cgroup reset, or policy/state writes."""
+    start = time.monotonic_ns() // 1000
+    host = observe(owner)
+    require(stat.S_ISDIR(RELEASES.lstat().st_mode), "droplet-capacity-release-root-invalid")
+    disk = os.statvfs(RELEASES)
+    fragment = disk.f_frsize or disk.f_bsize
+    os_release = platform.freedesktop_os_release()
+    measured = {
+        "format": RESOURCE_FORMAT,
+        "observation": host,
+        "sampleStartedUsec": start,
+        "platform": {
+            "os": os_release["ID"],
+            "release": os_release["VERSION_ID"],
+            "kernel": os.uname().release,
+            "machine": os.uname().machine,
+            "filesystem": _command(
+                "/usr/bin/findmnt", "--noheadings", "--output", "FSTYPE", "--target", str(RELEASES)
+            ),
+        },
+        "packages": _package_versions(),
+        "memoryBytes": _counters(Path("/proc/meminfo"), MEMORY_FIELDS, memory=True),
+        "vmEvents": _counters(Path("/proc/vmstat"), VM_FIELDS),
+        "cpuOnline": os.sysconf("SC_NPROCESSORS_ONLN"),
+        "cpuPressureSomeUsec": _cpu_pressure(),
+        "filesystem": {
+            "totalBytes": fragment * disk.f_blocks,
+            "freeBytes": fragment * disk.f_bfree,
+            "availableBytes": fragment * disk.f_bavail,
+            "totalInodes": disk.f_files,
+            "freeInodes": disk.f_ffree,
+            "availableInodes": disk.f_favail,
+        },
+        "cgroups": {name: _cgroup(CGROUP / group) for name, group in CAPACITY_UNITS.items()},
+        "releaseAllocation": _allocation(RELEASES) if allocation else None,
+    }
+    # The two potentially slow tree walks are optional and belong at workload
+    # boundaries. A changed installed selection cannot label the same sample.
+    require(observe(owner) == host, "droplet-capacity-observation-changed")
+    return {**measured, "sampleFinishedUsec": time.monotonic_ns() // 1000}
+
+
 def main() -> int:
     try:
         require(os.geteuid() == 0 and not os.path.lexists("/.dockerenv"), "droplet-guest-required")
-        sys.stdout.write(json.dumps(observe(), sort_keys=True, separators=(",", ":")) + "\n")
+        arguments = sys.argv[1:]
+        if arguments == []:
+            document = observe()
+        elif arguments in (["--capacity"], ["--capacity-allocation"]):
+            document = capacity(allocation=arguments == ["--capacity-allocation"])
+        else:
+            raise ValueError("droplet-observation-operation-invalid")
+        sys.stdout.write(json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n")
     except OSError, ValueError, HTTPException:
         print("M3.12 disposable guest observation unavailable.", file=sys.stderr)
         return 2

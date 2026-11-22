@@ -37,6 +37,7 @@ from scripts.m3_12_contracts import Document, ValidationError, decode, digest, e
 from scripts.m3_12_diagnostic_store import PRIVATE_DIR, PRIVATE_FILE, Attempt, clock, read
 from scripts.m3_12_droplet_controller import (
     inspect_boot,
+    inspect_capacity,
     inspect_fresh_dark,
     inspect_restored_host,
     prepare,
@@ -265,10 +266,15 @@ def test_transport_loss_retains_first_role_and_never_replaces_the_original(
 ) -> None:
     attempt, source, restore, exclusions = endpoints
 
+    source_report = observation(source)
+    interrupted = True
+
     def wire(args: list[str], **_kwargs: object) -> bytes:
         if args[-2].endswith(source.provider.ipv4):
-            return encode(observation(source))
-        raise subprocess.CalledProcessError(255, args, stderr=FORBIDDEN_FIXTURE_VALUE)
+            return encode(source_report)
+        if interrupted:
+            raise subprocess.CalledProcessError(255, args, stderr=FORBIDDEN_FIXTURE_VALUE)
+        return encode(observation(restore))
 
     monkeypatch.setattr(ssh, "bounded_command", wire)
     started = clock()
@@ -277,8 +283,19 @@ def test_transport_loss_retains_first_role_and_never_replaces_the_original(
     with pytest.raises(ConnectionError, match=r"^droplet-ssh-transport-failed$"):
         prepare(attempt, source, restore, encode(exclusions))
     source_receipt = attempt.directory / "droplet-source-observation.json"
-    assert source_receipt.is_file()
+    first = source_receipt.read_bytes()
     assert not (attempt.directory / "droplet-restore-observation.json").exists()
+
+    interrupted = False
+    source_report["bootSha256"] = proof("new boot after transport loss")
+    prepare(attempt, source, restore, encode(exclusions))
+    assert source_receipt.read_bytes() == first
+    newest = read(attempt.directory, f"droplet-observation-{digest(source_report)}.json")
+    assert newest == source_report
+
+    source_report["state"]["artifactSha256"] = CANDIDATE_SHA256
+    with pytest.raises(ValidationError, match="droplet-preparation-original-changed"):
+        prepare(attempt, source, restore, encode(exclusions))
     assert (attempt.directory / "original.json").read_bytes() == original
     assert all(
         FORBIDDEN_FIXTURE_VALUE not in path.read_text() for path in attempt.directory.glob("*.json")
@@ -311,8 +328,16 @@ def test_boot_observation_reopens_only_the_original_host(
     later = inspect_boot(attempt, "source", source, encode(exclusions))
     assert later["bootChanged"] is True
     assert later["observedBootSha256"] == proof("later boot")
+    original_later = read(
+        attempt.directory, f"droplet-observation-{later['guestObservationSha256']}.json"
+    )
+    assert original_later == source_observation
     assert inspect_boot(attempt, "source", source, encode(exclusions)) == later
     assert path.read_bytes() == before
+    source_observation["state"]["artifactSha256"] = CANDIDATE_SHA256
+    updated = inspect_boot(attempt, "source", source, encode(exclusions))
+    assert updated["observedBootSha256"] == later["observedBootSha256"]
+    assert updated["guestObservationSha256"] != later["guestObservationSha256"]
 
     source_observation["hostIdentity"]["machineSha256"] = proof("different machine")
     with pytest.raises(ValidationError, match="droplet-inspection-host-changed"):
@@ -428,7 +453,11 @@ def test_fresh_dark_readback_requires_the_pinned_candidate_after_reboot(
     assert inspect_fresh_dark(attempt, fresh, excluded) == first
     report["bootSha256"] = proof("fresh reboot after dark install")
     after = inspect_fresh_dark(attempt, fresh, excluded)
-    assert after == {**first, "bootSha256": report["bootSha256"]}
+    assert after == {
+        **first,
+        "bootSha256": report["bootSha256"],
+        "guestObservationSha256": digest(report),
+    }
     first_path = f"droplet-fresh-dark-{first['bootSha256']}.json"
     assert read(attempt.directory, first_path) == first
 
@@ -656,7 +685,14 @@ def test_cold_restore_preflight_binds_the_original_policy_to_the_two_owned_hosts
     delivery = read(attempt.directory, "droplet-restore-delivery.json")
     assert delivery["trustedInputsDigest"] == scoped.digest
     assert delivery["publicationFiles"]["droplet-target.json"] == digest(targets["restore"][0])
-    install = read(prepare_install_handoff(attempt, restore, excluded), "stage.json")
+    install_dir = prepare_install_handoff(attempt, restore, excluded)
+    install = read(install_dir, "stage.json")
+    handoff = read(attempt.directory, "droplet-restore-install-handoff.json")
+    assert handoff["targetSha256"] == digest(targets["restore"][0])
+    assert handoff["files"] == {
+        name: sha256((install_dir / name).read_bytes()).hexdigest()
+        for name in ("inventory.json", "stage.json", "known_hosts")
+    }
     assert install["host_recovery_bootstrap_enabled"] is True
     assert install["static_publication_enabled"] is False
     assert install["host_recovery_input_directory"] == str(staged)
@@ -705,3 +741,109 @@ def test_cold_restore_preflight_binds_the_original_policy_to_the_two_owned_hosts
     native[delivery_reply]["restoreId"] = "unrelated"
     with pytest.raises(ValidationError, match="droplet-restore-installed-delivery-changed"):
         inspect_restored_host(attempt, restore, excluded)
+
+
+@pytest.mark.parametrize("allocation", [False, True])
+def test_capacity_preserves_original_sample_through_pinned_transport(
+    endpoints: tuple[Attempt, Endpoint, Endpoint, Document],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    allocation: bool,
+) -> None:
+    attempt, source, restore, exclusions = endpoints
+    reports = {endpoint.provider.ipv4: observation(endpoint) for endpoint in (source, restore)}
+    releases = tmp_path / "releases"
+    releases.mkdir()
+    (releases / "original").write_bytes(b"content" * 1024)
+    os.link(releases / "original", releases / "hardlink")
+    monkeypatch.setattr(guest, "RELEASES", releases)
+    monkeypatch.setattr(guest, "CGROUP", tmp_path / "empty-cgroups")
+    monkeypatch.setattr(guest, "observe", lambda _owner=0: reports[source.provider.ipv4])
+    pressure_usec = 3456
+    monkeypatch.setattr(guest, "_cpu_pressure", lambda: pressure_usec)
+    monkeypatch.setattr(
+        guest, "_package_versions", lambda: dict.fromkeys(guest.REQUIRED_PACKAGES, "1.2.3")
+    )
+    # The real GNU du and statvfs read the local tree; /proc counters are fixed to
+    # exercise the wire contract independent of the developer environment's kernel.
+    counters = {
+        "MemTotal": 4096 * 1024 * 1024,
+        "MemAvailable": 2048 * 1024 * 1024,
+        "SwapTotal": 0,
+        "SwapFree": 0,
+        "oom_kill": 0,
+        "pswpin": 0,
+        "pswpout": 0,
+    }
+    monkeypatch.setattr(
+        guest, "_counters", lambda _path, fields, **_: {name: counters[name] for name in fields}
+    )
+    expected_allocation = guest._allocation(releases)
+    (releases / "hardlink").unlink()
+    assert guest._allocation(releases) == expected_allocation
+    os.link(releases / "original", releases / "hardlink")
+    selected = reports[source.provider.ipv4]
+    selected["state"]["artifactSha256"] = CANDIDATE_SHA256
+    selected["state"]["publication"] = "enabled"
+    payload: Document = guest.capacity(allocation=allocation)
+    assert payload["releaseAllocation"] == (expected_allocation if allocation else None)
+    assert payload["cpuPressureSomeUsec"] == pressure_usec
+
+    def wire(args: list[str], *, stdin: bytes, **_kwargs: object) -> bytes:
+        address = args[-2].partition("@")[2]
+        assert stdin == ssh.PROBE.read_bytes()
+        if args[-1] == ssh.REMOTE_PROBE:
+            return encode(reports[address])
+        assert address == source.provider.ipv4
+        assert args[-1] == (
+            ssh.REMOTE_PROBE + (" --capacity-allocation" if allocation else " --capacity")
+        )
+        assert "ForwardAgent=no" in args
+        return encode(payload)
+
+    monkeypatch.setattr(ssh, "bounded_command", wire)
+    excluded = encode(exclusions)
+    enrolled = prepare(attempt, source, restore, excluded)
+    receipt = inspect_capacity(attempt, source, excluded, allocation=allocation)
+    assert receipt["targetSha256"] == digest(enrolled["source"][0])
+    retained = read(attempt.directory, f"droplet-capacity-sample-{receipt['sampleSha256']}.json")
+    assert retained == payload
+    assert inspect_capacity(attempt, source, excluded, allocation=allocation) == receipt
+
+    payload["unexpected"] = FORBIDDEN_FIXTURE_VALUE
+    with pytest.raises(ValidationError, match=r"^invalid-record$"):
+        inspect_capacity(attempt, source, excluded, allocation=allocation)
+    del payload["unexpected"]
+    payload["observation"] = observation(source)
+    payload["observation"]["hostIdentity"]["machineSha256"] = proof("changed host")
+    with pytest.raises(ValidationError, match=r"^droplet-inspection-host-changed$"):
+        inspect_capacity(attempt, source, excluded, allocation=allocation)
+    assert len(list(attempt.directory.glob("droplet-capacity-sample-*.json"))) == 1
+
+
+def test_cgroup_observation_distinguishes_missing_and_zero(tmp_path: Path) -> None:
+    group = tmp_path / "group"
+    assert guest._cgroup(group) is None
+    group.mkdir()
+    peak_bytes = 100 * 1024 * 1024
+    resident_anon_bytes = 20 * 1024 * 1024
+    for name, value in {
+        "memory.current": "31457280",
+        "memory.peak": str(peak_bytes),
+        "memory.swap.peak": "0",
+        "memory.max": "134217728",
+        "memory.swap.max": "0",
+        "pids.max": "16",
+        "cpu.max": "100000 100000",
+        "cpu.stat": "usage_usec 123456\nuser_usec 98765\n",
+        "memory.events": "oom 0\noom_kill 0\n",
+        "memory.stat": f"anon {resident_anon_bytes}\n",
+    }.items():
+        (group / name).write_text(value)
+    observed = guest._cgroup(group)
+    assert observed is not None
+    assert observed["memory.peak"] == peak_bytes
+    assert observed["residentAnonBytes"] == resident_anon_bytes
+    assert observed["memory.swap.peak"] == 0
+    assert observed["cpu"] == {"usage_usec": 123456, "throttled_usec": None}
+    assert observed["memoryEvents"] == {"oom": 0, "oom_kill": 0}

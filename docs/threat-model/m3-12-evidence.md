@@ -52,6 +52,14 @@ foreign deletes and interrupted cleanup at the component layer. The
 [disposable preparation guide](../operations/m3-12-qualification.md) names the
 remaining real-host and provider proofs.
 
+The controller retains pinned guest observations by digest and records the
+scoped inputs of each native install handoff. Hermetic SSH tests prove that
+read-only preparation can resume after a lost connection and reboot without
+changing the first observation. They also exercise the closed capacity
+sample format and verify hard-link deduplication on a local filesystem.
+These observations need the actual authorized workload and provider
+receipts before they can support real-host capacity or journey completion.
+
 The [inventory validator](../../scripts/m3_12_requirements.py) checks source
 coverage, fingerprints, unique requirements/slots and existing mapped test
 nodes. The versioned requirement-proof binds the reviewed inventory, exact

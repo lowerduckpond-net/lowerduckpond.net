@@ -40,6 +40,7 @@ from scripts.m3_12_droplet_inventory import (
 )
 from scripts.m3_12_droplet_ssh import (
     Endpoint,
+    capacity_sample,
     installation_inventory,
     observe,
     restore_delivery,
@@ -57,6 +58,12 @@ def _seal(directory: Path, name: str, document: Document) -> None:
         publish(directory, name, document)
     except FileExistsError:
         require(read(directory, name) == document, "droplet-preparation-original-changed")
+
+
+def _retain_observation(attempt: Attempt, document: Document) -> str:
+    observed_sha = digest(document)
+    _seal(attempt.directory, f"droplet-observation-{observed_sha}.json", document)
+    return observed_sha
 
 
 def _scope(endpoint: Endpoint, production: Document) -> Document:
@@ -103,17 +110,31 @@ def _scope(endpoint: Endpoint, production: Document) -> Document:
 def _observe_role(
     attempt: Attempt, role: str, endpoint: Endpoint, prepared: Document
 ) -> tuple[OwnedDroplet, Document]:
-    doc = observe(endpoint)
-    _seal(
-        attempt.directory,
-        f"droplet-{role}-observation.json",
-        {
-            "format": "lowerduckpond-m3-12-preparation-observation-v1",
-            "role": role,
-            "preparationSha256": digest(prepared),
-            "observation": doc,
-        },
-    )
+    name = f"droplet-{role}-observation.json"
+    scope = digest(prepared)
+    try:
+        original = read(attempt.directory, name)
+    except FileNotFoundError:
+        doc = observe(endpoint)
+        _seal(
+            attempt.directory,
+            name,
+            {
+                "format": "lowerduckpond-m3-12-preparation-observation-v1",
+                "role": role,
+                "preparationSha256": scope,
+                "observation": doc,
+            },
+        )
+    else:
+        require(
+            original["role"] == role and original["preparationSha256"] == scope,
+            "droplet-inspection-observation-changed",
+        )
+        doc = decode(encode(original["observation"]), "droplet-observation")
+        after = _observe_same_host(attempt, endpoint, doc)
+        require(after["state"] == doc["state"], "droplet-preparation-original-changed")
+    _retain_observation(attempt, doc)
     return _owned(endpoint, prepared[role]["sshKeySha256"], doc), doc
 
 
@@ -295,13 +316,44 @@ def _retained_role(
     return prepared, completed, original, before
 
 
-def _observe_same_host(endpoint: Endpoint, before: Document) -> Document:
+def _observe_same_host(attempt: Attempt, endpoint: Endpoint, before: Document) -> Document:
     after = observe(endpoint)
+    _require_same_host(before, after)
+    _retain_observation(attempt, after)
+    return after
+
+
+def _require_same_host(before: Document, after: Document) -> None:
     require(
         before["metadata"] == after["metadata"] and before["hostIdentity"] == after["hostIdentity"],
         "droplet-inspection-host-changed",
     )
-    return after
+
+
+def inspect_capacity(
+    attempt: Attempt, endpoint: Endpoint, production_exclusions: bytes, *, allocation: bool = False
+) -> Document:
+    """Persist an original point sample for an enrolled role, without granting authority."""
+    role = endpoint.allocation.role
+    require(role in {"source", "restore", "fresh"}, "droplet-inspection-role-invalid")
+    with attempt.lock("controller.lock", blocking=False):
+        prepared, completed, original, before = _retained_role(
+            attempt, role, endpoint, production_exclusions
+        )
+        sample = capacity_sample(endpoint, allocation=allocation)
+        observed = sample["observation"]
+        _require_same_host(before, observed)
+        result = {
+            "format": "lowerduckpond-m3-12-capacity-observation-v1",
+            "role": role,
+            "preparationSha256": digest(prepared),
+            "originalObservationSha256": digest(original),
+            "targetSha256": digest(completed[role]["target"]),
+            "sampleSha256": digest(sample),
+        }
+        _seal(attempt.directory, f"droplet-capacity-sample-{result['sampleSha256']}.json", sample)
+        _seal(attempt.directory, f"droplet-capacity-{digest(result)}.json", result)
+        return result
 
 
 def source_launch_provenance(
@@ -398,7 +450,7 @@ def prepare_cold_restore(
             "sourceLaunch": launch,
         }
         _seal(attempt.directory, "droplet-cold-restore-inputs.json", plan)
-        observed = _observe_same_host(restore, restore_before)
+        observed = _observe_same_host(attempt, restore, restore_before)
         require(observed["state"] in COLD_STATE, "droplet-restore-target-is-not-cold")
         observed_sha = digest(observed)
         _seal(
@@ -440,7 +492,7 @@ def stage_restore_delivery(
             and original_inputs.droplet_scope in (None, scoped.droplet_scope),
             "droplet-restore-delivery-inputs-changed",
         )
-        after = _observe_same_host(endpoint, original)
+        after = _observe_same_host(attempt, endpoint, original)
         require(after["state"] in COLD_STATE, "droplet-restore-target-is-not-cold")
         site = attempt.directory / "restore-delivery"
         private_directory(site, owner=owner)
@@ -513,7 +565,9 @@ def prepare_install_handoff(
     role = endpoint.allocation.role
     require(role in {"fresh", "restore"}, "droplet-install-role-invalid")
     with attempt.lock("controller.lock", blocking=False):
-        prepared, _, _, before = _retained_role(attempt, role, endpoint, production_exclusions)
+        prepared, completed, original, before = _retained_role(
+            attempt, role, endpoint, production_exclusions
+        )
         owner = os.geteuid()
         stage: Document = {
             "caddy_generation_enabled": True,
@@ -541,7 +595,7 @@ def prepare_install_handoff(
             )
         else:
             stage["static_host_agent_artifact_sha256"] = prepared["expectedArtifactSha256"]
-        after = _observe_same_host(endpoint, before)
+        after = _observe_same_host(attempt, endpoint, before)
         require(
             after["state"] in (COLD_STATE if role == "restore" else COLD_STATE[:1]),
             "droplet-install-target-is-not-cold",
@@ -550,14 +604,23 @@ def prepare_install_handoff(
         private_directory(site, owner=owner)
         key, _ = endpoint.validate()
         inventory = installation_inventory(endpoint, site / "known_hosts")
-        _retain_files(
-            site,
+        files = {
+            "inventory.json": encode(inventory),
+            "stage.json": encode(stage),
+            "known_hosts": endpoint.provider.ipv4.encode("ascii") + b" " + key + b"\n",
+        }
+        _retain_files(site, files, owner=owner)
+        _seal(
+            attempt.directory,
+            f"droplet-{role}-install-handoff.json",
             {
-                "inventory.json": encode(inventory),
-                "stage.json": encode(stage),
-                "known_hosts": endpoint.provider.ipv4.encode("ascii") + b" " + key + b"\n",
+                "format": "lowerduckpond-m3-12-install-handoff-v1",
+                "role": role,
+                "preparationSha256": digest(prepared),
+                "targetSha256": digest(completed[role]["target"]),
+                "originalObservationSha256": digest(original),
+                "files": {name: sha256(raw).hexdigest() for name, raw in files.items()},
             },
-            owner=owner,
         )
         return site
 
@@ -570,7 +633,7 @@ def inspect_restored_host(
         _, _, _, original = _retained_role(attempt, "restore", endpoint, production_exclusions)
         staged = read(attempt.directory, "droplet-restore-delivery.json")
         approved = read(attempt.directory, "droplet-restore-target.json")
-        first = _observe_same_host(endpoint, original)
+        first = _observe_same_host(attempt, endpoint, original)
         delivered = restore_delivery(endpoint)
         require(
             delivered == {name: value for name, value in staged.items() if name != "format"},
@@ -588,7 +651,7 @@ def inspect_restored_host(
                 and (status["phase"] == RestorePhase.COMPLETE or status["activationPending"]),
                 "droplet-restore-installed-status-changed",
             )
-        last = _observe_same_host(endpoint, original)
+        last = _observe_same_host(attempt, endpoint, original)
         require(
             first == last and last["state"]["artifactSha256"] == approved["originalArtifactSha256"],
             "droplet-restore-installed-observation-changed",
@@ -619,7 +682,7 @@ def inspect_fresh_dark(
         prepared, _, original, before = _retained_role(
             attempt, "fresh", endpoint, production_exclusions
         )
-        after = _observe_same_host(endpoint, before)
+        after = _observe_same_host(attempt, endpoint, before)
         expected = prepared["expectedArtifactSha256"]
         require(
             after["state"]
@@ -636,6 +699,7 @@ def inspect_fresh_dark(
             "originalObservationSha256": digest(original),
             "artifactSha256": expected,
             "bootSha256": after["bootSha256"],
+            "guestObservationSha256": digest(after),
         }
         _seal(attempt.directory, f"droplet-fresh-dark-{after['bootSha256']}.json", result)
         return result
@@ -650,7 +714,7 @@ def inspect_boot(
         prepared, _, original, before = _retained_role(
             attempt, role, endpoint, production_exclusions
         )
-        after = _observe_same_host(endpoint, before)
+        after = _observe_same_host(attempt, endpoint, before)
         result = {
             "format": "lowerduckpond-m3-12-boot-observation-v1",
             "preparationSha256": digest(prepared),
@@ -658,7 +722,8 @@ def inspect_boot(
             "originalObservationSha256": digest(original),
             "originalBootSha256": before["bootSha256"],
             "observedBootSha256": after["bootSha256"],
+            "guestObservationSha256": digest(after),
             "bootChanged": after["bootSha256"] != before["bootSha256"],
         }
-        _seal(attempt.directory, f"droplet-{role}-boot-{after['bootSha256']}.json", result)
+        _seal(attempt.directory, f"droplet-{role}-boot-{digest(after)}.json", result)
         return result

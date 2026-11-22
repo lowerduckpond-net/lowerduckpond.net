@@ -162,21 +162,41 @@ def _call(endpoint: Endpoint, command: str, *, stdin: bytes = b"") -> bytes:
     return raw
 
 
-def observe(endpoint: Endpoint) -> Document:
-    """Run the fixed probe over a fresh connection with only this host key trusted."""
+def require_observation(endpoint: Endpoint, doc: Document) -> None:
     _, fingerprint = endpoint.validate()
-    raw = _call(endpoint, REMOTE_PROBE, stdin=PROBE.read_bytes())
-    doc = decode(raw, "droplet-observation")
     require(
         doc["metadata"]
-        == {
-            "dropletId": endpoint.provider.droplet_id,
-            "ipv4": endpoint.provider.ipv4,
-        }
+        == {"dropletId": endpoint.provider.droplet_id, "ipv4": endpoint.provider.ipv4}
         and doc["hostIdentity"]["hostKeySha256"] == fingerprint,
         "droplet-ssh-observation-changed",
     )
+
+
+def observe(endpoint: Endpoint) -> Document:
+    """Run the fixed probe over a fresh connection with only this host key trusted."""
+    raw = _call(endpoint, REMOTE_PROBE, stdin=PROBE.read_bytes())
+    doc = decode(raw, "droplet-observation")
+    require_observation(endpoint, doc)
     return doc
+
+
+def capacity_sample(endpoint: Endpoint, *, allocation: bool) -> Document:
+    operation = "--capacity-allocation" if allocation else "--capacity"
+    raw = _call(endpoint, f"{REMOTE_PROBE} {operation}", stdin=PROBE.read_bytes())
+    sample = decode(raw, "droplet-capacity-sample")
+    require_observation(endpoint, sample["observation"])
+    disk = sample["filesystem"]
+    memory = sample["memoryBytes"]
+    require(
+        (sample["releaseAllocation"] is not None) == allocation
+        and sample["sampleStartedUsec"] <= sample["sampleFinishedUsec"]
+        and memory["MemAvailable"] <= memory["MemTotal"]
+        and memory["SwapFree"] <= memory["SwapTotal"]
+        and disk["availableBytes"] <= disk["freeBytes"] <= disk["totalBytes"]
+        and disk["availableInodes"] <= disk["freeInodes"] <= disk["totalInodes"],
+        "droplet-capacity-sample-inconsistent",
+    )
+    return sample
 
 
 def restore_delivery(endpoint: Endpoint) -> Document:

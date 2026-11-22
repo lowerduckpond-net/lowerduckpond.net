@@ -135,6 +135,141 @@
       "required": ["format", "metadata", "hostIdentity", "bootSha256", "state"],
       "additionalProperties": false
     },
+    "droplet-counter": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "droplet-capacity-sample": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-droplet-capacity-sample-v1"},
+        "observation": {"$ref": "#/$defs/droplet-observation"},
+        "sampleStartedUsec": {"$ref": "#/$defs/droplet-counter"},
+        "sampleFinishedUsec": {"$ref": "#/$defs/droplet-counter"},
+        "platform": {"$ref": "#/$defs/droplet-capacity-platform"},
+        "packages": {"$ref": "#/$defs/droplet-capacity-packages"},
+        "memoryBytes": {"$ref": "#/$defs/droplet-capacity-memory"},
+        "vmEvents": {"$ref": "#/$defs/droplet-capacity-vm-events"},
+        "cpuOnline": {"type": "integer", "minimum": 1},
+        "cpuPressureSomeUsec": {"$ref": "#/$defs/droplet-counter"},
+        "filesystem": {"$ref": "#/$defs/droplet-capacity-filesystem"},
+        "cgroups": {"$ref": "#/$defs/droplet-capacity-cgroups"},
+        "releaseAllocation": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-capacity-allocation"}]}
+      },
+      "required": ["format", "observation", "sampleStartedUsec", "sampleFinishedUsec", "platform", "packages", "memoryBytes", "vmEvents", "cpuOnline", "cpuPressureSomeUsec", "filesystem", "cgroups", "releaseAllocation"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-platform": {
+      "type": "object",
+      "properties": {
+        "os": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+~-]{0,95}$"},
+        "release": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+~-]{0,95}$"},
+        "kernel": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+~-]{0,95}$"},
+        "machine": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+~-]{0,95}$"},
+        "filesystem": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+~-]{0,95}$"}
+      },
+      "required": ["os", "release", "kernel", "machine", "filesystem"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-packages": {
+      "type": "object",
+      "properties": {
+        "systemd": {"type": "string", "pattern": "^[0-9][A-Za-z0-9_.:+~-]{0,95}$"},
+        "openssh-server": {"type": "string", "pattern": "^[0-9][A-Za-z0-9_.:+~-]{0,95}$"},
+        "sudo": {"type": "string", "pattern": "^[0-9][A-Za-z0-9_.:+~-]{0,95}$"},
+        "python3": {"type": "string", "pattern": "^[0-9][A-Za-z0-9_.:+~-]{0,95}$"},
+        "e2fsprogs": {"type": "string", "pattern": "^[0-9][A-Za-z0-9_.:+~-]{0,95}$"}
+      },
+      "required": ["systemd", "openssh-server", "sudo", "python3", "e2fsprogs"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-memory": {
+      "type": "object",
+      "properties": {
+        "MemTotal": {"$ref": "#/$defs/droplet-counter"},
+        "MemAvailable": {"$ref": "#/$defs/droplet-counter"},
+        "SwapTotal": {"$ref": "#/$defs/droplet-counter"},
+        "SwapFree": {"$ref": "#/$defs/droplet-counter"}
+      },
+      "required": ["MemTotal", "MemAvailable", "SwapTotal", "SwapFree"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-vm-events": {
+      "type": "object",
+      "properties": {
+        "oom_kill": {"$ref": "#/$defs/droplet-counter"},
+        "pswpin": {"$ref": "#/$defs/droplet-counter"},
+        "pswpout": {"$ref": "#/$defs/droplet-counter"}
+      },
+      "required": ["oom_kill", "pswpin", "pswpout"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-filesystem": {
+      "type": "object",
+      "properties": {
+        "totalBytes": {"$ref": "#/$defs/droplet-counter"},
+        "freeBytes": {"$ref": "#/$defs/droplet-counter"},
+        "availableBytes": {"$ref": "#/$defs/droplet-counter"},
+        "totalInodes": {"$ref": "#/$defs/droplet-counter"},
+        "freeInodes": {"$ref": "#/$defs/droplet-counter"},
+        "availableInodes": {"$ref": "#/$defs/droplet-counter"}
+      },
+      "required": ["totalBytes", "freeBytes", "availableBytes", "totalInodes", "freeInodes", "availableInodes"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-cgroups": {
+      "type": "object",
+      "properties": {
+        "caddy": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-capacity-cgroup"}]},
+        "workers": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-capacity-cgroup"}]},
+        "backup": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-capacity-cgroup"}]},
+        "restore": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-capacity-cgroup"}]}
+      },
+      "required": ["caddy", "workers", "backup", "restore"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-cgroup": {
+      "type": "object",
+      "properties": {
+        "memory.current": {"$ref": "#/$defs/droplet-counter"},
+        "memory.peak": {"$ref": "#/$defs/droplet-counter"},
+        "residentAnonBytes": {"$ref": "#/$defs/droplet-counter"},
+        "memory.swap.peak": {"$ref": "#/$defs/droplet-counter"},
+        "cpuPeriodUsec": {"$ref": "#/$defs/droplet-counter"},
+        "memory.max": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-counter"}]},
+        "memory.swap.max": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-counter"}]},
+        "pids.max": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-counter"}]},
+        "cpuQuotaUsec": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-counter"}]},
+        "cpu": {"$ref": "#/$defs/droplet-capacity-cpu"},
+        "memoryEvents": {"$ref": "#/$defs/droplet-capacity-oom"}
+      },
+      "required": ["memory.current", "memory.peak", "residentAnonBytes", "memory.swap.peak", "cpuPeriodUsec", "memory.max", "memory.swap.max", "pids.max", "cpuQuotaUsec", "cpu", "memoryEvents"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-cpu": {
+      "type": "object",
+      "properties": {
+        "usage_usec": {"$ref": "#/$defs/droplet-counter"},
+        "throttled_usec": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-counter"}]}
+      },
+      "required": ["usage_usec", "throttled_usec"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-oom": {
+      "type": "object",
+      "properties": {
+        "oom": {"$ref": "#/$defs/droplet-counter"},
+        "oom_kill": {"$ref": "#/$defs/droplet-counter"}
+      },
+      "required": ["oom", "oom_kill"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-allocation": {
+      "type": "object",
+      "properties": {
+        "allocatedBytes": {"$ref": "#/$defs/droplet-counter"},
+        "uniqueInodes": {"$ref": "#/$defs/droplet-counter"}
+      },
+      "required": ["allocatedBytes", "uniqueInodes"],
+      "additionalProperties": false
+    },
     "droplet-enrollment": {
       "type": "object",
       "properties": {

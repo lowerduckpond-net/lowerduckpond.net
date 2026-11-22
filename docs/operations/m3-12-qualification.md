@@ -66,6 +66,39 @@ produce evidence for native restore behavior and rejection of copied
 authority. Its container restart and MinIO observations occupy installed
 proof slots only.
 
+## Original observations and interrupted preparation
+
+The controller keeps the first source and destination observations and their
+scope immutable. If the SSH caller loses the result while preparing the pair,
+repeat the read-only preparation using the same attempt, endpoints and
+exclusions. The controller rechecks the original host identity and installation
+state. A changed boot can be recorded separately when those checks agree.
+A changed host or installation state requires investigation before continuing.
+
+Later boot, dark install and restore readbacks retain the original closed guest
+record under its content digest. The private install handoff receipt also binds
+the inventory, stage variables and known-hosts file to the original target.
+A successful readback records only what the host reported at that point. Recover
+a lost Ansible or native action result from the original task or journal before
+submitting another mutation.
+
+## Capacity samples
+
+The controller's `inspect_capacity` operation samples an enrolled host through
+the same pinned SSH endpoint. Each private sample binds the original target,
+realized platform and selected artifact, boot identity and monotonic interval.
+It records memory headroom, swap and OOM counters, CPU pressure, the ordinary
+block and inode view excluding root reserve, and readable cgroup counters and
+limits. Absent service cgroups and unavailable optional counters remain null.
+Cgroup memory peaks include kernel-accounted memory such as file cache.
+
+Take allocation samples separately from the faster point reads. The allocation
+sample walks the release filesystem to count blocks and inodes with each
+hard-linked inode counted once. Use these reads at workload boundaries so the
+tree scan does not dominate the overlapping workload. Qualification still needs
+a correlated measurement of the approved overlapping workload, process RSS,
+enforced worker and parser limits, and actual block and inode reserve outcomes.
+
 ## Initial allocation teardown review
 
 The [retirement guard](../../scripts/m3_12_droplet_cleanup.py) captures the
@@ -87,9 +120,22 @@ their own teardown evidence remain separate obligations.
 
 The component tests exercise pinned client configuration, deterministic
 staging, state and provider substitutions, native readback, and activation
-gates. The real journey still needs authenticated provider captures,
-protected host-key provisioning, an accepted M3.11 source, and separately
-owned restore and fresh targets. The real-host evidence has to cover actual
-host reboot, archive versions, ingress, capacity, and cleanup. Provider
-operations and edge and storage exercises require their own reviewed
-disposable authorization.
+gates. The remaining real-host journey needs authenticated provider captures,
+protected host-key provisioning, an accepted M3.11 source with its exact
+bootstrap inputs, and separately owned restore and fresh targets.
+
+A Droplet pin constrains the SSH target. The native site playbook also consumes
+DNS, origin-pull and backup configuration. Before wiring an executable
+convergence sequence, bind those inputs to reviewed disposable DNS names,
+certificate and zone identities, and separate Restic and archive resources.
+The qualification root currently owns only the initial host resources.
+The existing edge/browser tools pin their historical M3 names. The P4
+adapter needs an explicit owned name layout and independent provider readback
+before it can exercise issuance, rollover and browser behavior safely.
+
+The real-host sequence remains to be proven from the accepted predecessor
+through upgrade, interruption and reboot, the full lifecycle and actual
+Spaces access, and a separate cold restore with exact archive versions,
+closed ingress and original evidence retained before teardown. The independent
+fresh installation needs its own receipts. Provider operations and edge and
+storage exercises require reviewed disposable authorization.
