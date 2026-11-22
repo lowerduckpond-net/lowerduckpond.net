@@ -136,6 +136,109 @@
       "additionalProperties": false
     },
     "droplet-counter": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "droplet-journey-allocation": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-droplet-journey-allocation-v1"},
+        "targetKind": {"const": "disposable-droplet"},
+        "purpose": {"const": "disposable-qualification"},
+        "runId": {"$ref": "#/$defs/uuid7"},
+        "invocationId": {"$ref": "#/$defs/uuid7"},
+        "productionExclusionsSha256": {"$ref": "#/$defs/sha256"},
+        "predecessorSha256": {"$ref": "#/$defs/sha256"},
+        "predecessorBootstrapSha256": {"$ref": "#/$defs/sha256"},
+        "sitePolicySha256": {"$ref": "#/$defs/sha256"},
+        "candidate": {"$ref": "#/$defs/candidate"},
+        "resources": {"$ref": "#/$defs/droplet-journey-resources"}
+      },
+      "required": ["format", "targetKind", "purpose", "runId", "invocationId", "productionExclusionsSha256", "predecessorSha256", "predecessorBootstrapSha256", "sitePolicySha256", "candidate", "resources"],
+      "additionalProperties": false
+    },
+    "droplet-journey-resources": {
+      "type": "object",
+      "properties": {
+        "hosts": {"type": "object", "properties": {"source": {"$ref": "#/$defs/droplet-journey-host"}, "restore": {"$ref": "#/$defs/droplet-journey-host"}, "fresh": {"$ref": "#/$defs/droplet-journey-host"}}, "required": ["source", "restore", "fresh"], "additionalProperties": false},
+        "edge": {"type": "object", "properties": {"platform": {"$ref": "#/$defs/droplet-journey-zone"}, "tenant": {"$ref": "#/$defs/droplet-journey-zone"}}, "required": ["platform", "tenant"], "additionalProperties": false},
+        "storage": {"type": "object", "properties": {"source": {"$ref": "#/$defs/droplet-journey-storage-pair"}, "fresh": {"$ref": "#/$defs/droplet-journey-storage-pair"}}, "required": ["source", "fresh"], "additionalProperties": false}
+      },
+      "required": ["hosts", "edge", "storage"],
+      "additionalProperties": false
+    },
+    "droplet-journey-host": {
+      "type": "object",
+      "properties": {
+        "stateKey": {"type": "string", "maxLength": 128},
+        "adminCidrs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 48}, "uniqueItems": true, "minItems": 1},
+        "target": {"$ref": "#/$defs/target"},
+        "enrollment": {"$ref": "#/$defs/droplet-enrollment"}
+      },
+      "required": ["stateKey", "adminCidrs", "target", "enrollment"],
+      "additionalProperties": false
+    },
+    "droplet-journey-zone": {
+      "type": "object",
+      "properties": {
+        "zoneName": {"type": "string", "maxLength": 253, "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?![\\s\\S])"},
+        "registrableDomain": {"type": "string", "maxLength": 253, "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?![\\s\\S])"},
+        "zoneId": {"type": "string", "pattern": "^[0-9a-f]{32}(?![\\s\\S])"},
+        "source": {"$ref": "#/$defs/droplet-journey-edge-scope"},
+        "fresh": {"$ref": "#/$defs/droplet-journey-edge-scope"}
+      },
+      "required": ["zoneName", "registrableDomain", "zoneId", "source", "fresh"],
+      "additionalProperties": false
+    },
+    "droplet-journey-edge-scope": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string", "maxLength": 253, "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?![\\s\\S])"},
+        "certificateIds": {"type": "object", "properties": {"primary": {"type": "string", "pattern": "^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?![\\s\\S])"}, "replacement": {"type": "string", "pattern": "^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?![\\s\\S])"}}, "required": ["primary", "replacement"], "additionalProperties": false}
+      },
+      "required": ["name", "certificateIds"],
+      "additionalProperties": false
+    },
+    "droplet-journey-storage-pair": {
+      "type": "object",
+      "properties": {
+        "restic": {"$ref": "#/$defs/droplet-journey-storage"},
+        "archive": {"$ref": "#/$defs/droplet-journey-storage"}
+      },
+      "required": ["restic", "archive"],
+      "additionalProperties": false
+    },
+    "droplet-journey-storage": {
+      "type": "object",
+      "properties": {
+        "region": {"type": "string", "pattern": "^[a-z]{3}[1-9][0-9]?(?![\\s\\S])"},
+        "bucket": {"type": "string", "minLength": 3, "maxLength": 63, "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9](?![\\s\\S])"},
+        "prefix": {"type": "string", "maxLength": 512, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?![\\s\\S])"}
+      },
+      "required": ["region", "bucket", "prefix"],
+      "additionalProperties": false
+    },
+    "droplet-journey-exclusions": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-droplet-journey-exclusions-v1"},
+        "hosts": {"$ref": "#/$defs/droplet-production-exclusions"},
+        "zoneNames": {"type": "array", "items": {"type": "string", "maxLength": 253, "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?![\\s\\S])"}, "uniqueItems": true, "minItems": 1},
+        "zoneIds": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-f]{32}(?![\\s\\S])"}, "uniqueItems": true, "minItems": 1},
+        "certificateIds": {"type": "array", "items": {"type": "string", "pattern": "^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?![\\s\\S])"}, "uniqueItems": true, "minItems": 1},
+        "buckets": {"type": "array", "items": {"type": "string", "minLength": 3, "maxLength": 63, "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9](?![\\s\\S])"}, "uniqueItems": true, "minItems": 1}
+      },
+      "required": ["format", "hosts", "zoneNames", "zoneIds", "certificateIds", "buckets"],
+      "additionalProperties": false
+    },
+    "droplet-journey-observation": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-droplet-journey-observation-v1"},
+        "intentSha256": {"$ref": "#/$defs/sha256"},
+        "outcome": {"enum": ["committed", "failed", "not-applied", "unknown"]},
+        "evidence": {"type": "object", "maxProperties": 16, "propertyNames": {"pattern": "^[a-z][a-zA-Z]{0,63}(?![\\s\\S])"}, "additionalProperties": {"$ref": "#/$defs/sha256"}}
+      },
+      "required": ["format", "intentSha256", "outcome", "evidence"],
+      "additionalProperties": false
+    },
     "droplet-capacity-sample": {
       "type": "object",
       "properties": {

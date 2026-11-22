@@ -60,6 +60,13 @@ sample format and verify hard-link deduplication on a local filesystem.
 These observations need the actual authorized workload and provider
 receipts before they can support real-host capacity or journey completion.
 
+The [journey regression](../../tests/infrastructure/test_m3_12_droplet_journey.py)
+runs every stage with offline adapters, validates the original M3.11 chain
+and disposable scope, rejects crossover before dispatch, and checks
+readback-only recovery after caller loss. The regression also verifies
+original evidence retention and the source-fence prerequisite for restore.
+The synthetic completion belongs to the component layer.
+
 The [inventory validator](../../scripts/m3_12_requirements.py) checks source
 coverage, fingerprints, unique requirements/slots and existing mapped test
 nodes. The versioned requirement-proof binds the reviewed inventory, exact

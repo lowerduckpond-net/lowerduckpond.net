@@ -26,6 +26,47 @@ The restore handoff also pins the exact original artifact, native restore
 ID, and scoped delivery directory. The operator supplies reviewed site
 inputs separately, including the original backup node name and repository.
 
+## Reviewed allocation and journey runner
+
+The [allocation checker](../../scripts/m3_12_droplet_scope.py) takes a
+canonical `droplet-journey-allocation` manifest and a separate
+`ReviewedJourney` from trusted custody. The review supplies the approved
+manifest digest, complete original M3.11 journal, reviewed historical
+bootstrap and site policy digests, exact candidate record, independent
+resource readback, and production exclusions. Keep credential bytes in
+their existing independent custody. The manifest is bound to the exact
+controller attempt. It contains only the closed non-secret scope.
+
+| Resource | Binding |
+| --- | --- |
+| Source, restore and fresh host | Role-specific state key, enrolled target, SSH fingerprint, address, and reviewed admin CIDRs. Each host and its state/lease identities are distinct. |
+| Platform and tenant edge | Two separately owned disposable zones on distinct registrable domains, each with a source name scope and a disjoint fresh name scope, and exact primary and replacement certificate IDs. The scopes cover the reviewed names and their descendants. Restore uses the source scope only after the original source is fenced. |
+| Restic and archive | Exact Spaces region, bucket and prefix. Restic and archive buckets are distinct, and fresh uses a separate pair. Restore reads the exact source resources. Cleanup remains subject to the original ownership and retirement rules. |
+
+Verify the host facts through the existing plan/readback and pinned SSH
+adapters. The independent edge readback must bind the actual owned zone
+names, registrable domains and certificate associations. The independent storage readback
+must bind the actual bucket and prefix, including archive inventory scope.
+The runner refuses missing review inputs, stale or substituted scope, and
+overlap with the supplied production exclusions before making any adapter call.
+
+`run_journey(attempt, allocation_bytes, reviewed, driver)` runs the
+[fixed phase sequence](../../scripts/m3_12_droplet_journey.py) through a
+driver supplied by the caller. An adapter's `submit` uses the original
+scope, native lease and exact named phase. Its separate `readback` reports
+the independently observed outcome and digests of the original evidence.
+The runner checks the receipt against the durable intent and required phase
+evidence. There is no command or adapter selection in the manifest.
+
+A lost caller leaves a pending intent. Reopen the same attempt for readback;
+dependent steps remain blocked while independent eligible steps can proceed.
+For a phase with a recorded no-effect result, an explicit
+`retry_not_applied=PHASE` requires fresh no-effect readback and records a new
+dispatch linked to the first. Original intents, failures and receipts are
+retained. Teardown depends on independently reopened original evidence.
+Sequence completion describes the adapter workflow only. It supplies no
+real-host or production qualification receipt.
+
 ## Restore delivery and readback
 
 Cold preparation binds trusted policy and the original source fence to both
@@ -124,14 +165,14 @@ gates. The remaining real-host journey needs authenticated provider captures,
 protected host-key provisioning, an accepted M3.11 source with its exact
 bootstrap inputs, and separately owned restore and fresh targets.
 
-A Droplet pin constrains the SSH target. The native site playbook also consumes
-DNS, origin-pull and backup configuration. Before wiring an executable
-convergence sequence, bind those inputs to reviewed disposable DNS names,
-certificate and zone identities, and separate Restic and archive resources.
+The dependency runner is exercised with synthetic scopes and offline
+drivers. The native execution adapters still need to consume the reviewed
+scope at their command boundaries. In particular, the site adapter must
+derive its DNS, origin-pull and backup settings from the approved disposable
+policy and recheck the real host before convergence. The existing
+edge/browser tools pin their historical M3 names. Their P4 adapters need
+to use the manifest's owned scopes and independently observed associations.
 The qualification root currently owns only the initial host resources.
-The existing edge/browser tools pin their historical M3 names. The P4
-adapter needs an explicit owned name layout and independent provider readback
-before it can exercise issuance, rollover and browser behavior safely.
 
 The real-host sequence remains to be proven from the accepted predecessor
 through upgrade, interruption and reboot, the full lifecycle and actual

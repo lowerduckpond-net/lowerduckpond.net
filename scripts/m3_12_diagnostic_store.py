@@ -43,6 +43,7 @@ SOURCES = frozenset(
         "m3_12_guest_witness.py",
         "m3_12_diagnostic_transport.py",
         "m3_12_droplet_controller.py",
+        "m3_12_droplet_journey.py",
         "m3_12_droplet_ssh.py",
         "ldp_timing.py",
     }
