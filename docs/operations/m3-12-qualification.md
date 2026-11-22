@@ -67,6 +67,27 @@ retained. Teardown depends on independently reopened original evidence.
 Sequence completion describes the adapter workflow only. It supplies no
 real-host or production qualification receipt.
 
+The [native fixture driver](../../scripts/m3_12_droplet_driver.py) wires
+the retained intents to their exact enrolled endpoints and retains original
+observations by digest. It requires explicit fixture operations and a
+readback transport. It has no built-in provider client or live executor.
+It reviews each original host destroy plan before fixture teardown and
+keeps cleanup pending until independent host, DNS, storage, and grant
+readbacks reconcile. Missing original observations block closeout and
+invalidate a later completion readback.
+
+The restore reboot is two ordered phases. The reboot first records a
+changed destination boot while the source and destination ingress are both
+closed. Reopening ingress is a separate phase, so a lost reboot response
+can be reconciled before any delivery or restart of recovery. The driver
+rechecks both pinned endpoints, transfers the same receipt to the
+destination's protected publication directory under the native recovery
+lease, and reopens the exact current-boot receipt during readback. An
+installed receiver rechecks the locally enrolled role, original fence, and
+closed local gate before writing. It retains the first bytes for each boot.
+Earlier offline attempts lack the new receipts and need a fresh fixture
+attempt to exercise this sequence.
+
 ## Native adapter checks
 
 The [native boundary](../../scripts/m3_12_droplet_native.py) reopens the

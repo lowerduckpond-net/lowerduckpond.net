@@ -68,14 +68,14 @@ PHASES = (
         "exactSnapshot",
         "archiveVersions",
         "excludedState",
+        "nativeIngress",
     ),
+    _phase("restore-reboot-closed", "restore", ("restore", "backup-fence"), "closedBoot"),
     _phase(
         "restore-reboot",
         "restore",
-        ("restore", "backup-fence"),
-        "bootTransition",
-        "statusReadback",
-        "ingress",
+        ("restore", "backup-fence", "restore-reboot-closed"),
+        "nativeIngress",
     ),
     _phase("fresh-install", "fresh", (), "pristine", "darkReadback", "freshAcceptance"),
     _phase("fresh-reboot", "fresh", ("fresh-install",), "bootTransition", "nativeReadback"),
@@ -216,6 +216,15 @@ def require_dispatch(
     ]
     require(len(matches) == 1, "droplet-journey-adapter-intent-changed")
     return scope, matches[0]
+
+
+def committed_receipts(attempt: Attempt, scope: Document) -> dict[str, Document]:
+    """Reopen original phase evidence under the already validated allocation."""
+    return {
+        phase: entry.receipt
+        for phase, entry in _originals(attempt, scope).items()
+        if entry.receipt is not None and entry.receipt["outcome"] == "committed"
+    }
 
 
 def _retain_readback(attempt: Attempt, dispatch: Dispatch, record: Document) -> None:

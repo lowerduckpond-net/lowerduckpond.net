@@ -65,7 +65,12 @@ runs every stage with offline adapters, validates the original M3.11 chain
 and disposable scope, rejects crossover before dispatch, and checks
 readback-only recovery after caller loss. The regression also verifies
 original evidence retention and the source-fence prerequisite for restore.
-The synthetic completion belongs to the component layer.
+The [native driver regression](../../tests/infrastructure/test_m3_12_droplet_driver.py)
+uses the protected destination receipt receiver and exact plan/absence
+reconciliation. It checks source fencing, separate reboot and resume
+phases, transport interruption without action replay, and evidence
+retention before cleanup. Synthetic completion belongs to the component
+layer.
 
 The [adapter regressions](../../tests/infrastructure/test_m3_12_droplet_adapters.py)
 exercise native Ansible host selection, pinned SSH denials, exact certificate

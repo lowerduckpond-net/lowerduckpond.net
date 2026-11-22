@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import grp
 import os
+from collections.abc import Callable
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 
@@ -11,7 +13,7 @@ from lowerduckpond_static_contracts import canonical_json_bytes, decode_json_obj
 
 from lowerduckpond_static_host_agent.caddy_bootstrap import require_exact_file
 from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
-from lowerduckpond_static_host_agent.durable import DurableDirectory
+from lowerduckpond_static_host_agent.durable import DurableDirectory, StateAlreadyExistsError
 from lowerduckpond_static_host_agent.host_restore_gate import RECOVERY_ROOT
 from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
 from lowerduckpond_static_host_agent.host_restore_journal import (
@@ -59,15 +61,16 @@ def _record(directory: DurableDirectory, name: str, owner: int) -> bytes:
     )
 
 
-def require_role(routing: DisposableRoutes, role: str, *, owner: int) -> None:
+def require_role(
+    routing: DisposableRoutes, role: str, *, owner: int, authority: Path | None = None
+) -> None:
     from lowerduckpond_static_host_agent.droplet_enrollment import (  # noqa: PLC0415 - opted-in installed view only
         read_enrollment,
     )
 
-    with DurableDirectory.open(
-        AUTHORITY, expected_owner=owner, expected_directory_mode=0o700
-    ) as protected:
-        enrolled = read_enrollment(AUTHORITY, protected, owner=owner)
+    path = AUTHORITY if authority is None else authority
+    with _private(path, owner) as protected:
+        enrolled = read_enrollment(path, protected, owner=owner)
         expected = routing.role_document(role)
         if (
             enrolled.registration["runId"] != routing.run_id
@@ -86,13 +89,26 @@ def require_restore_cutover(store: RestoreStore, inputs: RestoreInputs) -> None:
     if installed_projection(owner=store.owner) != routing:
         raise HostRestoreError("restore_disposable_routing_changed")
     require_role(routing, "restore", owner=store.owner)
+    boot = _boot(store.owner)
+    with _private(AUTHORITY, store.owner) as protected:
+        raw = _record(protected, cutover_filename(boot), store.owner)
+    fence = store.read_bytes(f"source-fence-{inputs.restore_id}.json")
+    _require_receipt(raw, routing, inputs.restore_id, boot, fence)
+
+
+def _private(path: Path, owner: int) -> DurableDirectory:
+    return DurableDirectory.open(path, expected_owner=owner, expected_directory_mode=0o700)
+
+
+def _boot(owner: int) -> str:
     from scripts.m3_12_droplet_observe import boot_sha256  # noqa: PLC0415 - scoped host only
 
-    boot = boot_sha256(store.owner)
-    with DurableDirectory.open(
-        AUTHORITY, expected_owner=store.owner, expected_directory_mode=0o700
-    ) as protected:
-        raw = _record(protected, cutover_filename(boot), store.owner)
+    return boot_sha256(owner)
+
+
+def _require_receipt(
+    raw: bytes, routing: DisposableRoutes, restore_id: str, boot: str, fence: bytes
+) -> None:
     row = exact_object(
         decode_json_object(raw),
         {
@@ -108,7 +124,6 @@ def require_restore_cutover(store: RestoreStore, inputs: RestoreInputs) -> None:
         },
     )
     full_id(row["sourceBootSha256"])
-    fence = store.read_bytes(f"source-fence-{inputs.restore_id}.json")
     if (
         canonical_json_bytes(row) != raw
         or row["format"] != CUTOVER_FORMAT
@@ -117,10 +132,77 @@ def require_restore_cutover(store: RestoreStore, inputs: RestoreInputs) -> None:
         or row["sourceTargetSha256"] != routing.source_target
         or row["restoreTargetSha256"] != routing.restore_target
         or row["restoreBootSha256"] != boot
-        or row["restoreId"] != inputs.restore_id
+        or row["restoreId"] != restore_id
         or row["sourceFenceSha256"] != sha256(fence).hexdigest()
     ):
         raise HostRestoreError("restore_disposable_routing_cutover_changed")
+
+
+@dataclass(frozen=True)
+class CutoverReceiver:
+    """Install one controller-attested receipt under the native recovery lease."""
+
+    input_root: Path
+    recovery_root: Path
+    authority: Path
+    owner: int
+
+    def _bound(self, raw: bytes) -> tuple[RestoreInputs, str, dict[str, object]]:
+        from lowerduckpond_static_host_agent.host_restore_fence import (  # noqa: PLC0415 - scoped delivery only
+            require_fence_policy,
+        )
+
+        inputs = RestoreInputs.load(self.input_root, owner=self.owner)
+        routing = inputs.disposable_routing
+        if routing is None:
+            raise HostRestoreError("restore_disposable_routing_unbound")
+        require_role(routing, "restore", owner=self.owner, authority=self.authority)
+        with _private(self.input_root, self.owner) as root:
+            fence = _record(root, f"source-fence-{inputs.restore_id}.json", self.owner)
+        record = require_fence_policy(fence, inputs)
+        boot = _boot(self.owner)
+        _require_receipt(raw, routing, inputs.restore_id, boot, fence)
+        return inputs, boot, record
+
+    def install(self, raw: bytes, observe_gate: Callable[[str], dict[str, object]]) -> None:
+        """Write only the current boot file, never the role, policy or original fence."""
+        from scripts.m3_12_droplet_observe import FENCE_FORMAT  # noqa: PLC0415 - scoped host only
+
+        with RestoreStore.locked(self.recovery_root, owner=self.owner):
+            inputs, boot, fence = self._bound(raw)
+            gate = observe_gate(inputs.restore_id)
+            observed = gate.get("observation")
+            identity = observed.get("hostIdentity") if isinstance(observed, dict) else None
+            machine_sha = sha256(str(inputs.document["destinationMachineId"]).encode("ascii"))
+            expected_gate = fence["sourceGateDigest"]
+            if (
+                gate.get("format") != FENCE_FORMAT
+                or gate.get("ingressClosed") is not True
+                or not isinstance(observed, dict)
+                or observed.get("bootSha256") != boot
+                or not isinstance(identity, dict)
+                or identity.get("machineSha256") != machine_sha.hexdigest()
+                or not isinstance(expected_gate, dict)
+                or gate.get("gateSha256") != expected_gate["value"]
+            ):
+                raise HostRestoreError("restore_disposable_routing_local_fence_unproven")
+            name = cutover_filename(boot)
+            with _private(self.authority, self.owner) as protected:
+                try:
+                    protected.create_immutable((name,), raw, mode=0o600)
+                except StateAlreadyExistsError:
+                    if _record(protected, name, self.owner) != raw:
+                        raise HostRestoreError(
+                            "restore_disposable_routing_cutover_conflict"
+                        ) from None
+            self.require_installed(raw)
+
+    def require_installed(self, raw: bytes) -> None:
+        """Reopen the exact received bytes without requiring ingress to stay closed."""
+        _, boot, _ = self._bound(raw)
+        with _private(self.authority, self.owner) as protected:
+            if _record(protected, cutover_filename(boot), self.owner) != raw:
+                raise HostRestoreError("restore_disposable_routing_cutover_conflict")
 
 
 def require_caddy_routing(routing: DisposableRoutes | None) -> None:

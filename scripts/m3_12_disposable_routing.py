@@ -53,7 +53,7 @@ SOURCE_PHASES = frozenset(
         "backup-fence",
     }
 )
-RESTORE_PHASES = frozenset({"cold-install", "restore", "restore-reboot"})
+RESTORE_PHASES = frozenset({"cold-install", "restore", "restore-reboot-closed", "restore-reboot"})
 POLICY_FORMAT = "lowerduckpond-m3-12-disposable-routing-policy-v1"
 
 
@@ -240,7 +240,11 @@ def verify_cutover(  # noqa: PLR0913 - native fence and pinned executor are inde
         destination,
         policy_raw,
         execute,
-        completed_restore_id=restore.restore_id if action["phase"] == "restore-reboot" else None,
+        completed_restore_id=(
+            restore.restore_id
+            if action["phase"] in {"restore-reboot-closed", "restore-reboot"}
+            else None
+        ),
     )
     require(
         encode(source_fence)
