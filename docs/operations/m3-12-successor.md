@@ -150,12 +150,23 @@ source launch receipt retains its source target binding even when all
 original bytes are recovered on the destination. For a launched snapshot,
 keep `source-admission.json`, `source-launch-intent.json` and
 `source-launch-receipt.json` beside the protected recovery inputs. The
-controller validates those original bytes against the source enrollment,
-snapshot artifact and namespace, and binds the independent destination
-target in the retained preflight. Before opening publication
-or ingress on that destination, the P4 journey needs separately scoped
-restore authority bound to that destination, the original snapshot and the
-original launch chain.
+controller validates the original launch chain against the source enrollment,
+snapshot policy and namespace. After cold destination readback, it seals
+`droplet-restore-target.json` as the native target policy. Its versioned
+`dropletRestore` scope binds the source and destination targets and original
+launch receipt. The native journal retains that scope alongside the exact
+snapshot, source fence and policy. A dark snapshot has no launch receipt
+and can only recover with publication disabled.
+
+The destination reads its own root-owned enrollment and the source's original
+admission, intent and receipt in the publication view. The native coordinator
+rechecks the completed journal, original launch and namespace, destination
+identity and selected artifact before setting publication and committing
+admission. Ingress cleanup and boot reopen the same proof. The publication
+gate requires completed destination admission for the restored source receipt.
+The source receipt and restored launch bytes keep their original identity.
+Protected record delivery and real destination acceptance still need an
+installed journey.
 
 Fresh installation uses a separate attempt and pins the reviewed artifact
 digest before connecting. The controller requires publication configuration,

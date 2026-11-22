@@ -12,6 +12,10 @@ from typing import cast
 from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.host_restore_bootstrap import verify_bootstrap_inputs
 from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
+from lowerduckpond_static_host_agent.host_restore_journal import (
+    DROPLET_BINDING,
+    DROPLET_SCOPE_FORMAT,
+)
 
 from scripts.m3_12_contracts import (
     DISPOSABLE,
@@ -361,12 +365,22 @@ def prepare_cold_restore(
         source_target = completed["source"]["target"]
         destination_target = completed["restore"]["target"]
         launch = source_launch_provenance(inputs_directory, inputs, source_target, owner=owner)
+        scope = {
+            "format": DROPLET_SCOPE_FORMAT,
+            "runId": attempt.directory.parent.name,
+            "sourceTargetSha256": digest(source_target),
+            "destinationTargetSha256": digest(destination_target),
+            "sourceLaunchReceiptSha256": None if launch is None else launch["launchReceiptSha256"],
+        }
+        require(inputs.droplet_scope in (None, scope), "droplet-restore-policy-scope-changed")
+        scoped = RestoreInputs.from_bytes(encode({**inputs.document, DROPLET_BINDING: scope}))
         plan = {
             "format": "lowerduckpond-m3-12-cold-restore-inputs-v1",
             "preparationSha256": digest(completed),
             "restoreId": inputs.restore_id,
             "snapshotId": inputs.snapshot_id,
-            "trustedInputs": inputs.digest,
+            "trustedInputs": scoped.digest,
+            "activationScope": scoped.droplet_scope_digest,
             "sourceFence": inputs.document["sourceFenceDigest"],
             "originalCaCount": original_ca_count,
             "sourceTargetSha256": digest(source_target),
@@ -388,6 +402,7 @@ def prepare_cold_restore(
                 "publication": observed["state"]["publication"],
             },
         )
+        _seal(attempt.directory, "droplet-restore-target.json", scoped.document)
         return plan
 
 

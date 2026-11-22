@@ -16,7 +16,12 @@ import pytest
 from lowerduckpond_static_host_agent.backup_identity import framed_digest
 from lowerduckpond_static_host_agent.host_restore_fence import FENCE_SCHEMA
 from lowerduckpond_static_host_agent.host_restore_gate import GATE_SCHEMA
-from lowerduckpond_static_host_agent.host_restore_inputs import INPUT_SCHEMA, ISSUER, SUBJECTS
+from lowerduckpond_static_host_agent.host_restore_inputs import (
+    INPUT_SCHEMA,
+    ISSUER,
+    SUBJECTS,
+    RestoreInputs,
+)
 from lowerduckpond_static_host_agent.host_restore_journal import HostRestoreError
 from lowerduckpond_static_host_agent.host_restore_services import (
     ORDINARY_ACTIVATORS,
@@ -518,7 +523,7 @@ def recovery_files(root: Path, policy: Document, fence: bytes) -> Path:
     return root
 
 
-def test_cold_restore_preflight_binds_the_original_policy_to_the_two_owned_hosts(
+def test_cold_restore_preflight_binds_the_original_policy_to_the_two_owned_hosts(  # noqa: PLR0915 - exercise the full retained original and transfer boundary
     endpoints: tuple[Attempt, Endpoint, Endpoint, Document],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -567,6 +572,14 @@ def test_cold_restore_preflight_binds_the_original_policy_to_the_two_owned_hosts
     assert original["sourceTargetSha256"] == digest(targets["source"][0])
     assert original["destinationTargetSha256"] == digest(targets["restore"][0])
     assert original["sourceLaunch"] is None
+    scoped = RestoreInputs.from_bytes(
+        (attempt.directory / "droplet-restore-target.json").read_bytes()
+    )
+    assert scoped.digest == original["trustedInputs"]
+    assert scoped.droplet_scope_digest == original["activationScope"]
+    assert scoped.droplet_scope is not None
+    assert scoped.droplet_scope["runId"] == attempt.directory.parent.name
+    assert scoped.droplet_scope["destinationTargetSha256"] == digest(targets["restore"][0])
     assert not {"sourceMachineId", "destinationMachineId"}.intersection(retained)
     assert connections == [restore.provider.ipv4]
     observed = reports[restore.provider.ipv4]

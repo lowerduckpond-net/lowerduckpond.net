@@ -10,6 +10,7 @@ from lowerduckpond_static_contracts import canonical_json_bytes, decode_json_obj
 
 from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.host_restore_journal import (
+    DROPLET_BINDING,
     GATE,
     JOURNAL,
     LOCK,
@@ -119,8 +120,7 @@ def restore_admission(
         if RestoreStore(directory, owner).read() != journal:
             raise HostRestoreError("restore provenance changed while reading")
         if gate is None:
-            pending = ingress_pending(RestoreStore(directory, owner))
-            return journal.phase is RestorePhase.COMPLETE and not (boot and pending)
+            return _completed_admission(RestoreStore(directory, owner), journal, boot=boot)
         if gate["restoreId"] != journal.restore_id:
             raise HostRestoreError("restore gate belongs to another transaction")
         return caddy and journal.phase in {
@@ -128,6 +128,19 @@ def restore_admission(
             RestorePhase.VERIFIED,
             RestorePhase.COMPLETE,
         }
+
+
+def _completed_admission(store: RestoreStore, journal: RestoreJournal, *, boot: bool) -> bool:
+    pending = ingress_pending(store)
+    if journal.phase is not RestorePhase.COMPLETE or (boot and pending):
+        return False
+    if boot and DROPLET_BINDING in journal.bindings:
+        from lowerduckpond_static_host_agent.host_restore_droplet import (  # noqa: PLC0415 - break restore/launch import cycle
+            require_activation,
+        )
+
+        require_activation(store)
+    return True
 
 
 def require_restore_admission(*, caddy: bool = False) -> None:
@@ -139,6 +152,11 @@ def open_gate(store: RestoreStore) -> None:
     journal = store.read()
     if journal is None or journal.phase is not RestorePhase.COMPLETE:
         raise HostRestoreError("restore completion is not durable")
+    from lowerduckpond_static_host_agent.host_restore_droplet import (  # noqa: PLC0415 - break restore/launch import cycle
+        require_activation,
+    )
+
+    require_activation(store)
     # Commit ordinary admission before opening public ingress. A separate
     # durable intent keeps unfinished firewall cleanup resumable across reboot.
     store.directory.remove(GATE, missing_ok=True)

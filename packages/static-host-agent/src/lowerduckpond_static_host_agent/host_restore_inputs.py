@@ -31,6 +31,8 @@ from lowerduckpond_static_host_agent.caddy_routes import (
 )
 from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.host_restore_journal import (
+    DROPLET_BINDING,
+    DROPLET_SCOPE_FORMAT,
     MAX_RESTORE_BYTES,
     HostRestoreError,
     exact_object,
@@ -78,8 +80,9 @@ class RestoreInputs:
 
     @classmethod
     def from_bytes(cls, raw: bytes) -> RestoreInputs:
+        document = decode_json_object(raw, maximum_bytes=MAX_RESTORE_BYTES)
         value = exact_object(
-            decode_json_object(raw, maximum_bytes=MAX_RESTORE_BYTES),
+            document,
             {
                 "schema",
                 "restoreId",
@@ -95,7 +98,8 @@ class RestoreInputs:
                 "caddy",
                 "publicationEnabled",
                 "auditRotationEnabled",
-            },
+            }
+            | ({DROPLET_BINDING} if DROPLET_BINDING in document else set()),
         )
         if value["schema"] != INPUT_SCHEMA:
             raise HostRestoreError("restore input schema is unsupported")
@@ -118,6 +122,8 @@ class RestoreInputs:
         for key in ("publicationEnabled", "auditRotationEnabled"):
             if type(value[key]) is not bool:
                 raise HostRestoreError("restore activation policy is invalid")
+        if DROPLET_BINDING in value:
+            _validate_droplet_scope(value[DROPLET_BINDING], launch, value["publicationEnabled"])
         target = exact_object(value["archiveTarget"], {"region", "bucket"})
         if (
             type(target["region"]) is not str
@@ -152,6 +158,19 @@ class RestoreInputs:
         )
 
     @property
+    def droplet_scope(self) -> dict[str, object] | None:
+        return cast(dict[str, object] | None, self.document.get(DROPLET_BINDING))
+
+    @property
+    def droplet_scope_digest(self) -> dict[str, str] | None:
+        scope = self.droplet_scope
+        return (
+            None
+            if scope is None
+            else framed_digest(DROPLET_SCOPE_FORMAT, canonical_json_bytes(scope))
+        )
+
+    @property
     def restore_id(self) -> str:
         return validate_uuid7(self.document["restoreId"])
 
@@ -172,6 +191,32 @@ class RestoreInputs:
             or full_id(requested_snapshot) != self.snapshot_id
         ):
             raise HostRestoreError("restore_target_input_mismatch")
+
+
+def _validate_droplet_scope(scope: object, launch: object, publication: object) -> None:
+    value = exact_object(
+        scope,
+        {
+            "format",
+            "runId",
+            "sourceTargetSha256",
+            "destinationTargetSha256",
+            "sourceLaunchReceiptSha256",
+        },
+    )
+    validate_uuid7(value["runId"])
+    source = full_id(value["sourceTargetSha256"])
+    destination = full_id(value["destinationTargetSha256"])
+    receipt = value["sourceLaunchReceiptSha256"]
+    if receipt is not None:
+        full_id(receipt)
+    if (
+        value["format"] != DROPLET_SCOPE_FORMAT
+        or source == destination
+        or (launch is None) != (receipt is None)
+        or (launch is None and publication is not False)
+    ):
+        raise HostRestoreError("droplet_restore_scope_invalid")
 
 
 def _validate_caddy(document: object) -> None:

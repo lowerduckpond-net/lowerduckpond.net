@@ -14,6 +14,7 @@ from lowerduckpond_static_host_agent.backup_identity import framed_digest
 from lowerduckpond_static_host_agent.host_restore_fence import FENCE_SCHEMA, require_source_fence
 from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
 from lowerduckpond_static_host_agent.host_restore_journal import (
+    DROPLET_BINDING,
     MAX_RESTORE_BYTES,
     HostRestoreError,
     RestoreJournal,
@@ -49,6 +50,7 @@ def begin_restore_authority(  # noqa: PLR0913 - original, trusted and local bind
         "machineId": destination_id,
         "restoreId": inputs.restore_id,
     }
+    droplet_scope = inputs.droplet_scope_digest
     expected = RestoreJournal(
         inputs.restore_id,
         snapshot.snapshot.snapshot_id,
@@ -61,6 +63,7 @@ def begin_restore_authority(  # noqa: PLR0913 - original, trusted and local bind
             "trustedInputs": inputs.digest,
             "destination": framed_digest(DESTINATION_SCHEMA, canonical_json_bytes(destination)),
             "sourceFence": framed_digest(FENCE_SCHEMA, fence),
+            **({DROPLET_BINDING: droplet_scope} if droplet_scope is not None else {}),
         },
     )
     current = store.read()
@@ -101,6 +104,7 @@ def require_saved_authority(store: RestoreStore) -> tuple[RestoreInputs, dict[st
         inputs.restore_id != current.restore_id
         or inputs.snapshot_id != current.snapshot_id
         or inputs.digest != current.bindings["trustedInputs"]
+        or inputs.droplet_scope_digest != current.bindings.get(DROPLET_BINDING)
         or framed_digest(BACKUP_SCHEMA, raw) != current.bindings["backupDescriptor"]
         or descriptor["artifactDigest"] != current.bindings["originalArtifact"]
         or descriptor["captureId"] != current.capture_id

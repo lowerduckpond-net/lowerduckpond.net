@@ -35,8 +35,11 @@ observations. The [launch contract tests](../../tests/infrastructure/test_m3_12_
 include `test_reconstructed_launch_provenance_does_not_grant_destination_publication`
 for independent enrollment and
 `test_cold_restore_provenance_requires_the_original_launch_and_source_scope`
-for the source launch chain, artifact and namespace. These tests
-supply component evidence. Provider, independent restore, and real reboot
+for the source launch chain, artifact and namespace. The [native recovery
+tests](../../packages/static-host-agent/tests/test_host_restore_droplet.py)
+check dark and launched activation, destination drift before publication,
+and bound ingress recovery after interruption. These tests supply component
+evidence. Provider, independent restore, and real reboot
 slots still require their own original receipts.
 
 The [inventory validator](../../scripts/m3_12_requirements.py) checks source
