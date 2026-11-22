@@ -124,11 +124,11 @@
         "state": {
           "type": "object",
           "properties": {
-            "artifactSelected": {"type": "boolean"},
+            "artifactSha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
             "launchPresent": {"type": "boolean"},
             "publication": {"enum": ["absent", "dark", "enabled"]}
           },
-          "required": ["artifactSelected", "launchPresent", "publication"],
+          "required": ["artifactSha256", "launchPresent", "publication"],
           "additionalProperties": false
         }
       },

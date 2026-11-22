@@ -3,6 +3,7 @@
 import base64
 import fcntl
 import os
+import shutil
 import sys
 from copy import deepcopy
 from dataclasses import replace
@@ -18,6 +19,7 @@ from jsonschema import Draft202012Validator
 from lowerduckpond_static_contracts import decode_json_object
 from lowerduckpond_static_host_agent import droplet_enrollment, platform_launch
 from lowerduckpond_static_host_agent.durable import DurabilityBoundary, DurableDirectory
+from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
 from lowerduckpond_static_host_agent.platform_launch import (
     initialize_launch,
     require_local_launch_binding,
@@ -49,6 +51,7 @@ from scripts.m3_12_contracts import (
     validate_launch,
     validate_report,
 )
+from scripts.m3_12_droplet_controller import source_launch_provenance
 from scripts.m3_12_requirements import CoverageScope, validate_coverage, validate_inventory
 from scripts.m3_12_successor import preview, resume_phase
 from scripts.m3_12_successor_journal import SuccessorJournal
@@ -1377,6 +1380,111 @@ def test_copied_droplet_launch_and_enrollment_do_not_authorize_another_host(
             require_local_launch_binding(authority, receipt, disposable=False, owner=owner)
         with pytest.raises(ValidationError, match="droplet-enrollment-changed"):
             droplet.launch(token, encode(admission), owner=owner)
+
+
+def test_reconstructed_launch_provenance_does_not_grant_destination_publication(
+    droplet_attempt: tuple[Document, Path, Path], tmp_path: Path
+) -> None:
+    admission, state, source = droplet_attempt
+    owner = os.geteuid()
+    with lease.controller(droplet.LEASE, owner=owner, drain=lambda: None) as token:
+        _pin_droplet_attempt(source, admission, token)
+        receipt = droplet.launch(token, encode(admission), owner=owner)
+
+    # Recovery preserves the original immutable bytes on a different target.
+    restored = tmp_path / "restored-static"
+    shutil.copytree(state, restored)
+    destination = tmp_path / "destination" / droplet_enrollment.PUBLICATION_VIEW
+    destination.parent.mkdir(mode=0o700)
+    destination.mkdir(mode=0o700)
+    for name in ("admission.json", "launch-intent.json", "launch-receipt.json"):
+        shutil.copy2(source / name, destination / name)
+    assert verify_launch(restored, destination, owner=owner) == receipt
+
+    droplet_observe.MACHINE_ID.write_bytes(b"b" * 32 + b"\n")
+    droplet_observe.SYSTEM_UUID.write_bytes(b"22222222-3333-4444-5555-666666666666\n")
+    droplet_observe.HOST_KEY.write_bytes(
+        b"ssh-ed25519 " + base64.b64encode(droplet_observe.ED25519_WIRE_HEADER + b"B" * 32) + b"\n"
+    )
+    local = droplet_observe.host_identity(owner)
+    identity = droplet_inventory.ProviderIdentity(proof("restore-project"), 102, "192.0.2.19")
+    allocation = droplet_inventory.ApprovedAllocation(
+        run_id=admission["binding"]["runId"],
+        role="restore",
+        state_sha256=proof("restore-state"),
+        allocation_sha256=proof("restore-allocation"),
+        inventory_sha256=proof("restore-inventory"),
+        transaction_namespace_sha256=proof("restore-transaction"),
+        identity=identity,
+    )
+    observed = droplet_inventory.ConnectedDroplet(
+        provider=identity,
+        metadata_id=identity.droplet_id,
+        metadata_ipv4=identity.ipv4,
+        host_identity=local,
+        pinned_host_key_sha256=local["hostKeySha256"],
+    )
+    exclusions = (source / droplet_enrollment.EXCLUSIONS).read_bytes()
+    target, enrollment = droplet_inventory.enrollment_records(allocation, observed, exclusions)
+    with DurableDirectory.open(
+        destination, expected_owner=owner, expected_directory_mode=0o700
+    ) as fd:
+        fd.create_immutable((droplet_enrollment.TARGET,), encode(target))
+        fd.create_immutable((droplet_enrollment.ENROLLMENT,), encode(enrollment))
+        fd.create_immutable((droplet_enrollment.EXCLUSIONS,), exclusions)
+
+    with pytest.raises(ValidationError, match="droplet-launch-binding-changed"):
+        require_local_launch_binding(destination, receipt, disposable=False, owner=owner)
+    assert verify_launch(restored, destination, owner=owner) == receipt
+    assert (restored / "platform/launch.json").read_bytes() == (
+        state / "platform/launch.json"
+    ).read_bytes()
+
+
+def test_cold_restore_provenance_requires_the_original_launch_and_source_scope(
+    droplet_attempt: tuple[Document, Path, Path], tmp_path: Path
+) -> None:
+    admission, state, authority = droplet_attempt
+    owner = os.geteuid()
+    with lease.controller(droplet.LEASE, owner=owner, drain=lambda: None) as token:
+        _pin_droplet_attempt(authority, admission, token)
+        receipt = droplet.launch(token, encode(admission), owner=owner)
+
+    # The native input-directory loader validates the complete policy. This
+    # witness uses the actual source initializer's bytes for the launch join.
+    policy = {
+        "launch": decode_json_object((state / "platform/launch.json").read_bytes()),
+        "namespace": decode_json_object((state / "platform/namespace.json").read_bytes()),
+        "originalArtifactSha256": admission["candidate"]["hostAgentSha256"],
+    }
+    custody = tmp_path / "restore-inputs"
+    custody.mkdir(mode=0o700)
+    for name in ("admission.json", "launch-intent.json", "launch-receipt.json"):
+        shutil.copy2(authority / name, custody / f"source-{name}")
+    source = admission["target"]
+    inputs = RestoreInputs(policy)
+    assert source_launch_provenance(custody, inputs, source, owner=owner) == {
+        "admissionSha256": receipt["admissionSha256"],
+        "intentSha256": receipt["intentSha256"],
+        "launchRecordSha256": receipt["launchRecordSha256"],
+        "launchReceiptSha256": digest(receipt),
+    }
+
+    foreign = {**source, "stateSha256": proof("different reviewed allocation")}
+    with pytest.raises(ValidationError, match="droplet-restore-source-launch-changed"):
+        source_launch_provenance(custody, inputs, foreign, owner=owner)
+    for change in (
+        {"originalArtifactSha256": proof("different artifact")},
+        {"namespace": {**policy["namespace"], "initializedAt": fixture_time(35)}},
+    ):
+        with pytest.raises(ValidationError, match="droplet-restore-source-launch-changed"):
+            source_launch_provenance(
+                custody, RestoreInputs({**policy, **change}), source, owner=owner
+            )
+    restored_receipt = custody / "source-launch-receipt.json"
+    restored_receipt.write_bytes(encode({**receipt, "intentSha256": proof("different intent")}))
+    with pytest.raises(ValidationError, match="wrong-launch-binding"):
+        source_launch_provenance(custody, inputs, source, owner=owner)
 
 
 @pytest.mark.parametrize("observed", [(999, "192.0.2.14"), (101, "192.0.2.19")])

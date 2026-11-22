@@ -343,13 +343,15 @@ jobs:
           install_args: python uv
           persist_github_token: false
           cache_save: false
+      - name: Synchronize the locked Python workspace
+        run: uv sync --all-packages --all-groups --frozen
       - name: Exercise publication in the installed worker sandbox
         env:
           DOCKER_HOST: unix:///var/run/docker.sock
         run: |
           fixture=config/ansible/molecule/m3_8
           docker build --file "$fixture/Dockerfile.j2" --tag ldp-worker-view:local "$fixture"
-          uv run --frozen python -m scripts.check_m3_12_worker_view ldp-worker-view:local
+          uv run --frozen --no-sync python -m scripts.check_m3_12_worker_view ldp-worker-view:local
 
   ansible-m3-8:
     name: Ansible installed ${{ matrix.case }}

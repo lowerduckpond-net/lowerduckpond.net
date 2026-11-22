@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import os
 import shlex
+import ssl
 import stat
 import subprocess
 from dataclasses import replace
@@ -25,16 +26,20 @@ from lowerduckpond_static_host_agent.host_restore_services import (
 
 from scripts import m3_12_droplet_observe as guest
 from scripts import m3_12_droplet_ssh as ssh
-from scripts.m3_12_contracts import Document, ValidationError, decode, encode
+from scripts.m3_12_contracts import Document, ValidationError, decode, digest, encode
 from scripts.m3_12_diagnostic_store import PRIVATE_FILE, Attempt, clock, read
 from scripts.m3_12_droplet_controller import (
     inspect_boot,
+    inspect_fresh_dark,
     prepare,
     prepare_cold_restore,
     prepare_fresh,
 )
 from scripts.m3_12_droplet_inventory import ApprovedAllocation, ProviderIdentity
 from scripts.m3_12_droplet_ssh import Endpoint
+
+ORIGINAL_CA = b"synthetic original origin-pull CA"
+CANDIDATE_SHA256 = "1" * 64
 
 FORBIDDEN_FIXTURE_VALUE = "fake-fixture-secret-excluded"
 
@@ -86,7 +91,7 @@ def observation(endpoint: Endpoint) -> Document:
             "systemUuidSha256": proof("host-" + role),
         },
         "bootSha256": proof("boot-" + role),
-        "state": {"artifactSelected": False, "launchPresent": False, "publication": "absent"},
+        "state": {"artifactSha256": None, "launchPresent": False, "publication": "absent"},
     }
 
 
@@ -109,7 +114,7 @@ def test_cold_restore_probe_reads_the_guest_without_an_installed_candidate(
     monkeypatch.setattr(guest, "metadata_identity", lambda: (101, "11.1.2.10"))
     received = decode(encode(guest.observe(os.geteuid())), "droplet-observation")
     assert received["state"] == {
-        "artifactSelected": False,
+        "artifactSha256": None,
         "launchPresent": False,
         "publication": "absent",
     }
@@ -228,7 +233,7 @@ def test_preparation_declines_invalid_or_precooked_restore(
         elif invalid == "extra-output":
             report["forbidden"] = FORBIDDEN_FIXTURE_VALUE
         else:
-            report["state"]["artifactSelected"] = True
+            report["state"]["artifactSha256"] = CANDIDATE_SHA256
         return encode(report)
 
     monkeypatch.setattr(ssh, "bounded_command", wire)
@@ -308,6 +313,31 @@ def test_boot_observation_reopens_only_the_original_host(
     assert observed == []
 
 
+def test_boot_readback_rederives_the_original_target_from_the_pinned_observation(
+    endpoints: tuple[Attempt, Endpoint, Endpoint, Document], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempt, source, restore, exclusions = endpoints
+    selected = {endpoint.provider.ipv4: observation(endpoint) for endpoint in (source, restore)}
+    connections = []
+
+    def wire(args: list[str], **_kwargs: object) -> bytes:
+        address = args[-2].partition("@")[2]
+        connections.append(address)
+        return encode(selected[address])
+
+    monkeypatch.setattr(ssh, "bounded_command", wire)
+    excluded = encode(exclusions)
+    prepare(attempt, source, restore, excluded)
+    path = attempt.directory / "droplet-preparation-result.json"
+    result = read(attempt.directory, path.name)
+    result["restore"]["target"]["stateSha256"] = proof("substituted state")
+    path.write_bytes(encode(result))
+    connections.clear()
+    with pytest.raises(ValidationError, match="droplet-inspection-enrollment-changed"):
+        inspect_boot(attempt, "restore", restore, excluded)
+    assert connections == []
+
+
 def test_fresh_install_preparation_cannot_reuse_the_paired_attempt(
     endpoints: tuple[Attempt, Endpoint, Endpoint, Document], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -325,9 +355,11 @@ def test_fresh_install_preparation_cannot_reuse_the_paired_attempt(
 
     monkeypatch.setattr(ssh, "bounded_command", wire)
     with pytest.raises(ValidationError, match="droplet-preparation-role-conflict"):
-        prepare_fresh(attempt, source, encode(exclusions))
+        prepare_fresh(attempt, source, encode(exclusions), artifact_sha256=CANDIDATE_SHA256)
     fresh = replace(source, allocation=replace(source.allocation, role="fresh"))
-    target, enrollment = prepare_fresh(attempt, fresh, encode(exclusions))
+    target, enrollment = prepare_fresh(
+        attempt, fresh, encode(exclusions), artifact_sha256=CANDIDATE_SHA256
+    )
     assert target["droplet"]["dropletId"] == source.provider.droplet_id
     assert enrollment["machineSha256"] == report["hostIdentity"]["machineSha256"]
     with pytest.raises(ValidationError, match="droplet-preparation-original-changed"):
@@ -339,20 +371,77 @@ def test_fresh_install_preparation_cannot_reuse_the_paired_attempt(
     assert inspect_boot(attempt, "fresh", fresh, encode(exclusions))["bootChanged"]
 
 
-@pytest.mark.parametrize("field", ["artifactSelected", "launchPresent", "publication"])
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("artifactSha256", CANDIDATE_SHA256), ("launchPresent", True), ("publication", "dark")],
+)
 def test_fresh_install_rejects_preexisting_candidate_state(
     endpoints: tuple[Attempt, Endpoint, Endpoint, Document],
     monkeypatch: pytest.MonkeyPatch,
     field: str,
+    value: object,
 ) -> None:
     attempt, source, _, exclusions = endpoints
     report = observation(source)
-    report["state"][field] = "dark" if field == "publication" else True
+    report["state"][field] = value
     monkeypatch.setattr(ssh, "bounded_command", lambda *_args, **_kwargs: encode(report))
     fresh = replace(source, allocation=replace(source.allocation, role="fresh"))
     with pytest.raises(ValidationError, match="droplet-fresh-target-is-not-pristine"):
-        prepare_fresh(attempt, fresh, encode(exclusions))
+        prepare_fresh(attempt, fresh, encode(exclusions), artifact_sha256=CANDIDATE_SHA256)
     assert not (attempt.directory / "droplet-preparation-result.json").exists()
+
+
+def test_fresh_dark_readback_requires_the_pinned_candidate_after_reboot(
+    endpoints: tuple[Attempt, Endpoint, Endpoint, Document], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    attempt, source, _, exclusions = endpoints
+    fresh = replace(source, allocation=replace(source.allocation, role="fresh"))
+    report = observation(fresh)
+    monkeypatch.setattr(ssh, "bounded_command", lambda *_args, **_kwargs: encode(report))
+    excluded = encode(exclusions)
+    prepare_fresh(attempt, fresh, excluded, artifact_sha256=CANDIDATE_SHA256)
+    with pytest.raises(ValidationError, match="droplet-preparation-original-changed"):
+        prepare_fresh(attempt, fresh, excluded, artifact_sha256="2" * 64)
+    dark = {"artifactSha256": CANDIDATE_SHA256, "publication": "dark", "launchPresent": False}
+    for changes in (
+        {"artifactSha256": "2" * 64},
+        {"publication": "enabled"},
+        {"launchPresent": True},
+    ):
+        report["state"] = {**dark, **changes}
+        with pytest.raises(ValidationError, match="droplet-fresh-dark-state-changed"):
+            inspect_fresh_dark(attempt, fresh, excluded)
+    assert not list(attempt.directory.glob("droplet-fresh-dark-*.json"))
+
+    report["state"] = dark
+    first = inspect_fresh_dark(attempt, fresh, excluded)
+    assert inspect_fresh_dark(attempt, fresh, excluded) == first
+    report["bootSha256"] = proof("fresh reboot after dark install")
+    after = inspect_fresh_dark(attempt, fresh, excluded)
+    assert after == {**first, "bootSha256": report["bootSha256"]}
+    first_path = f"droplet-fresh-dark-{first['bootSha256']}.json"
+    assert read(attempt.directory, first_path) == first
+
+
+def test_guest_selection_is_an_owned_content_address_not_a_link_to_unreviewed_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selector = tmp_path / "current"
+    monkeypatch.setattr(guest, "SELECTION", selector)
+    owner = os.geteuid()
+    assert guest.selected_artifact(owner) is None
+    artifact = tmp_path / CANDIDATE_SHA256
+    artifact.mkdir(mode=0o700)
+    selector.symlink_to(artifact)
+    assert guest.selected_artifact(owner) == CANDIDATE_SHA256
+    artifact.chmod(0o770)
+    with pytest.raises(ValueError, match="droplet-artifact-selector-invalid"):
+        guest.selected_artifact(owner)
+    artifact.chmod(0o700)
+    selector.unlink()
+    selector.symlink_to(artifact.name)
+    with pytest.raises(ValueError, match="droplet-artifact-selector-invalid"):
+        guest.selected_artifact(owner)
 
 
 def recovery_policy(
@@ -405,7 +494,7 @@ def recovery_policy(
             "binarySha256": proof("caddy"),
             "environmentSha256": proof("test environment"),
             "originPullCaSha256": [proof("restore CA")],
-            "originalOriginPullCaSha256": [proof("source CA")],
+            "originalOriginPullCaSha256": [sha256(ORIGINAL_CA).hexdigest()],
             "originPullRequired": True,
             "issuer": ISSUER,
             "subjects": list(SUBJECTS),
@@ -416,8 +505,23 @@ def recovery_policy(
     }, fence
 
 
+def recovery_files(root: Path, policy: Document, fence: bytes) -> Path:
+    root.mkdir(mode=0o700)
+    for name, raw in (
+        ("target.json", encode(policy)),
+        (f"source-fence-{policy['restoreId']}.json", fence),
+        ("original-origin-pull-ca-0.pem", ssl.DER_cert_to_PEM_cert(ORIGINAL_CA).encode()),
+    ):
+        path = root / name
+        path.write_bytes(raw)
+        path.chmod(0o600)
+    return root
+
+
 def test_cold_restore_preflight_binds_the_original_policy_to_the_two_owned_hosts(
-    endpoints: tuple[Attempt, Endpoint, Endpoint, Document], monkeypatch: pytest.MonkeyPatch
+    endpoints: tuple[Attempt, Endpoint, Endpoint, Document],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     attempt, source, restore, exclusions = endpoints
     reports = {endpoint.provider.ipv4: observation(endpoint) for endpoint in (source, restore)}
@@ -432,63 +536,50 @@ def test_cold_restore_preflight_binds_the_original_policy_to_the_two_owned_hosts
 
     excluded = encode(exclusions)
     monkeypatch.setattr(ssh, "bounded_command", wire)
-    prepare(attempt, source, restore, excluded)
+    targets = prepare(attempt, source, restore, excluded)
     connections.clear()
     policy, fence = recovery_policy(attempt)
+
+    def preflight(directory: Path) -> Document:
+        return prepare_cold_restore(attempt, source, restore, excluded, inputs_directory=directory)
+
     with pytest.raises(HostRestoreError, match="restore_source_fence_mismatch"):
-        prepare_cold_restore(
-            attempt,
-            source,
-            restore,
-            excluded,
-            trusted_inputs=encode({**policy, "snapshotId": "e" * 64}),
-            source_fence=fence,
-        )
+        preflight(recovery_files(tmp_path / "mismatch", {**policy, "snapshotId": "e" * 64}, fence))
     switched, switched_fence = recovery_policy(attempt, source_machine="f" * 32)
     with pytest.raises(ValidationError, match="droplet-restore-policy-host-changed"):
-        prepare_cold_restore(
-            attempt,
-            source,
-            restore,
-            excluded,
-            trusted_inputs=encode(switched),
-            source_fence=switched_fence,
-        )
-    assert connections == []
-
-    original = prepare_cold_restore(
-        attempt,
-        source,
-        restore,
-        excluded,
-        trusted_inputs=encode(policy),
-        source_fence=fence,
+        preflight(recovery_files(tmp_path / "other-machine", switched, switched_fence))
+    invalid = recovery_files(tmp_path / "invalid-ca", policy, fence)
+    (invalid / "original-origin-pull-ca-0.pem").write_text(
+        ssl.DER_cert_to_PEM_cert(b"wrong synthetic CA")
     )
+    with pytest.raises(HostRestoreError, match="restore_archive_original_trust_changed"):
+        preflight(invalid)
+    assert connections == []
+    assert not list(attempt.directory.glob("droplet-cold-restore-readback-*.json"))
+
+    trusted = recovery_files(tmp_path / "original", policy, fence)
+    original = preflight(trusted)
     retained = read(attempt.directory, "droplet-cold-restore-inputs.json")
     assert original == retained
     assert original["snapshotId"] == policy["snapshotId"]
     assert original["sourceFence"] == policy["sourceFenceDigest"]
+    assert original["originalCaCount"] == 1
+    assert original["sourceTargetSha256"] == digest(targets["source"][0])
+    assert original["destinationTargetSha256"] == digest(targets["restore"][0])
+    assert original["sourceLaunch"] is None
     assert not {"sourceMachineId", "destinationMachineId"}.intersection(retained)
     assert connections == [restore.provider.ipv4]
+    observed = reports[restore.provider.ipv4]
+    accepted_readback = f"droplet-cold-restore-readback-{digest(observed)}.json"
+    assert read(attempt.directory, accepted_readback)["inputsSha256"] == digest(original)
 
     replacement, replacement_fence = recovery_policy(attempt, snapshot="e" * 64)
     with pytest.raises(ValidationError, match="droplet-preparation-original-changed"):
-        prepare_cold_restore(
-            attempt,
-            source,
-            restore,
-            excluded,
-            trusted_inputs=encode(replacement),
-            source_fence=replacement_fence,
-        )
-    reports[restore.provider.ipv4]["state"]["artifactSelected"] = True
+        preflight(recovery_files(tmp_path / "other-snapshot", replacement, replacement_fence))
+    observed["state"]["artifactSha256"] = CANDIDATE_SHA256
     with pytest.raises(ValidationError, match="droplet-restore-target-is-not-cold"):
-        prepare_cold_restore(
-            attempt,
-            source,
-            restore,
-            excluded,
-            trusted_inputs=encode(policy),
-            source_fence=fence,
-        )
+        preflight(trusted)
     assert read(attempt.directory, "droplet-cold-restore-inputs.json") == original
+    assert list(attempt.directory.glob("droplet-cold-restore-readback-*.json")) == [
+        attempt.directory / accepted_readback
+    ]

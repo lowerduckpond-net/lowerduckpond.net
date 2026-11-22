@@ -139,6 +139,30 @@ def publication_state(owner: int) -> str:
     return "enabled" if doc["static_publication_enabled"] else "dark"
 
 
+def selected_artifact(owner: int) -> str | None:
+    """Read the selector's content-addressed target, without importing it."""
+    try:
+        selector = SELECTION.lstat()
+    except FileNotFoundError:
+        return None
+    require(
+        stat.S_ISLNK(selector.st_mode) and selector.st_uid == owner and selector.st_nlink == 1,
+        "droplet-artifact-selector-invalid",
+    )
+    target = SELECTION.readlink()
+    require(
+        target.parent == SELECTION.parent
+        and re.fullmatch(r"[0-9a-f]{64}", target.name) is not None,
+        "droplet-artifact-selector-invalid",
+    )
+    status = target.lstat()
+    require(
+        stat.S_ISDIR(status.st_mode) and status.st_uid == owner and not status.st_mode & 0o022,
+        "droplet-artifact-selector-invalid",
+    )
+    return target.name
+
+
 def observe(owner: int = 0) -> dict[str, object]:
     droplet_id, ipv4 = metadata_identity()
     boot = UUID(_system_file(BOOT_ID, owner).decode("ascii"))
@@ -149,7 +173,7 @@ def observe(owner: int = 0) -> dict[str, object]:
         "hostIdentity": host_identity(owner),
         "bootSha256": sha256(boot.bytes).hexdigest(),
         "state": {
-            "artifactSelected": os.path.lexists(SELECTION),
+            "artifactSha256": selected_artifact(owner),
             "launchPresent": os.path.lexists(LAUNCH),
             "publication": publication_state(owner),
         },

@@ -2,21 +2,26 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 from hashlib import sha256
 from pathlib import Path
 from typing import cast
 
-from lowerduckpond_static_host_agent.host_restore_fence import require_fence_policy
+from lowerduckpond_static_host_agent.durable import DurableDirectory
+from lowerduckpond_static_host_agent.host_restore_bootstrap import verify_bootstrap_inputs
 from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
 
 from scripts.m3_12_contracts import (
+    DISPOSABLE,
+    MAX_RECORD_BYTES,
     Document,
     decode,
     digest,
     encode,
     require,
+    validate_launch,
 )
 from scripts.m3_12_diagnostic_store import Attempt, clock, failure, publish, read
 from scripts.m3_12_droplet_inventory import (
@@ -28,8 +33,8 @@ from scripts.m3_12_droplet_inventory import (
 from scripts.m3_12_droplet_ssh import Endpoint, observe
 
 COLD_STATE = (
-    {"artifactSelected": False, "launchPresent": False, "publication": "absent"},
-    {"artifactSelected": False, "launchPresent": False, "publication": "dark"},
+    {"artifactSha256": None, "launchPresent": False, "publication": "absent"},
+    {"artifactSha256": None, "launchPresent": False, "publication": "dark"},
 )
 
 
@@ -95,14 +100,18 @@ def _observe_role(
             "observation": doc,
         },
     )
+    return _owned(endpoint, prepared[role]["sshKeySha256"], doc), doc
+
+
+def _owned(endpoint: Endpoint, ssh_key_sha256: str, observation: Document) -> OwnedDroplet:
     observed = ConnectedDroplet(
         provider=endpoint.provider,
-        metadata_id=doc["metadata"]["dropletId"],
-        metadata_ipv4=doc["metadata"]["ipv4"],
-        host_identity=doc["hostIdentity"],
-        pinned_host_key_sha256=prepared[role]["sshKeySha256"],
+        metadata_id=observation["metadata"]["dropletId"],
+        metadata_ipv4=observation["metadata"]["ipv4"],
+        host_identity=observation["hostIdentity"],
+        pinned_host_key_sha256=ssh_key_sha256,
     )
-    return OwnedDroplet(endpoint.allocation, observed), doc
+    return OwnedDroplet(endpoint.allocation, observed)
 
 
 def _record_failure(attempt: Attempt, started: tuple[str, int], error: Exception) -> None:
@@ -183,14 +192,14 @@ def _prepare(
 
 
 def prepare_fresh(
-    attempt: Attempt, endpoint: Endpoint, production_exclusions: bytes
+    attempt: Attempt, endpoint: Endpoint, production_exclusions: bytes, *, artifact_sha256: str
 ) -> tuple[Document, Document]:
     """Seal an independent fresh-install role before any candidate setup."""
     with attempt.lock("controller.lock", blocking=False):
         started = clock()
         attempt.append("preparation", "ssh", started)
         try:
-            result = _prepare_fresh(attempt, endpoint, production_exclusions)
+            result = _prepare_fresh(attempt, endpoint, production_exclusions, artifact_sha256)
         except Exception as error:
             _record_failure(attempt, started, error)
             raise
@@ -199,12 +208,16 @@ def prepare_fresh(
 
 
 def _prepare_fresh(
-    attempt: Attempt, endpoint: Endpoint, production_exclusions: bytes
+    attempt: Attempt, endpoint: Endpoint, production_exclusions: bytes, artifact_sha256: str
 ) -> tuple[Document, Document]:
     run_id = attempt.directory.parent.name
     require(
         endpoint.allocation.run_id == run_id and endpoint.allocation.role == "fresh",
         "droplet-preparation-role-conflict",
+    )
+    require(
+        re.fullmatch(r"[0-9a-f]{64}", artifact_sha256) is not None,
+        "droplet-fresh-candidate-invalid",
     )
     production = decode(production_exclusions, "droplet-production-exclusions")
     prepared = {
@@ -213,6 +226,7 @@ def _prepare_fresh(
         "invocationId": attempt.directory.name,
         "productionExclusionsSha256": digest(production),
         "fresh": _scope(endpoint, production),
+        "expectedArtifactSha256": artifact_sha256,
     }
     _seal(attempt.directory, "droplet-preparation.json", prepared)
     host, observed = _observe_role(attempt, "fresh", endpoint, prepared)
@@ -234,7 +248,7 @@ def _prepare_fresh(
 
 def _retained_role(
     attempt: Attempt, role: str, endpoint: Endpoint, production_exclusions: bytes
-) -> tuple[Document, Document, Document]:
+) -> tuple[Document, Document, Document, Document]:
     production = decode(production_exclusions, "droplet-production-exclusions")
     prepared = read(attempt.directory, "droplet-preparation.json")
     original_scope = digest(prepared)
@@ -256,7 +270,15 @@ def _retained_role(
         "droplet-inspection-observation-changed",
     )
     before = decode(encode(original["observation"]), "droplet-observation")
-    return completed, original, before
+    host = _owned(endpoint, prepared[role]["sshKeySha256"], before)
+    target, enrollment = enrollment_records(
+        host.allocation, host.observation, production_exclusions
+    )
+    require(
+        completed[role] == {"target": target, "enrollment": enrollment},
+        "droplet-inspection-enrollment-changed",
+    )
+    return prepared, completed, original, before
 
 
 def _observe_same_host(endpoint: Endpoint, before: Document) -> Document:
@@ -268,14 +290,50 @@ def _observe_same_host(endpoint: Endpoint, before: Document) -> Document:
     return after
 
 
-def prepare_cold_restore(  # noqa: PLR0913 - owned pair and two independent restore inputs
+def source_launch_provenance(
+    directory: Path, inputs: RestoreInputs, source_target: Document, *, owner: int
+) -> Document | None:
+    """Bind original launch bytes from reviewed custody to the enrolled source."""
+    launch = inputs.document["launch"]
+    if launch is None:
+        return None
+    with DurableDirectory.open(
+        directory, expected_owner=owner, expected_directory_mode=0o700
+    ) as protected:
+        admission_raw, intent_raw, receipt_raw = (
+            protected.read_regular(
+                (name,), expected_owner=owner, expected_mode=0o600, maximum_bytes=MAX_RECORD_BYTES
+            )
+            for name in (
+                "source-admission.json",
+                "source-launch-intent.json",
+                "source-launch-receipt.json",
+            )
+        )
+    receipt = validate_launch(admission_raw, intent_raw, encode(launch), receipt_raw)
+    admission = decode(admission_raw, "admission")
+    require(
+        source_target["targetKind"] == DISPOSABLE
+        and admission["target"] == source_target
+        and admission["candidate"]["hostAgentSha256"] == inputs.document["originalArtifactSha256"]
+        and admission["platform"]["namespaceSha256"] == digest(inputs.document["namespace"]),
+        "droplet-restore-source-launch-changed",
+    )
+    return {
+        "admissionSha256": receipt["admissionSha256"],
+        "intentSha256": receipt["intentSha256"],
+        "launchRecordSha256": receipt["launchRecordSha256"],
+        "launchReceiptSha256": digest(receipt),
+    }
+
+
+def prepare_cold_restore(
     attempt: Attempt,
     source: Endpoint,
     restore: Endpoint,
     production_exclusions: bytes,
     *,
-    trusted_inputs: bytes,
-    source_fence: bytes,
+    inputs_directory: Path,
 ) -> Document:
     """Bind the original recovery policy to the pinned pair before destination setup.
 
@@ -284,14 +342,14 @@ def prepare_cold_restore(  # noqa: PLR0913 - owned pair and two independent rest
     snapshot materialization, archive versions or ingress verification.
     """
     with attempt.lock("controller.lock", blocking=False):
-        completed, _, source_before = _retained_role(
+        _, completed, _, source_before = _retained_role(
             attempt, "source", source, production_exclusions
         )
-        _, _, restore_before = _retained_role(attempt, "restore", restore, production_exclusions)
-        inputs = RestoreInputs.from_bytes(trusted_inputs)
-        fence = require_fence_policy(source_fence, inputs)
+        _, _, _, restore_before = _retained_role(attempt, "restore", restore, production_exclusions)
+        owner = os.geteuid()
+        inputs = RestoreInputs.load(inputs_directory, owner=owner)
         require(
-            sha256(cast(str, fence["sourceMachineId"]).encode("ascii")).hexdigest()
+            sha256(cast(str, inputs.document["sourceMachineId"]).encode("ascii")).hexdigest()
             == source_before["hostIdentity"]["machineSha256"]
             and sha256(
                 cast(str, inputs.document["destinationMachineId"]).encode("ascii")
@@ -299,6 +357,10 @@ def prepare_cold_restore(  # noqa: PLR0913 - owned pair and two independent rest
             == restore_before["hostIdentity"]["machineSha256"],
             "droplet-restore-policy-host-changed",
         )
+        original_ca_count = verify_bootstrap_inputs(inputs_directory, inputs, owner=owner)
+        source_target = completed["source"]["target"]
+        destination_target = completed["restore"]["target"]
+        launch = source_launch_provenance(inputs_directory, inputs, source_target, owner=owner)
         plan = {
             "format": "lowerduckpond-m3-12-cold-restore-inputs-v1",
             "preparationSha256": digest(completed),
@@ -306,11 +368,57 @@ def prepare_cold_restore(  # noqa: PLR0913 - owned pair and two independent rest
             "snapshotId": inputs.snapshot_id,
             "trustedInputs": inputs.digest,
             "sourceFence": inputs.document["sourceFenceDigest"],
+            "originalCaCount": original_ca_count,
+            "sourceTargetSha256": digest(source_target),
+            "destinationTargetSha256": digest(destination_target),
+            "sourceLaunch": launch,
         }
         _seal(attempt.directory, "droplet-cold-restore-inputs.json", plan)
         observed = _observe_same_host(restore, restore_before)
         require(observed["state"] in COLD_STATE, "droplet-restore-target-is-not-cold")
+        observed_sha = digest(observed)
+        _seal(
+            attempt.directory,
+            f"droplet-cold-restore-readback-{observed_sha}.json",
+            {
+                "format": "lowerduckpond-m3-12-cold-restore-readback-v1",
+                "inputsSha256": digest(plan),
+                "observationSha256": observed_sha,
+                "bootSha256": observed["bootSha256"],
+                "publication": observed["state"]["publication"],
+            },
+        )
         return plan
+
+
+def inspect_fresh_dark(
+    attempt: Attempt, endpoint: Endpoint, production_exclusions: bytes
+) -> Document:
+    """Record boot-specific dark selection of the artifact pinned before installation."""
+    with attempt.lock("controller.lock", blocking=False):
+        prepared, _, original, before = _retained_role(
+            attempt, "fresh", endpoint, production_exclusions
+        )
+        after = _observe_same_host(endpoint, before)
+        expected = prepared["expectedArtifactSha256"]
+        require(
+            after["state"]
+            == {
+                "artifactSha256": expected,
+                "launchPresent": False,
+                "publication": "dark",
+            },
+            "droplet-fresh-dark-state-changed",
+        )
+        result = {
+            "format": "lowerduckpond-m3-12-fresh-dark-observation-v1",
+            "preparationSha256": digest(prepared),
+            "originalObservationSha256": digest(original),
+            "artifactSha256": expected,
+            "bootSha256": after["bootSha256"],
+        }
+        _seal(attempt.directory, f"droplet-fresh-dark-{after['bootSha256']}.json", result)
+        return result
 
 
 def inspect_boot(
@@ -319,11 +427,13 @@ def inspect_boot(
     """Observe boot continuity for the exact enrolled host without causing a reboot."""
     require(role in {"source", "restore", "fresh"}, "droplet-inspection-role-invalid")
     with attempt.lock("controller.lock", blocking=False):
-        completed, original, before = _retained_role(attempt, role, endpoint, production_exclusions)
+        prepared, _, original, before = _retained_role(
+            attempt, role, endpoint, production_exclusions
+        )
         after = _observe_same_host(endpoint, before)
         result = {
             "format": "lowerduckpond-m3-12-boot-observation-v1",
-            "preparationSha256": completed["preparationSha256"],
+            "preparationSha256": digest(prepared),
             "role": role,
             "originalObservationSha256": digest(original),
             "originalBootSha256": before["bootSha256"],

@@ -136,22 +136,38 @@ A full reboot assertion still needs the approved operation and service
 readback. Provider provisioning, protected enrollment delivery, paired
 restore, and ingress verification remain separate controller phases.
 
-For cold restore, the controller preflights the canonical native recovery
-inputs and the source fencing receipt transferred from trusted custody.
-The machine identities in those inputs must match the independently observed
-source and restore hosts. The attempt retains the exact snapshot and input
-digests and reads back the same cold destination before bootstrap. This step
-validates the original restore policy and fencing receipt. Repository and
-archive reads, live fence and ingress verification, and materialization
-remain part of the restore journey.
+For cold restore, the controller reads the protected input directory through
+the native bootstrap preflight. It verifies the canonical recovery policy,
+the original source fencing receipt and the original origin-pull CA digests.
+The machine identities must match the independently observed source and
+restore hosts. The controller retains the exact snapshot and input digests
+separately from the successful same-host cold readback. The restore journey
+still needs repository and archive reads, live fence and ingress verification,
+and materialization.
 
-Fresh installation uses a separate attempt and the same pinned read path.
-The controller requires publication configuration, artifact selection, and
-durable launch to be absent before recording the fresh role. The role can be
-reobserved after reboot against its original provider and host identity.
+Native reconstruction preserves the original launch and namespace. The
+source launch receipt retains its source target binding even when all
+original bytes are recovered on the destination. For a launched snapshot,
+keep `source-admission.json`, `source-launch-intent.json` and
+`source-launch-receipt.json` beside the protected recovery inputs. The
+controller validates those original bytes against the source enrollment,
+snapshot artifact and namespace, and binds the independent destination
+target in the retained preflight. Before opening publication
+or ingress on that destination, the P4 journey needs separately scoped
+restore authority bound to that destination, the original snapshot and the
+original launch chain.
+
+Fresh installation uses a separate attempt and pins the reviewed artifact
+digest before connecting. The controller requires publication configuration,
+artifact selection, and durable launch to be absent before recording the
+fresh role. Dark readback verifies the selected content address, dark
+publication and absence of launch on the same host and records its boot ID
+digest. The installed journey still needs artifact integrity, service health
+and real reboot and activation evidence.
 
 Normal CI runs the worker service witness in a separate GitHub-hosted job
 when installed selection includes successor rollout. The job builds the
 Ubuntu 26.04 systemd fixture and runs the worker with the guest network
-disabled. The Ansible aggregate requires the witness alongside the other
+disabled. CI synchronizes all locked workspace packages before starting the
+witness. The Ansible aggregate requires it alongside the other
 selected checks. The witness uses synthetic Droplet identity inputs.

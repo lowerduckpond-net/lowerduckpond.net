@@ -16,6 +16,21 @@ from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs, m
 from lowerduckpond_static_host_agent.host_restore_journal import MAX_RESTORE_BYTES
 
 
+def verify_bootstrap_inputs(directory: Path, inputs: RestoreInputs, *, owner: int) -> int:
+    """Verify the original fence and public CA against the bound recovery policy."""
+    with DurableDirectory.open(
+        directory, expected_owner=owner, expected_directory_mode=0o700
+    ) as protected:
+        fence = protected.read_regular(
+            (f"source-fence-{inputs.restore_id}.json",),
+            expected_owner=owner,
+            expected_mode=0o600,
+            maximum_bytes=MAX_RESTORE_BYTES,
+        )
+    require_fence_policy(fence, inputs)
+    return len(original_ca(inputs, root=directory, owner=owner))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--directory", type=Path, required=True)
@@ -23,28 +38,19 @@ def main() -> int:
     parser.add_argument("--restore-id", type=validate_uuid7, required=True)
     arguments = parser.parse_args()
     try:
-        inputs = RestoreInputs.load(arguments.directory, owner=os.geteuid())
+        owner = os.geteuid()
+        inputs = RestoreInputs.load(arguments.directory, owner=owner)
         if (
             inputs.restore_id != arguments.restore_id
             or inputs.document["destinationMachineId"] != arguments.destination
         ):
             raise ValueError("restore_bootstrap_target_mismatch")
-        with DurableDirectory.open(
-            arguments.directory, expected_owner=os.geteuid(), expected_directory_mode=0o700
-        ) as directory:
-            fence = directory.read_regular(
-                (f"source-fence-{inputs.restore_id}.json",),
-                expected_owner=os.geteuid(),
-                expected_mode=0o600,
-                maximum_bytes=MAX_RESTORE_BYTES,
-            )
-        require_fence_policy(fence, inputs)
-        certificates = original_ca(inputs, root=arguments.directory, owner=os.geteuid())
+        original_ca_count = verify_bootstrap_inputs(arguments.directory, inputs, owner=owner)
         sys.stdout.buffer.write(
             canonical_json_bytes(
                 {
                     "restoreId": inputs.restore_id,
-                    "originalCaCount": len(certificates),
+                    "originalCaCount": original_ca_count,
                     "trustedInputsDigest": inputs.digest,
                 }
             )

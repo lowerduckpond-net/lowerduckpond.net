@@ -26,6 +26,19 @@ mappings when those behaviors exist.
 | Diagnostics through the actual transport | `test_diagnostics_distinguish_missing_terminal_primary_and_secondary`. [P2 local regressions](../../tests/infrastructure/test_m3_12_diagnostics.py) cover early allocation, original result, export conflicts, interruption and raw output exclusion. The [installed transport-recovery witness](../../config/ansible/molecule/m3_8/tests/test_m3_12_diagnostics.py) exercises systemd through real Ansible and Docker and verifies console, private and public exclusion on the same synthetic fixture. |
 | Original chronology and evidence inventory | `test_delayed_packaging_does_not_refresh_original_evidence`, `test_inventory_covers_every_source_paragraph_and_rejects_stale_or_missing_entries`, `test_exact_requirement_coverage_rejects_missing_skipped_duplicate_and_installed_proof`. P4/P5/P6 produce the original phase, accounting, teardown and acceptance receipts. |
 
+The P4 [controller tests](../../tests/infrastructure/test_m3_12_droplet_controller.py)
+check protected cold-restore inputs and same-host readback in
+`test_cold_restore_preflight_binds_the_original_policy_to_the_two_owned_hosts`.
+`test_fresh_dark_readback_requires_the_pinned_candidate_after_reboot` checks
+dark-state admission and original receipt retention across simulated boot
+observations. The [launch contract tests](../../tests/infrastructure/test_m3_12_contracts.py)
+include `test_reconstructed_launch_provenance_does_not_grant_destination_publication`
+for independent enrollment and
+`test_cold_restore_provenance_requires_the_original_launch_and_source_scope`
+for the source launch chain, artifact and namespace. These tests
+supply component evidence. Provider, independent restore, and real reboot
+slots still require their own original receipts.
+
 The [inventory validator](../../scripts/m3_12_requirements.py) checks source
 coverage, fingerprints, unique requirements/slots and existing mapped test
 nodes. The versioned requirement-proof binds the reviewed inventory, exact
