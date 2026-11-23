@@ -245,8 +245,23 @@ def _verify_initial_host_plan(plan: Mapping[str, Any], scope: ApprovedHostPlan) 
     _references(config, MEMBERSHIP, "resources", "urn")
     changes = _resource_index(plan["resource_changes"])
     host = _change(changes[HOST])
-    _require_known(host, CONFIGURATION_FIELDS[HOST] | {"tags", "volume_ids"})
+    _require_known(host, CONFIGURATION_FIELDS[HOST] | {"tags"})
     droplet = host["after"]
+    # The exact configuration above omits volume_ids. The pinned provider
+    # does not request attachments and leaves the field computed until readback.
+    if host.get("after_unknown", {}).get("volume_ids") is True and "volume_ids" not in droplet:
+        provider = plan["configuration"].get("provider_config", {}).get("digitalocean")
+        require(
+            provider
+            == {
+                "name": "digitalocean",
+                "full_name": PROVIDER,
+                "version_constraint": "2.106.0",
+            },
+            "droplet-plan-unsafe-unknown",
+        )
+    else:
+        _require_known(host, {"volume_ids"})
     require(
         droplet["name"] == scope.name
         and droplet["ssh_keys"] == [scope.ssh_key_fingerprint]
@@ -256,7 +271,7 @@ def _verify_initial_host_plan(plan: Mapping[str, Any], scope: ApprovedHostPlan) 
             for key, value in HOST_FIELDS.items()
         )
         and not droplet.get("tags")
-        and not droplet.get("volume_ids"),
+        and ("volume_ids" not in droplet or droplet["volume_ids"] == []),
         "droplet-plan-host-changed",
     )
     firewall = _change(changes[FIREWALL])

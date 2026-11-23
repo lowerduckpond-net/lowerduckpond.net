@@ -48,7 +48,7 @@ def bind_initial_allocation(
     provider: Document,
     production_exclusions: bytes,
 ) -> ApprovedAllocation:
-    """Consume observed facts from separate custody. No provider client runs here."""
+    """Join state with independent provider facts, including the exact Droplet GET."""
     scope = review.plan
     require(
         review.state_key == f"qualification/m3-12/{scope.run_id}/{scope.role}.tfstate"
@@ -96,7 +96,7 @@ def _state_identity(
         and not ipv4.is_multicast
         and host["name"] == scope.name
         and not host.get("tags")
-        and not host.get("volume_ids")
+        and host.get("volume_ids") == []
         and all(
             type(host[key]) is type(value) and host[key] == value
             for key, value in HOST_FIELDS.items()
@@ -144,6 +144,7 @@ def _provider_identity(
             "name": scope.name,
             "ipv4": allocation["ipv4"],
             "status": "active",
+            "volume_ids": [],
             **{name: HOST_FIELDS[name] for name in ("region", "image", "size", "ipv6", "backups")},
         }
         and provider["projectMembership"]

@@ -13,7 +13,13 @@ takes exact plan and OpenTofu state JSON digests from reviewed custody, the
 approved per-role state key, and an independently gathered provider projection.
 That projection contains the active Droplet's identity and size, its exact
 project membership, and its one attached firewall with settled reviewed
-rules. Capture rule lists only after the provider confirms there are no
+rules. For the pinned DigitalOcean provider, a no-volume create can leave
+`volume_ids` computed when the configuration omits it. Before enrollment,
+both reviewed OpenTofu state and an independent authenticated
+`GET /v2/droplets/{id}` of the exact Droplet must report `volume_ids: []`.
+Keep the field from the direct response in the provider projection so a
+missing, null, malformed, or nonempty value fails validation. Capture rule
+lists only after the provider confirms there are no
 pending changes. The adapter checks these facts against state and the
 production exclusions before it constructs an allocation. A separately
 authenticated provisioning channel must supply the host's Ed25519 key.

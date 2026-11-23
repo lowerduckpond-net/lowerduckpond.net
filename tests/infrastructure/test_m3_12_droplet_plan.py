@@ -99,7 +99,16 @@ def reviewed_plan() -> tuple[Document, ApprovedHostPlan]:
             "qualification_run_id": {"value": scope.run_id},
             "fixture_role": {"value": scope.role},
         },
-        "configuration": {"root_module": {"resources": config}},
+        "configuration": {
+            "root_module": {"resources": config},
+            "provider_config": {
+                "digitalocean": {
+                    "name": "digitalocean",
+                    "full_name": PROVIDER,
+                    "version_constraint": "2.106.0",
+                }
+            },
+        },
         "resource_changes": changes,
     }, scope
 
@@ -111,7 +120,7 @@ def test_droplet_plan_accepts_only_the_reviewed_host_and_its_exact_attachments(
     verify_initial_host_plan(plan, scope)
     host, firewall, membership = [resource["change"] for resource in plan["resource_changes"]]
     host["after"].pop("id")
-    host["after_unknown"] = {"id": True}
+    host["after_unknown"] = {"id": True, "volume_ids": True}
     firewall["after"]["droplet_ids"] = [None]
     firewall["after_unknown"] = {"droplet_ids": [True]}
     membership["after"].pop("resources")
@@ -121,6 +130,35 @@ def test_droplet_plan_accepts_only_the_reviewed_host_and_its_exact_attachments(
     firewall["after"]["droplet_ids"] = [999, None]
     with pytest.raises(ValidationError, match="droplet-plan-attachment-changed"):
         verify_initial_host_plan(plan, scope)
+
+
+def test_plan_accepts_only_the_pinned_provider_computed_volume_shape(
+    reviewed_plan: tuple[Document, ApprovedHostPlan],
+) -> None:
+    baseline, scope = reviewed_plan
+    host = baseline["resource_changes"][0]["change"]
+    host["after_unknown"] = {"volume_ids": True}
+
+    plan = deepcopy(baseline)
+    plan["configuration"]["provider_config"]["digitalocean"]["version_constraint"] = "2.107.0"
+    with pytest.raises(ValidationError, match="droplet-plan-unsafe-unknown"):
+        verify_initial_host_plan(plan, scope)
+
+    plan = deepcopy(baseline)
+    plan["configuration"]["root_module"]["resources"][0]["expressions"]["volume_ids"] = {
+        "constant_value": []
+    }
+    with pytest.raises(ValidationError, match="droplet-plan-configuration-changed"):
+        verify_initial_host_plan(plan, scope)
+
+    plan = deepcopy(baseline)
+    plan["resource_changes"][0]["change"]["after_unknown"]["volume_ids"] = [True]
+    with pytest.raises(ValidationError, match="droplet-plan-unsafe-unknown"):
+        verify_initial_host_plan(plan, scope)
+
+    host["after"]["volume_ids"] = []
+    with pytest.raises(ValidationError, match="droplet-plan-unsafe-unknown"):
+        verify_initial_host_plan(baseline, scope)
 
 
 @pytest.mark.parametrize(
@@ -204,7 +242,7 @@ def readback(
         for row in plan["resource_changes"]
     ]
     host, firewall, membership = [row["values"] for row in resources]
-    host.update(ipv4_address="11.1.2.11", urn="do:droplet:101")
+    host.update(ipv4_address="11.1.2.11", urn="do:droplet:101", volume_ids=[])
     firewall["id"] = "00000000-0000-4000-8000-000000000003"
     state = {
         "format_version": "1.0",
@@ -232,6 +270,7 @@ def readback(
             "name": scope.name,
             "ipv4": host["ipv4_address"],
             "status": "active",
+            "volume_ids": [],
             **{key: host[key] for key in ("region", "image", "size", "ipv6", "backups")},
         },
         "firewalls": [{**deepcopy(firewall), "settled": True}],
@@ -296,6 +335,46 @@ def test_initial_provider_readback_joins_only_the_exact_reviewed_role(
     exclusions["dropletIds"] = [101]
     with pytest.raises(ValidationError, match="production-crossover"):
         bind_initial_allocation(review, plan_raw, state_raw, observed, encode(exclusions))
+
+
+@pytest.mark.parametrize(
+    ("evidence", "category"),
+    [
+        ("state", "droplet-readback-host-changed"),
+        ("direct-get", "droplet-readback-provider-identity-changed"),
+    ],
+)
+@pytest.mark.parametrize(
+    "value",
+    ["missing", None, False, "", {}, ["00000000-0000-4000-8000-000000000004"]],
+)
+def test_enrollment_requires_an_explicit_empty_volume_list_in_each_readback(
+    reviewed_plan: tuple[Document, ApprovedHostPlan],
+    readback: tuple[Document, Document, Document],
+    evidence: str,
+    category: str,
+    value: object,
+) -> None:
+    plan, scope = reviewed_plan
+    state, observed, exclusions = readback
+    target = (
+        state["values"]["root_module"]["resources"][0]["values"]
+        if evidence == "state"
+        else observed["droplet"]
+    )
+    if value == "missing":
+        target.pop("volume_ids")
+    else:
+        target["volume_ids"] = value
+    raw_plan, raw_state = encode(plan), encode(state)
+    review = ReviewedReadback(
+        scope,
+        sha256(raw_plan).hexdigest(),
+        sha256(raw_state).hexdigest(),
+        f"qualification/m3-12/{scope.run_id}/{scope.role}.tfstate",
+    )
+    with pytest.raises(ValidationError, match=category):
+        bind_initial_allocation(review, raw_plan, raw_state, observed, encode(exclusions))
 
 
 @pytest.fixture
