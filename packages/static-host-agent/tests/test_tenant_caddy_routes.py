@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,22 @@ from lowerduckpond_static_host_agent import (
     build_tenant_caddy_routes,
     caddy_route_state_digest,
 )
+from lowerduckpond_static_host_agent.backup_caddy import (
+    CaddyBackupEvidence,
+    CaddyGenerationEvidence,
+)
+from lowerduckpond_static_host_agent.caddy_startup import CaddyStartTarget
+from lowerduckpond_static_host_agent.disposable_routes import (
+    DisposableRoutes,
+    project_native_routes,
+)
+from lowerduckpond_static_host_agent.host_restore_journal import (
+    HostRestoreError,
+)
+from lowerduckpond_static_host_agent.host_restore_selection import (
+    require_captured_selection,
+)
+from lowerduckpond_static_host_agent.route_snapshot import TenantRouteSnapshot
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
 _ACTIVE_TENANT = "0191e2c4-8f7a-7c3b-8d1e-5f62047a2100"
@@ -358,3 +375,71 @@ def test_archived_state_is_rejected_until_its_archive_binding_lands() -> None:
 
     with pytest.raises(CaddyRouteError, match=r"deferred until M3\.10"):
         _generated(tenants=(archived,))
+
+
+def test_disposable_projection_preserves_authority_and_reuses_exact_captured_selection() -> None:
+    tenants = _inputs()
+    original = _generated(tenants=tenants)
+    unmodified = canonical_json_bytes(original.route_metadata)
+    scope = "source.tenants.example"
+    policy = DisposableRoutes(
+        "a" * 64,
+        _GENERATION,
+        _ACTIVE_TENANT,
+        "b" * 64,
+        "c" * 64,
+        "source.platform.example",
+        scope,
+        tuple(
+            (tenant, f"https://t-{tenant.replace('-', '')}.{scope}")
+            for tenant in (_ACTIVE_TENANT, _UNDEPLOYED_TENANT, _SUSPENDED_TENANT)
+        ),
+    )
+    projected = project_native_routes(original, policy)
+    original_state, projected_state = (
+        original.route_metadata["routeState"],
+        projected.route_metadata["routeState"],
+    )
+    assert isinstance(projected_state, dict)
+    assert isinstance(original_state, dict)
+    assert projected_state["platformNamespace"] == original_state["platformNamespace"]
+    assert projected_state["tenantStates"] == original_state["tenantStates"]
+    assert projected_state["logicalRouteStateDigest"] == original.route_metadata["routeStateDigest"]
+    assert projected_state["disposableRoutingSha256"] == policy.sha256
+    assert canonical_json_bytes(original.route_metadata) == unmodified
+    assert b"lowerduckpond.com" not in canonical_json_bytes(projected.configuration)
+    assert b"lowerduckpond.net" not in canonical_json_bytes(projected.configuration)
+    tenant_origin = policy.expected_origin(_ACTIVE_TENANT)
+    canonical = _route_for(
+        projected, server="production", host=tenant_origin.removeprefix("https://")
+    )
+    assert (
+        canonical["handle"]
+        == _route_for(original, server="production", host=_origin(_ACTIVE_TENANT))["handle"]
+    )
+    alias = _route_for(projected, server="production", host=f"active-duck.{scope}")
+    assert isinstance(alias["handle"], list)
+    assert alias["handle"][-1]["headers"]["Location"] == [tenant_origin + "/"]
+
+    choices = {
+        "verified": (_GENERATION, TenantRouteSnapshot(_fixture("platform-namespace.json"), tenants))
+    }
+    observed = projected.route_metadata["routeStateDigest"]
+    assert isinstance(observed, dict)
+    evidence = CaddyBackupEvidence(
+        _GENERATION,
+        None,
+        (CaddyGenerationEvidence(CaddyStartTarget(_GENERATION, "d" * 64), observed),),
+    )
+    assert (
+        require_captured_selection(evidence, choices, (_CA_DER,), captured_disposable=policy)
+        == "verified"
+    )
+    with pytest.raises(HostRestoreError, match="restore_lifecycle_route_proof_mismatch"):
+        require_captured_selection(evidence, choices, (_CA_DER,))
+    with pytest.raises(CaddyRouteError, match="disposable route tenant is not enrolled"):
+        project_native_routes(original, replace(policy, tenants=policy.tenants[1:]))
+    active_only = project_native_routes(original, replace(policy, tenants=policy.tenants[:1]))
+    assert active_only.configuration == projected.configuration
+    with pytest.raises(CaddyRouteError, match="exclusive derived HTTPS origin"):
+        replace(policy, tenants=((_ACTIVE_TENANT, "https://different.source.tenants.example"),))

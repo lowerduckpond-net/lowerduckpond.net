@@ -10,6 +10,11 @@ from pathlib import Path
 from lowerduckpond_static_contracts import MAX_CANONICAL_BYTES, decode_contract
 
 from lowerduckpond_static_host_agent.audit import has_tenant_audit_history
+from lowerduckpond_static_host_agent.droplet_enrollment import (
+    PUBLICATION_VIEW,
+    DropletEnrollment,
+    read_enrollment,
+)
 from lowerduckpond_static_host_agent.durable import DurableDirectory, FailureHook
 from lowerduckpond_static_host_agent.locks import LockName
 from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
@@ -240,13 +245,25 @@ def verify_launch(state_path: Path, authority_path: Path, *, owner: int = 0) -> 
 
 
 def require_local_launch_binding(
-    authority_path: Path, receipt: Document, *, disposable: bool, owner: int = 0
+    authority_path: Path,
+    receipt: Document,
+    *,
+    disposable: bool,
+    owner: int = 0,
+    boot_path: Path | None = None,
 ) -> None:
     """Reject receipts copied from a different target or native transaction."""
     with DurableDirectory.open(
         authority_path, expected_owner=owner, expected_directory_mode=0o700
     ) as authority:
         binding = receipt["binding"]
+        if authority_path.name == PUBLICATION_VIEW:
+            require(not disposable, "droplet-enrollment-conflicts")
+            enrolled = read_enrollment(authority_path, authority, owner=owner)
+            _require_droplet_binding(
+                authority_path, receipt, enrolled, owner=owner, boot_path=boot_path
+            )
+            return
         transaction_raw = _optional(authority, ("transaction.json",), owner)
         if transaction_raw is not None:
             transaction = decode(transaction_raw, "transaction")
@@ -265,4 +282,43 @@ def require_local_launch_binding(
             and binding["purpose"] == target["purpose"] == "installed-test"
             and binding["targetSha256"] == digest(target),
             "installed-publication-binding-changed",
+        )
+
+
+def _require_droplet_binding(
+    authority_path: Path,
+    receipt: Document,
+    enrolled: DropletEnrollment,
+    *,
+    owner: int,
+    boot_path: Path | None,
+) -> None:
+    from lowerduckpond_static_host_agent.host_restore_gate import (  # noqa: PLC0415
+        RECOVERY_ROOT,
+        gate_pending,
+    )
+    from lowerduckpond_static_host_agent.host_restore_journal import (  # noqa: PLC0415
+        DROPLET_BINDING,
+        RestoreStore,
+    )
+
+    binding = receipt["binding"]
+    if not os.path.lexists(RECOVERY_ROOT):
+        enrolled.require_binding(binding)
+        return
+    from lowerduckpond_static_host_agent.host_restore_droplet import (  # noqa: PLC0415 - break restore/launch import cycle
+        require_activation,
+    )
+
+    with DurableDirectory.open(
+        RECOVERY_ROOT, expected_owner=owner, expected_directory_mode=0o700
+    ) as recovery:
+        store = RestoreStore(recovery, owner)
+        journal = store.read()
+        if journal is None or DROPLET_BINDING not in journal.bindings:
+            enrolled.require_binding(binding)
+            return
+        require(not gate_pending(store), "droplet-restore-admission-pending")
+        require_activation(
+            store, authority_path=authority_path, receipt=receipt, boot_path=boot_path
         )

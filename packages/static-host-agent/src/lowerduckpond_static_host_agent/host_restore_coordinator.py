@@ -301,6 +301,7 @@ class HostRestore:
                 CaddyBackupEvidence.from_dict(descriptor["caddy"]),
                 files.original_ca,
                 str(cast(dict[str, object], self.inputs.document["archiveTarget"])["bucket"]),
+                self.inputs.disposable_routing,
             ).reconcile(work, proof)
         # No export lease crosses the credential helper's own export exclusion.
         archives = self._archive("cleanup")
@@ -425,13 +426,15 @@ class HostRestore:
             != self.inputs.caddy["trustBundleSha256"]
         ):
             raise HostRestoreError("restore_public_trust_changed")
+        routing = self.inputs.disposable_routing
+        subjects = SUBJECTS if routing is None else routing.certificate_subjects
         while True:
             self._remaining()
             try:
                 return verify_cold_tls(
                     CADDY_STORAGE / "caddy/certificates",
                     issuer=str(self.inputs.caddy["issuer"]),
-                    subjects=SUBJECTS,
+                    subjects=subjects,
                     trust=TRUST_BUNDLE,
                     owner=self.caddy_uid,
                     group=self.paths.caddy_group,

@@ -23,13 +23,19 @@ from lowerduckpond_static_host_agent.caddy_generation import (
 )
 from lowerduckpond_static_host_agent.caddy_routes import build_tenant_caddy_routes
 from lowerduckpond_static_host_agent.caddy_startup import CaddyStartupStore, start_target
+from lowerduckpond_static_host_agent.disposable_routes import (
+    DisposableRoutes,
+    project_native_routes,
+)
 from lowerduckpond_static_host_agent.execution import _validate_observed_state
 from lowerduckpond_static_host_agent.host_restore_history import (
     import_prior_provenance,
     seal_provenance,
 )
-from lowerduckpond_static_host_agent.host_restore_inputs import RestoreInputs
+from lowerduckpond_static_host_agent.host_restore_inputs import ROUTING_INPUT, RestoreInputs
 from lowerduckpond_static_host_agent.host_restore_journal import (
+    DROPLET_BINDING,
+    DROPLET_SCOPE_FORMAT,
     HostRestoreError,
     RestoreJournal,
     RestorePhase,
@@ -72,13 +78,14 @@ NEW_CA = (b"replacement reviewed public CA",)
 ENVIRONMENT = b"CLOUDFLARE_API_TOKEN=fixture-only\n"
 
 
-def setup(
+def setup(  # noqa: PLR0913 - shared reconstruction authority fixture
     capture: Capture,
     configuration: dict[str, object],
     journal: RestoreJournal,
     tmp_path: Path,
     *,
     suspended: bool = False,
+    routing: DisposableRoutes | None = None,
 ) -> tuple[RestoreJournal, RestoreInputs, dict[str, object], CaddyBinarySource]:
     # The general inventory fixture carries an extra archive record; this live
     # source has no construction/retirement and must be settled before capture.
@@ -116,6 +123,16 @@ def setup(
         origin_pull_ca_der=OLD_CA,
         origin_pull_required=True,
     )
+    if routing is not None:
+        old_routes = project_native_routes(old_routes, routing)
+        configuration[ROUTING_INPUT] = routing.document()
+        configuration[DROPLET_BINDING] = {
+            "format": DROPLET_SCOPE_FORMAT,
+            "runId": routing.run_id,
+            "sourceTargetSha256": routing.source_target,
+            "destinationTargetSha256": routing.restore_target,
+            "sourceLaunchReceiptSha256": None,
+        }
     with CaddyGenerationStore.open(
         runtime / "generations", expected_owner=os.geteuid(), expected_group=os.getegid()
     ) as generations:
@@ -141,11 +158,13 @@ def setup(
         originPullCaSha256=[hashlib.sha256(value).hexdigest() for value in NEW_CA],
     )
     trusted = RestoreInputs.from_bytes(canonical_json_bytes(configuration))
+    scope = trusted.droplet_scope_digest
     journal = replace(
         journal,
         capture_id=str(descriptor["captureId"]),
         bindings={
             **journal.bindings,
+            **({DROPLET_BINDING: scope} if scope is not None else {}),
             "backupDescriptor": backup_descriptor_digest(encode_backup_descriptor(descriptor)),
             "trustedInputs": trusted.digest,
             "repository": cast(dict[str, str], trusted.document["repositoryBinding"]),

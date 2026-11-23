@@ -124,6 +124,7 @@ def main() -> int:
             "selection": json.dumps(value, separators=(",", ":")),
             "matrix": json.dumps(matrix(cases), separators=(",", ":")),
             "required": str(bool(cases)).lower(),
+            "worker_view": str("successor-rollout" in cases).lower(),
             "complete": str(complete_required(args.event)).lower(),
         }
         with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="ascii") as stream:

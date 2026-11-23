@@ -763,11 +763,14 @@ def test_origin_pull_pem_conversion_returns_the_exact_der_bytes() -> None:
     assert entrypoints._pem_certificate_der(pem) == expected
 
 
+@pytest.mark.parametrize("routing", [None, object()], ids=["ordinary", "enrolled"])
 def test_caddy_control_runtime_opens_the_validated_lock_path(
     monkeypatch: pytest.MonkeyPatch,
+    routing: object | None,
 ) -> None:
     opened: list[tuple[Path, Path, dict[str, object]]] = []
     expected_runtime = object()
+    caddy_gid = 1002
 
     class RuntimeType:
         @staticmethod
@@ -784,9 +787,14 @@ def test_caddy_control_runtime_opens_the_validated_lock_path(
     monkeypatch.setattr(
         grp,
         "getgrnam",
-        lambda _name: SimpleNamespace(gr_gid=1002),
+        lambda _name: SimpleNamespace(gr_gid=caddy_gid),
     )
 
+    def projection(*, group: int) -> object | None:
+        assert group == caddy_gid
+        return routing
+
+    monkeypatch.setattr(entrypoints, "installed_projection", projection)
     assert entrypoints._open_caddy_control_runtime() is expected_runtime
     assert opened == [
         (
@@ -794,10 +802,11 @@ def test_caddy_control_runtime_opens_the_validated_lock_path(
             entrypoints._PUBLICATION_LOCK,
             {
                 "expected_owner": 0,
-                "expected_group": 1002,
+                "expected_group": caddy_gid,
                 "validation_uid": 1001,
-                "validation_gid": 1002,
+                "validation_gid": caddy_gid,
                 "expected_binary_sha256": None,
+                "disposable": routing,
                 "expected_lock_owner": 0,
                 "expected_lock_group": 0,
                 "root_mode": CADDY_RUNTIME_ROOT_MODE,

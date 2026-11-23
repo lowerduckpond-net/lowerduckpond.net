@@ -17,11 +17,14 @@
     owner: root
     group: root
     mode: "0600"
+    force: "{{ host_recovery_droplet_preflight.publicationFiles is not defined }}"
   loop: >-
     {{ ['target.json', 'source-fence-' ~ host_recovery_restore_id ~ '.json'] +
        (range((host_recovery_bootstrap_inputs.stdout | default('{"originalCaCount":0}') |
         from_json).originalCaCount) |
         map('string') | map('regex_replace', '^(.*)$', 'original-origin-pull-ca-\1.pem') | list) }}
+  vars:
+    host_recovery_droplet_preflight: "{{ host_recovery_bootstrap_inputs.stdout | default('{}') | from_json }}"
   when: host_recovery_bootstrap_enabled
   no_log: true
 
@@ -80,3 +83,33 @@
   ansible.builtin.systemd_service:
     daemon_reload: true
   when: host_recovery_coordinator_unit.changed or host_recovery_archive_units.changed
+
+- name: Read the delivered authority from the verified installed artifact
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/restore-static-host
+      - --verify-delivery
+  changed_when: false
+  register: host_recovery_droplet_readback
+  vars:
+    host_recovery_droplet_preflight: "{{ host_recovery_bootstrap_inputs.stdout | default('{}') | from_json }}"
+  when:
+    - host_recovery_bootstrap_enabled
+    - host_recovery_droplet_preflight.publicationFiles is defined
+  no_log: true
+
+- name: Match the installed delivery to the approved inputs
+  ansible.builtin.assert:
+    that:
+      - host_recovery_delivery.restoreId == host_recovery_droplet_preflight.restoreId
+      - host_recovery_delivery.trustedInputsDigest == host_recovery_droplet_preflight.trustedInputsDigest
+      - host_recovery_delivery.activationScopeDigest == host_recovery_droplet_preflight.activationScopeDigest
+      - host_recovery_delivery.publicationFiles == host_recovery_droplet_preflight.publicationFiles
+    quiet: true
+  vars:
+    host_recovery_delivery: "{{ host_recovery_droplet_readback.stdout | from_json }}"
+    host_recovery_droplet_preflight: "{{ host_recovery_bootstrap_inputs.stdout | default('{}') | from_json }}"
+  when:
+    - host_recovery_bootstrap_enabled
+    - host_recovery_droplet_preflight.publicationFiles is defined
+  no_log: true

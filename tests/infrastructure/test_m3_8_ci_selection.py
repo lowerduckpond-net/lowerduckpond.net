@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 REPOSITORY_ROOT = Path(__file__).parents[2]
 SELECTOR = (REPOSITORY_ROOT / "scripts/m3-8-ci-required").resolve()
@@ -125,9 +126,75 @@ def test_ci_keeps_the_required_check_while_selecting_expensive_steps() -> None:
     assert "group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}" in workflow
     assert "fetch-depth: 0" in workflow
     assert "scripts.qualification_ci plan" in workflow
-    assert "scripts.qualification_ci verify" in workflow
-    assert (
-        "needs: [ansible-static, installed-selection, ansible-m3-8, ansible-complete]" in workflow
-    )
-    assert 'test "$SELECTION_RESULT" = success' in workflow
     assert 'cron: "23 4 * * 1"' in workflow
+
+    jobs = yaml.safe_load(workflow)["jobs"]
+    aggregate = jobs["ansible"]
+    assert aggregate["if"] == "always()"
+    assert {
+        "ansible-static",
+        "installed-selection",
+        "ansible-m3-8",
+        "ansible-complete",
+        "ansible-worker-view",
+    } <= set(aggregate["needs"])
+    assert "ansible" in jobs["gate"]["needs"]
+
+    worker = jobs["ansible-worker-view"]
+    assert "installed-selection" in worker["needs"]
+    assert worker["if"] == "needs.installed-selection.outputs.worker_view == 'true'"
+    verify_step = next(
+        step
+        for step in aggregate["steps"]
+        if "scripts.qualification_ci verify" in step.get("run", "")
+    )
+    assert verify_step["env"]["SELECTION_RESULT"] == "${{ needs.installed-selection.result }}"
+    assert (
+        verify_step["env"]["WORKER_VIEW_REQUIRED"]
+        == "${{ needs.installed-selection.outputs.worker_view }}"
+    )
+    assert verify_step["env"]["WORKER_VIEW_RESULT"] == "${{ needs.ansible-worker-view.result }}"
+    assert "if" not in verify_step and not verify_step.get("continue-on-error", False)
+
+
+@pytest.mark.parametrize(
+    ("selection", "required", "worker_result", "accepted"),
+    [
+        ("success", "true", "success", True),
+        ("success", "true", "failure", False),
+        ("success", "true", "cancelled", False),
+        ("success", "true", "skipped", False),
+        ("success", "false", "skipped", True),
+        ("success", "false", "success", False),
+        ("success", "", "skipped", False),
+        ("failure", "true", "success", False),
+    ],
+)
+def test_ansible_aggregate_requires_the_selected_worker_result(
+    selection: str, required: str, worker_result: str, accepted: bool
+) -> None:
+    jobs = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))["jobs"]
+    verify = next(
+        step["run"]
+        for step in jobs["ansible"]["steps"]
+        if "scripts.qualification_ci verify" in step.get("run", "")
+    )
+    bash = shutil.which("bash")
+    assert bash is not None
+    # Exercise the checked-in aggregate conditions. Receipt verification has
+    # its own tests, so the stand-in records whether the gate reached it.
+    result = subprocess.run(  # noqa: S603 - fixed local Bash and checked-in workflow step
+        [bash, "-e", "-c", "python() { echo verified; }\n" + verify],
+        env={
+            "SELECTION_RESULT": selection,
+            "WORKER_VIEW_REQUIRED": required,
+            "WORKER_VIEW_RESULT": worker_result,
+            "EVENT_NAME": "pull_request",
+            "RESULT_DIRECTORY": "unused",
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == int(not accepted), result.stderr
+    assert result.stdout == ("verified\n" if accepted else "")

@@ -15,6 +15,7 @@ from lowerduckpond_static_host_agent.deployment_commit import (
     finalize_deployment_transition_outcome,
     validate_deployment_transition,
 )
+from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
 from lowerduckpond_static_host_agent.host_restore_decisions import commit_decision
 from lowerduckpond_static_host_agent.host_restore_journal import HostRestoreError, RestoreStore
 from lowerduckpond_static_host_agent.host_restore_routes import (
@@ -123,6 +124,7 @@ def reconcile_deployment(  # noqa: PLR0913, PLR0917 - selection, release and pri
     evidence: CaddyBackupEvidence,
     original_origin_pull_ca_der: tuple[bytes, ...],
     *,
+    captured_disposable: DisposableRoutes | None = None,
     failure_hook: DeploymentCommitFailureHook | None = None,
 ) -> dict[str, object]:
     intent_id = validate_uuid7(intent_id)
@@ -164,6 +166,7 @@ def reconcile_deployment(  # noqa: PLR0913, PLR0917 - selection, release and pri
             ),
         },
         original_origin_pull_ca_der,
+        captured_disposable=captured_disposable,
     )
     result = recovery._deployment_result(job.document, candidate)
     audit = transaction.inspect_audit_correlation(intent["correlationId"])

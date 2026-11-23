@@ -113,6 +113,7 @@ def helper_evidence(
             CaddyBackupEvidence.from_dict(descriptor["caddy"]),
             original_ca(inputs),
             journal.remote.inventory(),
+            captured_disposable=inputs.disposable_routing,
         )
         return verify_restore_archives(journal.remote, obligations, workspace, owner=store.owner)
     if action == "cleanup":

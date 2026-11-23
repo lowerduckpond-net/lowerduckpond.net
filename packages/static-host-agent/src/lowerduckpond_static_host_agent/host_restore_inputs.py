@@ -29,8 +29,11 @@ from lowerduckpond_static_host_agent.caddy_routes import (
     TENANT_APEX,
     TENANT_WILDCARD,
 )
+from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
 from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.host_restore_journal import (
+    DROPLET_BINDING,
+    DROPLET_SCOPE_FORMAT,
     MAX_RESTORE_BYTES,
     HostRestoreError,
     exact_object,
@@ -38,6 +41,7 @@ from lowerduckpond_static_host_agent.host_restore_journal import (
 )
 
 INPUT_SCHEMA: Final = "lowerduckpond-host-restore-inputs-v1"
+ROUTING_INPUT: Final = "disposableRouting"
 INPUT_ROOT: Final = Path("/etc/lowerduckpond/host-restore")
 MACHINE: Final = re.compile(r"[0-9a-f]{32}", re.ASCII)
 SUBJECTS: Final = tuple(sorted((PLATFORM_APEX, PLATFORM_WILDCARD, TENANT_APEX, TENANT_WILDCARD)))
@@ -78,8 +82,9 @@ class RestoreInputs:
 
     @classmethod
     def from_bytes(cls, raw: bytes) -> RestoreInputs:
+        document = decode_json_object(raw, maximum_bytes=MAX_RESTORE_BYTES)
         value = exact_object(
-            decode_json_object(raw, maximum_bytes=MAX_RESTORE_BYTES),
+            document,
             {
                 "schema",
                 "restoreId",
@@ -95,7 +100,9 @@ class RestoreInputs:
                 "caddy",
                 "publicationEnabled",
                 "auditRotationEnabled",
-            },
+            }
+            | ({DROPLET_BINDING} if DROPLET_BINDING in document else set())
+            | ({ROUTING_INPUT} if ROUTING_INPUT in document else set()),
         )
         if value["schema"] != INPUT_SCHEMA:
             raise HostRestoreError("restore input schema is unsupported")
@@ -118,6 +125,8 @@ class RestoreInputs:
         for key in ("publicationEnabled", "auditRotationEnabled"):
             if type(value[key]) is not bool:
                 raise HostRestoreError("restore activation policy is invalid")
+        if DROPLET_BINDING in value:
+            _validate_droplet_scope(value[DROPLET_BINDING], launch, value["publicationEnabled"])
         target = exact_object(value["archiveTarget"], {"region", "bucket"})
         if (
             type(target["region"]) is not str
@@ -126,10 +135,20 @@ class RestoreInputs:
             or re.fullmatch(r"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]", target["bucket"]) is None
         ):
             raise HostRestoreError("restore archive target is invalid")
+        result = cls(value)
+        routing = result.disposable_routing
+        if routing is not None:
+            scope = result.droplet_scope
+            if scope is None or (
+                routing.run_id != scope["runId"]
+                or routing.source_target != scope["sourceTargetSha256"]
+                or routing.restore_target != scope["destinationTargetSha256"]
+            ):
+                raise HostRestoreError("restore_disposable_routing_scope_changed")
         _validate_caddy(value["caddy"])
         if canonical_json_bytes(value, maximum_bytes=MAX_RESTORE_BYTES) != raw:
             raise HostRestoreError("restore inputs are not canonical")
-        return cls(value)
+        return result
 
     @classmethod
     def load(cls, root: Path = INPUT_ROOT, *, owner: int = 0) -> RestoreInputs:
@@ -149,6 +168,28 @@ class RestoreInputs:
     def digest(self) -> dict[str, str]:
         return framed_digest(
             INPUT_SCHEMA, canonical_json_bytes(self.document, maximum_bytes=MAX_RESTORE_BYTES)
+        )
+
+    @property
+    def disposable_routing(self) -> DisposableRoutes | None:
+        if ROUTING_INPUT not in self.document:
+            return None
+        value = self.document[ROUTING_INPUT]
+        if not isinstance(value, dict):
+            raise HostRestoreError("restore_disposable_routing_invalid")
+        return DisposableRoutes.from_bytes(canonical_json_bytes(value))
+
+    @property
+    def droplet_scope(self) -> dict[str, object] | None:
+        return cast(dict[str, object] | None, self.document.get(DROPLET_BINDING))
+
+    @property
+    def droplet_scope_digest(self) -> dict[str, str] | None:
+        scope = self.droplet_scope
+        return (
+            None
+            if scope is None
+            else framed_digest(DROPLET_SCOPE_FORMAT, canonical_json_bytes(scope))
         )
 
     @property
@@ -172,6 +213,32 @@ class RestoreInputs:
             or full_id(requested_snapshot) != self.snapshot_id
         ):
             raise HostRestoreError("restore_target_input_mismatch")
+
+
+def _validate_droplet_scope(scope: object, launch: object, publication: object) -> None:
+    value = exact_object(
+        scope,
+        {
+            "format",
+            "runId",
+            "sourceTargetSha256",
+            "destinationTargetSha256",
+            "sourceLaunchReceiptSha256",
+        },
+    )
+    validate_uuid7(value["runId"])
+    source = full_id(value["sourceTargetSha256"])
+    destination = full_id(value["destinationTargetSha256"])
+    receipt = value["sourceLaunchReceiptSha256"]
+    if receipt is not None:
+        full_id(receipt)
+    if (
+        value["format"] != DROPLET_SCOPE_FORMAT
+        or source == destination
+        or (launch is None) != (receipt is None)
+        or (launch is None and publication is not False)
+    ):
+        raise HostRestoreError("droplet_restore_scope_invalid")
 
 
 def _validate_caddy(document: object) -> None:

@@ -13,6 +13,7 @@ from lowerduckpond_static_host_agent.backup_caddy import CaddyBackupEvidence
 from lowerduckpond_static_host_agent.backup_descriptor import INTENT_DIGEST_FORMAT
 from lowerduckpond_static_host_agent.backup_identity import framed_digest
 from lowerduckpond_static_host_agent.capacity import DEFAULT_HOST_CAPACITY_LIMITS
+from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
 from lowerduckpond_static_host_agent.execution import (
     _capture_replay_authority,
     _repair_executor_failure_audit,
@@ -184,6 +185,7 @@ class LocalRecovery:
     evidence: CaddyBackupEvidence
     original_ca: tuple[bytes, ...]
     bucket: str
+    captured_disposable: DisposableRoutes | None = None
 
     def reconcile(self, work: dict[str, object], proof: dict[str, object]) -> tuple[str, ...]:
         """The credential helper's complete inventory/bundle proof precedes this call."""
@@ -289,6 +291,7 @@ class LocalRecovery:
                 self.evidence,
                 self.original_ca,
                 proof,
+                captured_disposable=self.captured_disposable,
             )
             return
         with self.repository.publication_transaction() as transaction:
@@ -302,11 +305,26 @@ class LocalRecovery:
                     self.evidence,
                     self.original_ca,
                     proof,
+                    captured_disposable=self.captured_disposable,
                 )
             elif operation == "create":
-                reconcile_create(self.store, transaction, identity, self.evidence, self.original_ca)
+                reconcile_create(
+                    self.store,
+                    transaction,
+                    identity,
+                    self.evidence,
+                    self.original_ca,
+                    captured_disposable=self.captured_disposable,
+                )
             elif operation in {"suspend", "resume", "rename", "reconcile"}:
-                reconcile_route(self.store, transaction, identity, self.evidence, self.original_ca)
+                reconcile_route(
+                    self.store,
+                    transaction,
+                    identity,
+                    self.evidence,
+                    self.original_ca,
+                    captured_disposable=self.captured_disposable,
+                )
             elif operation in {"deploy", "import", "rollback"}:
                 reconcile_deployment(
                     self.store,
@@ -315,6 +333,7 @@ class LocalRecovery:
                     identity,
                     self.evidence,
                     self.original_ca,
+                    captured_disposable=self.captured_disposable,
                 )
             elif operation in {"restore", "delete"}:
                 function = reconcile_tenant_restore if operation == "restore" else reconcile_delete
@@ -327,6 +346,7 @@ class LocalRecovery:
                     self.evidence,
                     self.original_ca,
                     proof,
+                    captured_disposable=self.captured_disposable,
                 )
             elif operation == "export":
                 job_id = validate_uuid7(row["jobId"])

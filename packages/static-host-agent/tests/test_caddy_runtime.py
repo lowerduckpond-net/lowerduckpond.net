@@ -52,6 +52,10 @@ from lowerduckpond_static_host_agent import (
     caddy_route_state_digest,
     prepare_active_caddy_execution,
 )
+from lowerduckpond_static_host_agent.disposable_routes import (
+    DisposableRoutes,
+    project_native_routes,
+)
 
 GENERATION_A = "0198d17f-6f4a-7000-8000-000000000001"
 GENERATION_B = "0198d17f-6f4a-7000-8000-000000000002"
@@ -1714,3 +1718,83 @@ def test_runtime_refuses_unsafe_publication_lock_metadata(
     mutate(runtime_fixture.lock)
     with pytest.raises(CaddyRuntimeError, match=message):
         runtime_fixture.open()
+
+
+def test_disposable_generation_requires_exact_scope_at_native_selection(
+    runtime_fixture: RuntimeFixture,
+) -> None:
+    original = build_platform_only_caddy_routes(
+        origin_pull_ca_der=(_ORIGIN_PULL_CA_DER,), origin_pull_required=True
+    )
+    scope = DisposableRoutes(
+        "a" * 64,
+        GENERATION_A,
+        GENERATION_B,
+        "b" * 64,
+        "c" * 64,
+        "source.platform.example",
+        "source.tenants.example",
+        (),
+    )
+    new = "0198d17f-6f4a-7000-8000-000000000024"
+    projected = project_native_routes(original, scope)
+    with CaddyGenerationStore.open(
+        runtime_fixture.root / "generations",
+        expected_owner=runtime_fixture.owner,
+        expected_group=runtime_fixture.group,
+    ) as store:
+        store.publish(
+            new,
+            CaddyGenerationPayload(
+                binary=CaddyBinarySource(
+                    runtime_fixture.binary,
+                    owner=runtime_fixture.owner,
+                    group=runtime_fixture.group,
+                ),
+                environment=b"CLOUDFLARE_API_TOKEN=synthetic-fixture\n",
+                configuration=projected.configuration,
+                route_metadata=projected.route_metadata,
+            ),
+        )
+
+    with runtime_fixture.open() as runtime, runtime.locked():
+        runtime.select_active(GENERATION_A)
+        with pytest.raises(CaddyRuntimeError, match="route state disagree"):
+            runtime.select_active(new)
+        assert runtime.read_active() == GENERATION_A
+
+    def scoped(policy: DisposableRoutes) -> CaddyRuntime:
+        return CaddyRuntime.open(
+            runtime_fixture.root,
+            runtime_fixture.lock,
+            expected_owner=runtime_fixture.owner,
+            expected_group=runtime_fixture.group,
+            validation_uid=runtime_fixture.owner,
+            validation_gid=runtime_fixture.group,
+            expected_binary_sha256=runtime_fixture.binary_sha256,
+            candidate_validator=_accept_candidate,
+            disposable=policy,
+        )
+
+    with scoped(scope) as runtime, runtime.locked():
+        runtime.select_active(new)
+        with runtime.open_active_verified().generation as opened:
+            assert opened.manifest.generation_id == new
+        with pytest.raises(CaddyRuntimeError, match="route state disagree"):
+            runtime.select_active(GENERATION_A)
+    other = DisposableRoutes(
+        scope.allocation_sha256,
+        scope.run_id,
+        new,
+        scope.source_target,
+        scope.restore_target,
+        scope.platform,
+        scope.tenant_scope,
+        scope.tenants,
+    )
+    with (
+        scoped(other) as runtime,
+        runtime.locked(),
+        pytest.raises(CaddyRuntimeError, match="route state disagree"),
+    ):
+        runtime.open_active_verified()

@@ -14,6 +14,7 @@ from lowerduckpond_static_host_agent.backup_caddy import CaddyBackupEvidence
 from lowerduckpond_static_host_agent.caddy_routes import TenantRouteInput
 from lowerduckpond_static_host_agent.capacity import DEFAULT_HOST_CAPACITY_LIMITS
 from lowerduckpond_static_host_agent.delete_plan import DeleteTransitionPlan
+from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
 from lowerduckpond_static_host_agent.execution import (
     _failure_result,
     _publish_result,
@@ -199,6 +200,7 @@ def reconcile_route(  # noqa: PLR0913 - exact captured selection and private aut
     evidence: CaddyBackupEvidence,
     original_origin_pull_ca_der: tuple[bytes, ...],
     *,
+    captured_disposable: DisposableRoutes | None = None,
     failure_hook: RouteCommitFailureHook | None = None,
 ) -> dict[str, object]:
     intent_id = validate_uuid7(intent_id)
@@ -221,6 +223,7 @@ def reconcile_route(  # noqa: PLR0913 - exact captured selection and private aut
             ),
         },
         original_origin_pull_ca_der,
+        captured_disposable=captured_disposable,
     )
     result = recovery._route_result(job.document, candidate)
     audit = transaction.inspect_audit_correlation(intent["correlationId"])

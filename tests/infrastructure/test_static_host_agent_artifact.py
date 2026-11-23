@@ -178,6 +178,49 @@ def test_host_agent_artifact_is_locked_reproducible_and_installable(
     assert manifest["python"] == "3.14"
     assert run(verifier, selected).returncode == 0
     assert_native_import_preserves_artifact(selected, verifier)
+    assert_installed_worker_fixture_materializes_launch(selected, tmp_path)
+    assert run(verifier, selected).returncode == 0
+
+
+def assert_installed_worker_fixture_materializes_launch(artifact: Path, tmp_path: Path) -> None:
+    """Exercise the actual hosted fixture writer in the isolated installed artifact."""
+    witness = REPOSITORY_ROOT / "config/ansible/molecule/m3_8/m3_12_worker_view.py"
+    prepared = run(
+        sys.executable,
+        "-I",
+        "-B",
+        "-c",
+        r"""
+from pathlib import Path
+import os, runpy, sys
+artifact, code, root = map(Path, sys.argv[1:])
+sys.path.insert(0, str(artifact / "site-packages"))
+from lowerduckpond_static_host_agent import droplet_enrollment
+from lowerduckpond_static_host_agent.platform_launch import (
+    require_local_launch_binding, verify_launch,
+)
+from scripts import m3_12_droplet_observe as observe
+records = root / "worker-authority"
+state = root / "worker-state"
+view = records / droplet_enrollment.PUBLICATION_VIEW
+observe.HOST_KEY = root / "ssh_host_ed25519_key.pub"
+observe.MACHINE_ID = root / "machine-id"
+observe.SYSTEM_UUID = root / "system-uuid"
+observe.MACHINE_ID.write_bytes(b"1" * 32 + b"\n")
+observe.SYSTEM_UUID.write_text("10000000-2000-3000-4000-500000000000\n")
+droplet_enrollment.DOCKER_MARKER = root / "no-marker-in-synthetic-host-view"
+launch = runpy.run_path(str(code))["create_launch"]
+launch.__globals__.update(ROOT=records, STATE=state, VIEW=view)
+launch(artifact.name, owner=os.geteuid())
+receipt = verify_launch(state, view, owner=os.geteuid())
+require_local_launch_binding(view, receipt, disposable=False, owner=os.geteuid())
+assert (view / "launch-receipt.json").is_file()
+""",
+        artifact,
+        witness,
+        tmp_path,
+    )
+    assert prepared.returncode == 0, prepared.stderr
 
 
 def assert_native_import_preserves_artifact(artifact: Path, verifier: Path) -> None:

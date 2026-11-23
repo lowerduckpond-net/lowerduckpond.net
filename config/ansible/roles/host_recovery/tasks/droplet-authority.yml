@@ -1,0 +1,68 @@
+---
+- name: Inspect the fixed protected publication directories
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+  loop: "{{ host_recovery_droplet_authority_directories }}"
+  register: host_recovery_droplet_directories
+
+- name: Require existing publication directories to be protected
+  ansible.builtin.assert:
+    that:
+      - item.stat.isdir
+      - item.stat.uid == 0
+      - item.stat.gid == 0
+      - item.stat.mode == "0700"
+    quiet: true
+  loop: "{{ host_recovery_droplet_directories.results }}"
+  when: item.stat.exists
+  no_log: true
+
+- name: Create the missing publication directories
+  ansible.builtin.file:
+    path: "{{ item.item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+  loop: "{{ host_recovery_droplet_directories.results }}"
+  when: not item.stat.exists
+  no_log: true
+
+- name: Inspect retained Droplet publication files before transfer
+  ansible.builtin.stat:
+    path: "{{ host_recovery_droplet_authority_directories[-1] }}/{{ item.key }}"
+    follow: false
+    checksum_algorithm: sha256
+    get_mime: false
+    get_attributes: false
+  loop: "{{ host_recovery_droplet_authority_files | dict2items }}"
+  register: host_recovery_existing_droplet_files
+  no_log: true
+
+- name: Require any retained publication file to match the original bytes
+  ansible.builtin.assert:
+    that:
+      - item.stat.isreg
+      - item.stat.uid == 0
+      - item.stat.gid == 0
+      - item.stat.mode == "0600"
+      - item.stat.nlink == 1
+      - item.stat.checksum == item.item.value
+    quiet: true
+  loop: "{{ host_recovery_existing_droplet_files.results }}"
+  when: item.stat.exists
+  no_log: true
+
+- name: Install the missing verified publication records
+  ansible.builtin.copy:
+    src: "{{ host_recovery_input_directory }}/{{ item.item.key }}"
+    dest: "{{ host_recovery_droplet_authority_directories[-1] }}/{{ item.item.key }}"
+    owner: root
+    group: root
+    mode: "0600"
+    follow: false
+    force: false
+  loop: "{{ host_recovery_existing_droplet_files.results }}"
+  when: not item.stat.exists
+  no_log: true

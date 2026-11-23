@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
 
+from lowerduckpond_static_contracts import canonical_json_bytes
 from lowerduckpond_static_domain import generate_uuid7
 
 from lowerduckpond_static_host_agent.caddy_bootstrap import require_exact_file
@@ -30,6 +31,7 @@ from lowerduckpond_static_host_agent.caddy_startup import (
     CaddyStartupStore,
     start_target,
 )
+from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
 from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.host_restore_inputs import (
     INPUT_ROOT,
@@ -49,6 +51,7 @@ from lowerduckpond_static_host_agent.host_restore_mapping import (
     prepare_runtime_inputs,
 )
 from lowerduckpond_static_host_agent.host_restore_materialize import _private_target
+from lowerduckpond_static_host_agent.installed_routing import PROJECTION
 from lowerduckpond_static_host_agent.repository import StateRepository
 from lowerduckpond_static_host_agent.route_snapshot import snapshot_tenant_routes
 
@@ -207,7 +210,14 @@ def _input(  # noqa: PLR0913 - exact input bytes and complete inode policy
         os.close(parent)
 
 
-def _layout(store: RestoreStore, root: Path, files: TrustedCaddy, group: int) -> None:
+def _layout(
+    store: RestoreStore,
+    root: Path,
+    files: TrustedCaddy,
+    group: int,
+    *,
+    routing: DisposableRoutes | None,
+) -> None:
     _private_target(store, "caddy", root, {"owner": store.owner, "group": group, "mode": 0o750})
     descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
@@ -236,6 +246,8 @@ def _layout(store: RestoreStore, root: Path, files: TrustedCaddy, group: int) ->
             "environment",
             *(f"origin-pull-ca-{index}.pem" for index in range(len(files.current_pem))),
         }
+        if routing is not None:
+            expected.add(PROJECTION)
         descriptor = directory.duplicate_descriptor()
         try:
             with os.scandir(descriptor) as entries:
@@ -265,7 +277,24 @@ def _layout(store: RestoreStore, root: Path, files: TrustedCaddy, group: int) ->
                 os.close(descriptor)
 
 
-def prepare_restored_runtime(  # noqa: PLR0913,PLR0917 - complete trusted inputs and private destination
+def _install_projection(
+    store: RestoreStore, root: Path, routing: DisposableRoutes | None, group: int
+) -> None:
+    if routing is not None:
+        with DurableDirectory.open(
+            root, expected_owner=store.owner, expected_directory_mode=0o750
+        ) as directory:
+            _input(
+                directory,
+                PROJECTION,
+                canonical_json_bytes(routing.document()),
+                owner=store.owner,
+                group=group,
+                mode=0o440,
+            )
+
+
+def prepare_restored_runtime(  # noqa: PLR0913, PLR0915, PLR0917 - complete trusted inputs and private destination
     store: RestoreStore,
     repository: StateRepository,
     root: Path,
@@ -305,7 +334,9 @@ def prepare_restored_runtime(  # noqa: PLR0913,PLR0917 - complete trusted inputs
         or plan.current_ca != files.current_ca
     ):
         raise HostRestoreError("restore_runtime_prepared_inputs_changed")
-    _layout(store, root, files, caddy_gid)
+    routing = inputs.disposable_routing
+    _layout(store, root, files, caddy_gid, routing=routing)
+    _install_projection(store, root, routing, caddy_gid)
     failure_hook("layout")
     routes = plan.routes()
     payload = CaddyGenerationPayload(
@@ -320,6 +351,7 @@ def prepare_restored_runtime(  # noqa: PLR0913,PLR0917 - complete trusted inputs
             validation_uid=caddy_uid,
             validation_gid=caddy_gid,
             expected_binary_sha256=str(inputs.caddy["binarySha256"]),
+            disposable=routing,
             expected_lock_owner=store.owner,
             expected_lock_group=store.owner,
         ) as runtime,

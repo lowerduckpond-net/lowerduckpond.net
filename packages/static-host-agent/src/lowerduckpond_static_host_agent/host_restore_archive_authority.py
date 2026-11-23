@@ -15,6 +15,7 @@ from lowerduckpond_static_host_agent import (
 from lowerduckpond_static_host_agent.archive_journal import ArchiveJournal
 from lowerduckpond_static_host_agent.archive_remote import RemoteInventory
 from lowerduckpond_static_host_agent.backup_caddy import CaddyBackupEvidence
+from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
 from lowerduckpond_static_host_agent.execution import (
     _require_same_authority,
     _validate_request_integrity,
@@ -78,18 +79,20 @@ def unstarted_retirement(
     )
 
 
-def _lifecycle_archive(
+def _lifecycle_archive(  # noqa: PLR0913 - independently verified selection inputs
     store: RestoreStore,
     transaction: _StateTransaction,
     intent: dict[str, object],
     evidence: CaddyBackupEvidence,
     original_ca: tuple[bytes, ...],
+    *,
+    captured_disposable: DisposableRoutes | None,
 ) -> RestoreArchive | None:
     identity = str(intent["intentId"])
     if intent["kind"] == "EmergencyDeletionIntent":
         original, _ = host_restore_emergency._original(store, transaction, identity)
         choice = host_restore_emergency.emergency_selection(
-            transaction, original, evidence, original_ca
+            transaction, original, evidence, original_ca, captured_disposable=captured_disposable
         )
         if choice != "candidate":
             raise HostRestoreError("restore_emergency_source_has_no_authorized_failure")
@@ -106,7 +109,11 @@ def _lifecycle_archive(
         original, job, _ = host_restore_archive._original(store, transaction, identity)
         archive_plan = host_restore_archive._plan(transaction, original, job)
         choice = host_restore_archive.archive_selection(
-            transaction, archive_plan, evidence, original_ca
+            transaction,
+            archive_plan,
+            evidence,
+            original_ca,
+            captured_disposable=captured_disposable,
         )
         return RestoreArchive(
             archive_plan.archive_record, archive_plan.manifest, required=choice == "candidate"
@@ -124,12 +131,16 @@ def _lifecycle_archive(
             raise HostRestoreError("restore_tenant_retirement_unavailable")
         restore_plan = host_restore_tenant_restore._plan(transaction, original, job, retirement)
         choice = host_restore_tenant_restore.restore_selection(
-            transaction, restore_plan, evidence, original_ca
+            transaction,
+            restore_plan,
+            evidence,
+            original_ca,
+            captured_disposable=captured_disposable,
         )
     else:
         delete_plan = host_restore_delete._plan(transaction, original, job, retirement)
         choice = host_restore_delete.delete_selection(
-            transaction, delete_plan, evidence, original_ca
+            transaction, delete_plan, evidence, original_ca, captured_disposable=captured_disposable
         )
     return (
         None
@@ -142,12 +153,14 @@ def _lifecycle_archive(
     )
 
 
-def collect_restore_archives(  # noqa: PLR0912 - lifecycle, unstarted, and terminal remote authority
+def collect_restore_archives(  # noqa: PLR0912, PLR0913 - lifecycle, unstarted, and terminal remote authority
     store: RestoreStore,
     journal: ArchiveJournal,
     evidence: CaddyBackupEvidence,
     original_ca: tuple[bytes, ...],
     inventory: RemoteInventory,
+    *,
+    captured_disposable: DisposableRoutes | None = None,
 ) -> tuple[RestoreArchive, ...]:
     """Derive the whole set before verification; never delete or invent versions.
 
@@ -176,7 +189,14 @@ def collect_restore_archives(  # noqa: PLR0912 - lifecycle, unstarted, and termi
         override = (
             None
             if not local
-            else _lifecycle_archive(store, transaction, local[0].document, evidence, original_ca)
+            else _lifecycle_archive(
+                store,
+                transaction,
+                local[0].document,
+                evidence,
+                original_ca,
+                captured_disposable=captured_disposable,
+            )
         )
     if not local and records:
         if len(records) != 1:

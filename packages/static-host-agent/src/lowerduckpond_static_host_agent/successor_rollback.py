@@ -19,6 +19,7 @@ from lowerduckpond_static_host_agent.caddy_generation import (
 )
 from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
 from lowerduckpond_static_host_agent.caddy_startup import CaddyStartupStore
+from lowerduckpond_static_host_agent.droplet_enrollment import PUBLICATION_VIEW
 from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.platform_launch import INTENT, LAUNCH
 from lowerduckpond_static_host_agent.repository import StateRepository
@@ -342,7 +343,11 @@ def require_unfenced_publication(authority: Path = SUCCESSOR_AUTHORITY) -> None:
     """Fence both configuration checks and admitted requests racing a rollback."""
     if not os.path.lexists(authority):
         return
-    require(not os.path.lexists(authority.joinpath(*FENCE)), "successor-publication-fenced")
+    require(
+        not os.path.lexists(authority.joinpath(*FENCE))
+        and not os.path.lexists(authority.joinpath(PUBLICATION_VIEW, *FENCE)),
+        "successor-publication-fenced",
+    )
     if os.path.lexists(authority / "transaction.json"):
         from scripts.m3_12_successor_journal import SuccessorJournal  # noqa: PLC0415
 

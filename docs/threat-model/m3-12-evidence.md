@@ -26,6 +26,70 @@ mappings when those behaviors exist.
 | Diagnostics through the actual transport | `test_diagnostics_distinguish_missing_terminal_primary_and_secondary`. [P2 local regressions](../../tests/infrastructure/test_m3_12_diagnostics.py) cover early allocation, original result, export conflicts, interruption and raw output exclusion. The [installed transport-recovery witness](../../config/ansible/molecule/m3_8/tests/test_m3_12_diagnostics.py) exercises systemd through real Ansible and Docker and verifies console, private and public exclusion on the same synthetic fixture. |
 | Original chronology and evidence inventory | `test_delayed_packaging_does_not_refresh_original_evidence`, `test_inventory_covers_every_source_paragraph_and_rejects_stale_or_missing_entries`, `test_exact_requirement_coverage_rejects_missing_skipped_duplicate_and_installed_proof`. P4/P5/P6 produce the original phase, accounting, teardown and acceptance receipts. |
 
+The P4 [controller tests](../../tests/infrastructure/test_m3_12_droplet_controller.py)
+check protected cold-restore inputs and same-host readback in
+`test_cold_restore_preflight_binds_the_original_policy_to_the_two_owned_hosts`.
+`test_fresh_dark_readback_requires_the_pinned_candidate_after_reboot` checks
+dark-state admission and original receipt retention across simulated boot
+observations. The [launch contract tests](../../tests/infrastructure/test_m3_12_contracts.py)
+include `test_reconstructed_launch_provenance_does_not_grant_destination_publication`
+for independent enrollment and
+`test_cold_restore_provenance_requires_the_original_launch_and_source_scope`
+for the source launch chain, artifact and namespace. The [native recovery
+tests](../../packages/static-host-agent/tests/test_host_restore_droplet.py)
+check dark and launched activation, destination drift before publication,
+and bound ingress recovery after interruption. These tests supply component
+evidence. Provider, independent restore, and real reboot
+slots still require their own original receipts.
+
+The [installed restore case](../../config/ansible/molecule/m3_8/tests/test_restore_reconstruction.py)
+checks that a copied Droplet bundle cannot promote its Docker destination
+while the ordinary installed restore can still complete. The
+[initial retirement tests](../../tests/infrastructure/test_m3_12_droplet_plan.py)
+`test_retirement_review_validates_only_original_deletions` and
+`test_interrupted_retirement_requires_exact_independent_absence` cover
+foreign deletes and interrupted cleanup at the component layer. The
+[disposable preparation guide](../operations/m3-12-qualification.md) names the
+remaining real-host and provider proofs.
+
+The controller retains pinned guest observations by digest and records the
+scoped inputs of each native install handoff. Hermetic SSH tests prove that
+read-only preparation can resume after a lost connection and reboot without
+changing the first observation. They also exercise the closed capacity
+sample format and verify hard-link deduplication on a local filesystem.
+These observations need the actual authorized workload and provider
+receipts before they can support real-host capacity or journey completion.
+
+The [journey regression](../../tests/infrastructure/test_m3_12_droplet_journey.py)
+runs every stage with offline adapters, validates the original M3.11 chain
+and disposable scope, rejects crossover before dispatch, and checks
+readback-only recovery after caller loss. The regression also verifies
+original evidence retention and the source-fence prerequisite for restore.
+The [native driver regression](../../tests/infrastructure/test_m3_12_droplet_driver.py)
+uses the protected destination receipt receiver and exact plan/absence
+reconciliation. It checks source fencing, separate reboot and resume
+phases, transport interruption without action replay, and evidence
+retention before cleanup. Synthetic completion belongs to the component
+layer.
+
+The [adapter regressions](../../tests/infrastructure/test_m3_12_droplet_adapters.py)
+exercise native Ansible host selection, pinned SSH denials, exact certificate
+association inputs, the installed archive readback contract and interrupted
+teardown without provider calls. Native apply remains gated on protected
+disposable routing. Actual public-edge, browser, Spaces and host receipts
+remain separate requirements.
+
+The [disposable routing regression](../../tests/infrastructure/test_m3_12_disposable_routing.py)
+separates same-browser state continuity from a fresh, restored-host
+request proof. Local native generation tests check that only the exact
+projected scope can select the payload and that the original tenant
+records remain intact. The native recovery regression
+`test_projected_ingress_reopens_only_for_enrolled_role_and_current_boot`
+runs the installed boot gate with synthetic boot identities and firewall
+calls. It verifies that status stays pending until both current-boot
+authority and actual gate removal are observed in the fixture. These are
+component observations.
+
 The [inventory validator](../../scripts/m3_12_requirements.py) checks source
 coverage, fingerprints, unique requirements/slots and existing mapped test
 nodes. The versioned requirement-proof binds the reviewed inventory, exact

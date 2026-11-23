@@ -97,6 +97,360 @@
       ],
       "additionalProperties": false
     },
+    "droplet-observation": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-droplet-observation-v1"},
+        "metadata": {
+          "type": "object",
+          "properties": {
+            "dropletId": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+            "ipv4": {"type": "string", "format": "ipv4"}
+          },
+          "required": ["dropletId", "ipv4"],
+          "additionalProperties": false
+        },
+        "hostIdentity": {
+          "type": "object",
+          "properties": {
+            "machineSha256": {"$ref": "#/$defs/sha256"},
+            "systemUuidSha256": {"$ref": "#/$defs/sha256"},
+            "hostKeySha256": {"$ref": "#/$defs/sha256"}
+          },
+          "required": ["machineSha256", "systemUuidSha256", "hostKeySha256"],
+          "additionalProperties": false
+        },
+        "bootSha256": {"$ref": "#/$defs/sha256"},
+        "state": {
+          "type": "object",
+          "properties": {
+            "artifactSha256": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/sha256"}]},
+            "launchPresent": {"type": "boolean"},
+            "publication": {"enum": ["absent", "dark", "enabled"]}
+          },
+          "required": ["artifactSha256", "launchPresent", "publication"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["format", "metadata", "hostIdentity", "bootSha256", "state"],
+      "additionalProperties": false
+    },
+    "droplet-counter": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+    "droplet-journey-allocation": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-droplet-journey-allocation-v1"},
+        "targetKind": {"const": "disposable-droplet"},
+        "purpose": {"const": "disposable-qualification"},
+        "runId": {"$ref": "#/$defs/uuid7"},
+        "invocationId": {"$ref": "#/$defs/uuid7"},
+        "productionExclusionsSha256": {"$ref": "#/$defs/sha256"},
+        "predecessorSha256": {"$ref": "#/$defs/sha256"},
+        "predecessorBootstrapSha256": {"$ref": "#/$defs/sha256"},
+        "sitePolicySha256": {"$ref": "#/$defs/sha256"},
+        "candidate": {"$ref": "#/$defs/candidate"},
+        "resources": {"$ref": "#/$defs/droplet-journey-resources"}
+      },
+      "required": ["format", "targetKind", "purpose", "runId", "invocationId", "productionExclusionsSha256", "predecessorSha256", "predecessorBootstrapSha256", "sitePolicySha256", "candidate", "resources"],
+      "additionalProperties": false
+    },
+    "droplet-journey-resources": {
+      "type": "object",
+      "properties": {
+        "hosts": {"type": "object", "properties": {"source": {"$ref": "#/$defs/droplet-journey-host"}, "restore": {"$ref": "#/$defs/droplet-journey-host"}, "fresh": {"$ref": "#/$defs/droplet-journey-host"}}, "required": ["source", "restore", "fresh"], "additionalProperties": false},
+        "edge": {"type": "object", "properties": {"platform": {"$ref": "#/$defs/droplet-journey-zone"}, "tenant": {"$ref": "#/$defs/droplet-journey-zone"}}, "required": ["platform", "tenant"], "additionalProperties": false},
+        "storage": {"type": "object", "properties": {"source": {"$ref": "#/$defs/droplet-journey-storage-pair"}, "fresh": {"$ref": "#/$defs/droplet-journey-storage-pair"}}, "required": ["source", "fresh"], "additionalProperties": false}
+      },
+      "required": ["hosts", "edge", "storage"],
+      "additionalProperties": false
+    },
+    "droplet-journey-host": {
+      "type": "object",
+      "properties": {
+        "stateKey": {"type": "string", "maxLength": 128},
+        "adminCidrs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 48}, "uniqueItems": true, "minItems": 1},
+        "target": {"$ref": "#/$defs/target"},
+        "enrollment": {"$ref": "#/$defs/droplet-enrollment"}
+      },
+      "required": ["stateKey", "adminCidrs", "target", "enrollment"],
+      "additionalProperties": false
+    },
+    "droplet-journey-zone": {
+      "type": "object",
+      "properties": {
+        "zoneName": {"type": "string", "maxLength": 253, "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?![\\s\\S])"},
+        "registrableDomain": {"type": "string", "maxLength": 253, "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?![\\s\\S])"},
+        "zoneId": {"type": "string", "pattern": "^[0-9a-f]{32}(?![\\s\\S])"},
+        "source": {"$ref": "#/$defs/droplet-journey-edge-scope"},
+        "fresh": {"$ref": "#/$defs/droplet-journey-edge-scope"}
+      },
+      "required": ["zoneName", "registrableDomain", "zoneId", "source", "fresh"],
+      "additionalProperties": false
+    },
+    "droplet-journey-edge-scope": {
+      "type": "object",
+      "properties": {
+        "name": {"type": "string", "maxLength": 253, "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?![\\s\\S])"},
+        "certificateIds": {"type": "object", "properties": {"primary": {"type": "string", "pattern": "^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?![\\s\\S])"}, "replacement": {"type": "string", "pattern": "^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?![\\s\\S])"}}, "required": ["primary", "replacement"], "additionalProperties": false}
+      },
+      "required": ["name", "certificateIds"],
+      "additionalProperties": false
+    },
+    "droplet-journey-storage-pair": {
+      "type": "object",
+      "properties": {
+        "restic": {"$ref": "#/$defs/droplet-journey-storage"},
+        "archive": {"$ref": "#/$defs/droplet-journey-storage"}
+      },
+      "required": ["restic", "archive"],
+      "additionalProperties": false
+    },
+    "droplet-journey-storage": {
+      "type": "object",
+      "properties": {
+        "region": {"type": "string", "pattern": "^[a-z]{3}[1-9][0-9]?(?![\\s\\S])"},
+        "bucket": {"type": "string", "minLength": 3, "maxLength": 63, "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9](?![\\s\\S])"},
+        "prefix": {"type": "string", "maxLength": 512, "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?![\\s\\S])"}
+      },
+      "required": ["region", "bucket", "prefix"],
+      "additionalProperties": false
+    },
+    "droplet-journey-exclusions": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-droplet-journey-exclusions-v1"},
+        "hosts": {"$ref": "#/$defs/droplet-production-exclusions"},
+        "zoneNames": {"type": "array", "items": {"type": "string", "maxLength": 253, "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?![\\s\\S])"}, "uniqueItems": true, "minItems": 1},
+        "zoneIds": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-f]{32}(?![\\s\\S])"}, "uniqueItems": true, "minItems": 1},
+        "certificateIds": {"type": "array", "items": {"type": "string", "pattern": "^(?:[0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?![\\s\\S])"}, "uniqueItems": true, "minItems": 1},
+        "buckets": {"type": "array", "items": {"type": "string", "minLength": 3, "maxLength": 63, "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9](?![\\s\\S])"}, "uniqueItems": true, "minItems": 1}
+      },
+      "required": ["format", "hosts", "zoneNames", "zoneIds", "certificateIds", "buckets"],
+      "additionalProperties": false
+    },
+    "droplet-journey-observation": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-droplet-journey-observation-v1"},
+        "intentSha256": {"$ref": "#/$defs/sha256"},
+        "outcome": {"enum": ["committed", "failed", "not-applied", "unknown"]},
+        "evidence": {"type": "object", "maxProperties": 16, "propertyNames": {"pattern": "^[a-z][a-zA-Z]{0,63}(?![\\s\\S])"}, "additionalProperties": {"$ref": "#/$defs/sha256"}}
+      },
+      "required": ["format", "intentSha256", "outcome", "evidence"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-sample": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-droplet-capacity-sample-v1"},
+        "observation": {"$ref": "#/$defs/droplet-observation"},
+        "sampleStartedUsec": {"$ref": "#/$defs/droplet-counter"},
+        "sampleFinishedUsec": {"$ref": "#/$defs/droplet-counter"},
+        "platform": {"$ref": "#/$defs/droplet-capacity-platform"},
+        "packages": {"$ref": "#/$defs/droplet-capacity-packages"},
+        "memoryBytes": {"$ref": "#/$defs/droplet-capacity-memory"},
+        "vmEvents": {"$ref": "#/$defs/droplet-capacity-vm-events"},
+        "cpuOnline": {"type": "integer", "minimum": 1},
+        "cpuPressureSomeUsec": {"$ref": "#/$defs/droplet-counter"},
+        "filesystem": {"$ref": "#/$defs/droplet-capacity-filesystem"},
+        "cgroups": {"$ref": "#/$defs/droplet-capacity-cgroups"},
+        "releaseAllocation": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-capacity-allocation"}]}
+      },
+      "required": ["format", "observation", "sampleStartedUsec", "sampleFinishedUsec", "platform", "packages", "memoryBytes", "vmEvents", "cpuOnline", "cpuPressureSomeUsec", "filesystem", "cgroups", "releaseAllocation"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-platform": {
+      "type": "object",
+      "properties": {
+        "os": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+~-]{0,95}$"},
+        "release": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+~-]{0,95}$"},
+        "kernel": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+~-]{0,95}$"},
+        "machine": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+~-]{0,95}$"},
+        "filesystem": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.+~-]{0,95}$"}
+      },
+      "required": ["os", "release", "kernel", "machine", "filesystem"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-packages": {
+      "type": "object",
+      "properties": {
+        "systemd": {"type": "string", "pattern": "^[0-9][A-Za-z0-9_.:+~-]{0,95}$"},
+        "openssh-server": {"type": "string", "pattern": "^[0-9][A-Za-z0-9_.:+~-]{0,95}$"},
+        "sudo": {"type": "string", "pattern": "^[0-9][A-Za-z0-9_.:+~-]{0,95}$"},
+        "python3": {"type": "string", "pattern": "^[0-9][A-Za-z0-9_.:+~-]{0,95}$"},
+        "e2fsprogs": {"type": "string", "pattern": "^[0-9][A-Za-z0-9_.:+~-]{0,95}$"}
+      },
+      "required": ["systemd", "openssh-server", "sudo", "python3", "e2fsprogs"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-memory": {
+      "type": "object",
+      "properties": {
+        "MemTotal": {"$ref": "#/$defs/droplet-counter"},
+        "MemAvailable": {"$ref": "#/$defs/droplet-counter"},
+        "SwapTotal": {"$ref": "#/$defs/droplet-counter"},
+        "SwapFree": {"$ref": "#/$defs/droplet-counter"}
+      },
+      "required": ["MemTotal", "MemAvailable", "SwapTotal", "SwapFree"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-vm-events": {
+      "type": "object",
+      "properties": {
+        "oom_kill": {"$ref": "#/$defs/droplet-counter"},
+        "pswpin": {"$ref": "#/$defs/droplet-counter"},
+        "pswpout": {"$ref": "#/$defs/droplet-counter"}
+      },
+      "required": ["oom_kill", "pswpin", "pswpout"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-filesystem": {
+      "type": "object",
+      "properties": {
+        "totalBytes": {"$ref": "#/$defs/droplet-counter"},
+        "freeBytes": {"$ref": "#/$defs/droplet-counter"},
+        "availableBytes": {"$ref": "#/$defs/droplet-counter"},
+        "totalInodes": {"$ref": "#/$defs/droplet-counter"},
+        "freeInodes": {"$ref": "#/$defs/droplet-counter"},
+        "availableInodes": {"$ref": "#/$defs/droplet-counter"}
+      },
+      "required": ["totalBytes", "freeBytes", "availableBytes", "totalInodes", "freeInodes", "availableInodes"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-cgroups": {
+      "type": "object",
+      "properties": {
+        "caddy": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-capacity-cgroup"}]},
+        "workers": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-capacity-cgroup"}]},
+        "backup": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-capacity-cgroup"}]},
+        "restore": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-capacity-cgroup"}]}
+      },
+      "required": ["caddy", "workers", "backup", "restore"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-cgroup": {
+      "type": "object",
+      "properties": {
+        "memory.current": {"$ref": "#/$defs/droplet-counter"},
+        "memory.peak": {"$ref": "#/$defs/droplet-counter"},
+        "residentAnonBytes": {"$ref": "#/$defs/droplet-counter"},
+        "memory.swap.peak": {"$ref": "#/$defs/droplet-counter"},
+        "cpuPeriodUsec": {"$ref": "#/$defs/droplet-counter"},
+        "memory.max": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-counter"}]},
+        "memory.swap.max": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-counter"}]},
+        "pids.max": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-counter"}]},
+        "cpuQuotaUsec": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-counter"}]},
+        "cpu": {"$ref": "#/$defs/droplet-capacity-cpu"},
+        "memoryEvents": {"$ref": "#/$defs/droplet-capacity-oom"}
+      },
+      "required": ["memory.current", "memory.peak", "residentAnonBytes", "memory.swap.peak", "cpuPeriodUsec", "memory.max", "memory.swap.max", "pids.max", "cpuQuotaUsec", "cpu", "memoryEvents"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-cpu": {
+      "type": "object",
+      "properties": {
+        "usage_usec": {"$ref": "#/$defs/droplet-counter"},
+        "throttled_usec": {"oneOf": [{"type": "null"}, {"$ref": "#/$defs/droplet-counter"}]}
+      },
+      "required": ["usage_usec", "throttled_usec"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-oom": {
+      "type": "object",
+      "properties": {
+        "oom": {"$ref": "#/$defs/droplet-counter"},
+        "oom_kill": {"$ref": "#/$defs/droplet-counter"}
+      },
+      "required": ["oom", "oom_kill"],
+      "additionalProperties": false
+    },
+    "droplet-capacity-allocation": {
+      "type": "object",
+      "properties": {
+        "allocatedBytes": {"$ref": "#/$defs/droplet-counter"},
+        "uniqueInodes": {"$ref": "#/$defs/droplet-counter"}
+      },
+      "required": ["allocatedBytes", "uniqueInodes"],
+      "additionalProperties": false
+    },
+    "droplet-browser-observation": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-restored-browser-request-v1"},
+        "observation": {"$ref": "#/$defs/droplet-observation"},
+        "origin": {"type": "string", "pattern": "^https://t-[0-9a-f]{32}\\.[a-z0-9.-]+$"},
+        "requestId": {"type": "string", "pattern": "^[0-9a-f]{32}$"}
+      },
+      "required": ["format", "observation", "origin", "requestId"],
+      "type": "object"
+    },
+    "droplet-fence-observation": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-disposable-fence-observation-v1"},
+        "observation": {"$ref": "#/$defs/droplet-observation"},
+        "gateSha256": {"$ref": "#/$defs/sha256"},
+        "ingressClosed": {"type": "boolean"},
+        "caddyInactive": {"type": "boolean"}
+      },
+      "required": ["format", "observation", "gateSha256", "ingressClosed", "caddyInactive"],
+      "additionalProperties": false
+    },
+    "droplet-enrollment": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-droplet-enrollment-v1"},
+        "runId": {"$ref": "#/$defs/uuid7"},
+        "allocationSha256": {"$ref": "#/$defs/sha256"},
+        "machineSha256": {"$ref": "#/$defs/sha256"},
+        "systemUuidSha256": {"$ref": "#/$defs/sha256"},
+        "hostKeySha256": {"$ref": "#/$defs/sha256"},
+        "ipv4": {"type": "string", "format": "ipv4"},
+        "productionExclusionsSha256": {"$ref": "#/$defs/sha256"}
+      },
+      "required": [
+        "format", "runId", "allocationSha256", "machineSha256", "systemUuidSha256",
+        "hostKeySha256", "ipv4", "productionExclusionsSha256"
+      ],
+      "additionalProperties": false
+    },
+    "droplet-production-exclusions": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-droplet-production-exclusions-v1"},
+        "dropletIds": {
+          "type": "array",
+          "items": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "addresses": {
+          "type": "array",
+          "items": {"type": "string", "format": "ipv4"},
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "identityDigests": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/sha256"},
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": ["format", "dropletIds", "addresses", "identityDigests"],
+      "additionalProperties": false
+    },
+    "droplet-launch-attempt": {
+      "type": "object",
+      "properties": {
+        "format": {"const": "lowerduckpond-m3-12-droplet-launch-attempt-v1"},
+        "binding": {"$ref": "#/$defs/binding"},
+        "invocationId": {"$ref": "#/$defs/uuid7"},
+        "leaseSha256": {"$ref": "#/$defs/sha256"}
+      },
+      "required": ["format", "binding", "invocationId", "leaseSha256"],
+      "additionalProperties": false
+    },
     "target": {
       "oneOf": [
         {

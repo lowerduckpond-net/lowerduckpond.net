@@ -50,6 +50,8 @@ _BINDINGS: Final = {
     "destination": "lowerduckpond-host-restore-destination-v1",
     "sourceFence": "lowerduckpond-host-restore-source-fence-v1",
 }
+DROPLET_BINDING: Final = "dropletRestore"
+DROPLET_SCOPE_FORMAT: Final = "lowerduckpond-m3-12-droplet-restore-scope-v1"
 
 
 def exact_object(value: object, keys: set[str]) -> dict[str, object]:
@@ -84,8 +86,11 @@ class RestoreJournal:
         full_id(self.snapshot_id)
         validate_uuid7(self.capture_id)
         validate_uuid7(self.lineage_id)
-        exact_object(self.bindings, set(_BINDINGS))
-        for name, format_identifier in _BINDINGS.items():
+        formats = dict(_BINDINGS)
+        if DROPLET_BINDING in self.bindings:
+            formats[DROPLET_BINDING] = DROPLET_SCOPE_FORMAT
+        exact_object(self.bindings, set(formats))
+        for name, format_identifier in formats.items():
             require_digest(self.bindings[name], format_identifier)
         index = PHASES.index(self.phase)
         if len(self.receipts) != index:

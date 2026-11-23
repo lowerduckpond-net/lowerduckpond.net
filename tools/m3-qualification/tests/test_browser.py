@@ -68,3 +68,26 @@ def test_live_browser_origins_reject_nonapproved_platform_values(platform: str) 
             tenant_immutable=origins.tenant_immutable,
             tenant_unknown=origins.tenant_unknown,
         )
+
+
+def test_scoped_browser_origins_accept_only_exact_disposable_subjects() -> None:
+    origins = (
+        "https://source.platform.example",
+        "https://tenant.source.tenants.example",
+        "https://immutable.source.tenants.example",
+        "https://unknown.source.tenants.example",
+    )
+    scopes = ("source.platform.example", "source.tenants.example")
+    prepared = BrowserOrigins(*origins, approved_scopes=scopes)
+    assert prepared.platform_domain == scopes[0]
+    assert prepared.tenant_parent_domain == scopes[1]
+    with pytest.raises(ValueError, match="exact approved host set"):
+        BrowserOrigins(*origins)
+    with pytest.raises(ValueError, match="outside the approved disposable scopes"):
+        BrowserOrigins(
+            origins[0],
+            "https://tenant.source.tenants.example.foreign.test",
+            origins[2],
+            origins[3],
+            approved_scopes=scopes,
+        )

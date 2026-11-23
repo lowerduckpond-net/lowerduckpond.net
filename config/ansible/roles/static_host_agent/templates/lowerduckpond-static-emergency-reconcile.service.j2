@@ -39,6 +39,7 @@ BindReadOnlyPaths={{ static_host_agent_install_root }}
 BindReadOnlyPaths=/etc/group
 BindReadOnlyPaths=/etc/passwd
 BindReadOnlyPaths=/etc/lowerduckpond/static-publication.json
+{% include "m3-12-droplet-publication-view.j2" %}
 BindReadOnlyPaths=/run/systemd
 BindPaths=/run/caddy
 BindPaths=/etc/caddy

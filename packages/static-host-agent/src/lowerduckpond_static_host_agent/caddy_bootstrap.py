@@ -62,6 +62,7 @@ def ensure_platform_generation(  # noqa: PLR0913
     """Publish and select the exact platform-only generation only when needed."""
 
     payload = _platform_payload(
+        runtime,
         binary,
         environment,
         origin_pull_ca_der,
@@ -174,6 +175,7 @@ def platform_generation_state_under_lock(  # noqa: PLR0913
     """Classify the platform generation while the caller holds publication."""
 
     payload = _platform_payload(
+        runtime,
         binary,
         environment,
         origin_pull_ca_der,
@@ -323,6 +325,7 @@ def empty_tenant_generation_matches_under_lock(  # noqa: PLR0913 - exact install
             origin_pull_ca_der=origin_pull_ca_der,
             origin_pull_required=origin_pull_required,
         )
+        routes = runtime.project_routes(routes)
         return selected.generation_id in identifiers and _generation_matches(
             active,
             CaddyGenerationPayload(
@@ -335,15 +338,18 @@ def empty_tenant_generation_matches_under_lock(  # noqa: PLR0913 - exact install
 
 
 def _platform_payload(
+    runtime: CaddyRuntime,
     binary: CaddyBinarySource,
     environment: bytes,
     origin_pull_ca_der: tuple[bytes, ...],
     *,
     origin_pull_required: bool,
 ) -> CaddyGenerationPayload:
-    routes = build_platform_only_caddy_routes(
-        origin_pull_ca_der=origin_pull_ca_der,
-        origin_pull_required=origin_pull_required,
+    routes = runtime.project_routes(
+        build_platform_only_caddy_routes(
+            origin_pull_ca_der=origin_pull_ca_der,
+            origin_pull_required=origin_pull_required,
+        )
     )
     return CaddyGenerationPayload(
         binary=binary,

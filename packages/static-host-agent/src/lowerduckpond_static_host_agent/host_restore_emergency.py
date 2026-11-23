@@ -16,6 +16,7 @@ from lowerduckpond_static_contracts import (
 from lowerduckpond_static_host_agent.audit import AuditState
 from lowerduckpond_static_host_agent.backup_caddy import CaddyBackupEvidence
 from lowerduckpond_static_host_agent.capacity import DEFAULT_HOST_CAPACITY_LIMITS
+from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
 from lowerduckpond_static_host_agent.emergency_commit import (
     finalize_emergency_transition,
     verify_emergency_releases,
@@ -110,6 +111,7 @@ def reconcile_emergency(  # noqa: PLR0913, PLR0917 - distinct administrator and 
     original_origin_pull_ca_der: tuple[bytes, ...],
     archive_proof: dict[str, object],
     *,
+    captured_disposable: DisposableRoutes | None = None,
     failure_hook: Callable[[str], None] = lambda _step: None,
 ) -> dict[str, object]:
     intent_id = validate_uuid7(intent_id)
@@ -118,7 +120,13 @@ def reconcile_emergency(  # noqa: PLR0913, PLR0917 - distinct administrator and 
     _validate_plan(intent)
     tenant = str(intent["tenantId"])
     others = EmergencyDeletion._others(transaction, tenant)
-    choice = emergency_selection(transaction, intent, evidence, original_origin_pull_ca_der)
+    choice = emergency_selection(
+        transaction,
+        intent,
+        evidence,
+        original_origin_pull_ca_der,
+        captured_disposable=captured_disposable,
+    )
     if choice == "source":
         # The emergency contract authorizes only an administrator success and
         # tombstone. Recovery cannot invent a failed ordinary job or activate an
@@ -184,6 +192,8 @@ def emergency_selection(
     intent: dict[str, object],
     evidence: CaddyBackupEvidence,
     original_origin_pull_ca_der: tuple[bytes, ...],
+    *,
+    captured_disposable: DisposableRoutes | None = None,
 ) -> str:
     _validate_plan(intent)
     others = EmergencyDeletion._others(transaction, str(intent["tenantId"]))
@@ -197,4 +207,5 @@ def emergency_selection(
             "candidate": (str(intent["candidateRuntimeGenerationId"]), others),
         },
         original_origin_pull_ca_der,
+        captured_disposable=captured_disposable,
     )

@@ -18,6 +18,7 @@ from lowerduckpond_static_host_agent.create_commit import (
     validate_create_transition,
 )
 from lowerduckpond_static_host_agent.delete_state import _names
+from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
 from lowerduckpond_static_host_agent.execution import (
     _failure_result,
     _publish_result,
@@ -123,6 +124,7 @@ def reconcile_create(  # noqa: PLR0913 - captured original inputs and private tr
     evidence: CaddyBackupEvidence,
     original_origin_pull_ca_der: tuple[bytes, ...],
     *,
+    captured_disposable: DisposableRoutes | None = None,
     failure_hook: CreateCommitFailureHook | None = None,
 ) -> dict[str, object]:
     intent_id = validate_uuid7(intent_id)
@@ -157,6 +159,7 @@ def reconcile_create(  # noqa: PLR0913 - captured original inputs and private tr
             "candidate": (validate_uuid7(recorded["candidateRuntimeGenerationId"]), candidate),
         },
         original_origin_pull_ca_der,
+        captured_disposable=captured_disposable,
     )
     result = recovery._create_result(job.document, manifest)
     audit = transaction.inspect_audit_correlation(intent["correlationId"])

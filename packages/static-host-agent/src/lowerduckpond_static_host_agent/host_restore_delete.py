@@ -17,6 +17,7 @@ from lowerduckpond_static_host_agent.delete_commit import (
     validate_delete_transition,
 )
 from lowerduckpond_static_host_agent.delete_plan import DeleteTransitionPlan, plan_delete_transition
+from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
 from lowerduckpond_static_host_agent.execution import _expected_source_error
 from lowerduckpond_static_host_agent.export_spool import ExportSpool
 from lowerduckpond_static_host_agent.host_restore_archives import require_verified_archive
@@ -141,6 +142,7 @@ def reconcile_delete(  # noqa: PLR0913, PLR0917 - complete captured authority an
     original_origin_pull_ca_der: tuple[bytes, ...],
     archive_proof: dict[str, object],
     *,
+    captured_disposable: DisposableRoutes | None = None,
     failure_hook: Callable[[str], None] | None = None,
 ) -> dict[str, object]:
     intent_id = validate_uuid7(intent_id)
@@ -149,7 +151,13 @@ def reconcile_delete(  # noqa: PLR0913, PLR0917 - complete captured authority an
         store, transaction, intent_id, family="delete"
     )
     plan = _plan(transaction, intent, job, retirement)
-    choice = delete_selection(transaction, plan, evidence, original_origin_pull_ca_der)
+    choice = delete_selection(
+        transaction,
+        plan,
+        evidence,
+        original_origin_pull_ca_der,
+        captured_disposable=captured_disposable,
+    )
     if retirement is not None:
         require_verified_archive(
             archive_proof,
@@ -197,6 +205,8 @@ def delete_selection(
     plan: DeleteTransitionPlan,
     evidence: CaddyBackupEvidence,
     original_origin_pull_ca_der: tuple[bytes, ...],
+    *,
+    captured_disposable: DisposableRoutes | None = None,
 ) -> str:
     recorded = cast(dict[str, object], plan.intent["lifecycleRecovery"])
     source = cast(dict[str, object], plan.intent["sourceManifest"])
@@ -220,4 +230,5 @@ def delete_selection(
             "candidate": (validate_uuid7(recorded["candidateRuntimeGenerationId"]), others),
         },
         original_origin_pull_ca_der,
+        captured_disposable=captured_disposable,
     )
