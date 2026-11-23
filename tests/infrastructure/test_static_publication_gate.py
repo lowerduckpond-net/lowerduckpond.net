@@ -114,7 +114,12 @@ def test_recovery_gate_precedes_even_the_empty_generation_exception(
     assert capsys.readouterr().err.strip() == "host_restore_pending"
 
 
-def test_successor_launch_check_does_not_write_into_the_selected_artifact(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "arguments", [("job-issuance",), ("caddy-generation", "1"), ("worker", JOB_ID)]
+)
+def test_successor_launch_check_does_not_write_into_the_selected_artifact(
+    tmp_path: Path, arguments: tuple[str, ...]
+) -> None:
     installation = tmp_path / "site-packages"
     package = installation / "lowerduckpond_static_host_agent"
     package.mkdir(parents=True)
@@ -140,9 +145,10 @@ def test_successor_launch_check_does_not_write_into_the_selected_artifact(tmp_pa
             "gate.__globals__.update(INSTALLATION=fixture / 'site-packages', "
             "STATE=fixture, SUCCESSOR=fixture, publication_enabled=lambda: True, "
             "require_restore_admission=lambda: None); "
-            "sys.argv = [sys.argv[1], 'job-issuance']; gate()",
+            "sys.argv = [sys.argv[1], *sys.argv[3:]]; gate()",
             str(GATE),
             str(tmp_path),
+            *arguments,
         ],
         check=True,
     )

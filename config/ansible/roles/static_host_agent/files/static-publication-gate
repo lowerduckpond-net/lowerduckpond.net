@@ -87,9 +87,13 @@ def require_successor_launch(boot_path: pathlib.Path | None) -> None:
         droplet = SUCCESSOR / PUBLICATION_VIEW
         authority = droplet if os.path.lexists(droplet) else SUCCESSOR
         receipt = verify_launch(STATE, authority)
-        require_local_launch_binding(
-            authority, receipt, disposable=os.path.lexists("/.dockerenv"), boot_path=boot_path
-        )
+        disposable = os.path.lexists("/.dockerenv")
+        if authority == droplet and boot_path is not None:
+            require_local_launch_binding(
+                authority, receipt, disposable=disposable, boot_path=boot_path
+            )
+        else:
+            require_local_launch_binding(authority, receipt, disposable=disposable)
     except Exception:
         fail("launch_authority_unavailable", 78)
 
