@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from hashlib import sha256
 
@@ -130,6 +131,23 @@ def _empty_values(values: object) -> bool:
         and root.get("resources", []) == []
         and root.get("child_modules", []) == []
     )
+
+
+def retain_empty_state(raw: bytes) -> str:
+    """Keep exact empty-state bytes only when all fields are safe to retain."""
+    state = _document(raw)
+    require(
+        set(state) <= {"format_version", "terraform_version", "values", "checks"}
+        and all(
+            isinstance(version := state.get(key), str)
+            and re.fullmatch(r"[0-9]{1,4}(\.[0-9]{1,4}){1,3}", version) is not None
+            for key in ("format_version", "terraform_version")
+        )
+        and _empty_values(state.get("values", {}))
+        and state.get("checks") in (None, []),
+        "droplet-cleanup-unsafe-state-evidence",
+    )
+    return raw.decode("utf-8")
 
 
 def reconcile_initial_retirement(

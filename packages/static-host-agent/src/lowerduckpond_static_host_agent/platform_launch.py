@@ -245,7 +245,12 @@ def verify_launch(state_path: Path, authority_path: Path, *, owner: int = 0) -> 
 
 
 def require_local_launch_binding(
-    authority_path: Path, receipt: Document, *, disposable: bool, owner: int = 0
+    authority_path: Path,
+    receipt: Document,
+    *,
+    disposable: bool,
+    owner: int = 0,
+    boot_path: Path | None = None,
 ) -> None:
     """Reject receipts copied from a different target or native transaction."""
     with DurableDirectory.open(
@@ -255,7 +260,9 @@ def require_local_launch_binding(
         if authority_path.name == PUBLICATION_VIEW:
             require(not disposable, "droplet-enrollment-conflicts")
             enrolled = read_enrollment(authority_path, authority, owner=owner)
-            _require_droplet_binding(authority_path, receipt, enrolled, owner=owner)
+            _require_droplet_binding(
+                authority_path, receipt, enrolled, owner=owner, boot_path=boot_path
+            )
             return
         transaction_raw = _optional(authority, ("transaction.json",), owner)
         if transaction_raw is not None:
@@ -279,7 +286,12 @@ def require_local_launch_binding(
 
 
 def _require_droplet_binding(
-    authority_path: Path, receipt: Document, enrolled: DropletEnrollment, *, owner: int
+    authority_path: Path,
+    receipt: Document,
+    enrolled: DropletEnrollment,
+    *,
+    owner: int,
+    boot_path: Path | None,
 ) -> None:
     from lowerduckpond_static_host_agent.host_restore_gate import (  # noqa: PLC0415
         RECOVERY_ROOT,
@@ -307,4 +319,6 @@ def _require_droplet_binding(
             enrolled.require_binding(binding)
             return
         require(not gate_pending(store), "droplet-restore-admission-pending")
-        require_activation(store, authority_path=authority_path, receipt=receipt)
+        require_activation(
+            store, authority_path=authority_path, receipt=receipt, boot_path=boot_path
+        )

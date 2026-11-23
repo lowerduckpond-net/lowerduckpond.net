@@ -216,7 +216,10 @@ The [journey teardown adapter](../../scripts/m3_12_droplet_teardown.py)
 reopens the scope and cleanup authority retained with the original evidence
 before accepting a per-host destroy plan. Its reconciliation joins the three
 native host absence proofs with independent DNS, storage and original grant
-observations. Unverified or surviving resources stay unresolved. A designated
+observations. The native fixture driver binds the original observations to the
+committed result and revalidates them on restart. It retains only the exact
+allowlisted empty state, scoped provider readback, and external identity and
+evidence digests. Unverified or surviving resources stay unresolved. A designated
 archive retention requires the original custody evidence, even if the
 corresponding bucket is now absent. The adapter verifies observations and
 prepares no provider deletions.
@@ -242,6 +245,10 @@ presentation. The controller seals the cutover only after it verifies
 the original restore fence and observes the exact native drop rule on both
 pinned boots and inactive source Caddy. It refuses future source projection
 and requires the matching cutover before preparing the destination payload.
+After reboot, the restore coordinator keeps ingress fenced while starting and
+verifying the selected Caddy runtime against the current tenant routes. It can
+recover a failed systemd unit once for that boot after cutover verification.
+Startup or verification failure leaves ingress closed and activation pending.
 The browser proof distinguishes retained local storage from a new TLS
 request. The pinned SSH probe correlates its unique marker to one Caddy
 access entry in the restored host's current boot. Only the proof fields

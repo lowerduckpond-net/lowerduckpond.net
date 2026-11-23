@@ -26,8 +26,8 @@ from scripts.m3_12_disposable_routing import (
     require_prepared_cutover,
     verify_cutover,
 )
-from scripts.m3_12_droplet_cleanup import InitialRetirement
-from scripts.m3_12_droplet_journey import PHASES, Phase, committed_receipts, run_journey
+from scripts.m3_12_droplet_cleanup import InitialRetirement, retain_empty_state
+from scripts.m3_12_droplet_journey import PHASES, Phase, committed_dispatches, run_journey
 from scripts.m3_12_droplet_native import AdapterInputs, inspect_host, require_endpoint
 from scripts.m3_12_droplet_scope import ReviewedJourney, approved_scope
 from scripts.m3_12_droplet_ssh import Endpoint, ReadExecutor, restore_status
@@ -155,13 +155,19 @@ class NativePhaseDriver:
         return self._original(original["evidence"][label])
 
     def _reopen_originals(self, scope: Document, phase: str | None) -> None:
-        receipts = committed_receipts(self.attempt, scope)
+        dispatches = committed_dispatches(self.attempt, scope)
         for predecessor in PHASES:
             if predecessor.name == phase:
                 return
-            require(predecessor.name in receipts, "droplet-native-original-observation-missing")
-            for key in receipts[predecessor.name]["evidence"].values():
-                self._original(key)
+            require(predecessor.name in dispatches, "droplet-native-original-observation-missing")
+            dispatch = dispatches[predecessor.name]
+            assert dispatch.receipt is not None  # noqa: S101 - only committed dispatches
+            evidence = {
+                name: self._original(key) for name, key in dispatch.receipt["evidence"].items()
+            }
+            if predecessor.name == "teardown":
+                _, work = self._bound(encode(dispatch.intent), self.allocation)
+                self._require_cleanup_capture(work, evidence)
 
     def _restore_inputs(self) -> RestoreInputs:
         return RestoreInputs.load(self.restore_inputs_directory, owner=self.receiver.owner)
@@ -261,33 +267,65 @@ class NativePhaseDriver:
                 reviewed_sha256=plan.reviewed_sha256,
             )
 
-    def _cleanup(self, work: FixturePhase) -> FixtureObservation:
+    def _reconcile_cleanup(self, work: FixturePhase, capture: CleanupCapture) -> Document:
         original = self._prior(work, "retain-originals", "cleanupAuthority")
-        capture = self.fixture.inspect_cleanup(work)
-        report = reconcile_teardown(
+        return reconcile_teardown(
             work.inputs,
             encode(original),
             capture.hosts,
             capture.external,
             independently_observed_sha256=capture.independently_observed_sha256,
         )
+
+    def _cleanup(self, work: FixturePhase) -> FixtureObservation:
+        capture = self.fixture.inspect_cleanup(work)
+        report = self._reconcile_cleanup(work, capture)
         if report["outcome"] != "reconciled":
             return FixtureObservation("unknown", {"observation": report})
-        return FixtureObservation(
-            "committed",
-            {
-                "hostAbsence": report["hosts"],
-                "dnsAbsence": report["dns"],
-                "archiveDisposition": report["storage"],
-                "credentialClosure": report["grants"],
+        return FixtureObservation("committed", self._cleanup_evidence(capture, report))
+
+    def _cleanup_evidence(self, capture: CleanupCapture, report: Document) -> dict[str, Document]:
+        return {
+            "hostAbsence": report["hosts"],
+            "dnsAbsence": report["dns"],
+            "archiveDisposition": report["storage"],
+            "credentialClosure": report["grants"],
+            "cleanupCapture": {
+                "external": capture.external,
+                "externalSha256": capture.independently_observed_sha256,
+                "hosts": {
+                    role: {
+                        "stateJson": retain_empty_state(host.state_json),
+                        "providerReadback": host.readback,
+                    }
+                    for role, host in capture.hosts.items()
+                },
             },
+        }
+
+    def _require_cleanup_capture(self, work: FixturePhase, evidence: dict[str, Document]) -> None:
+        original = evidence["cleanupCapture"]
+        hosts = {
+            role: HostAbsence(
+                self.destroy_plans[role].original,
+                row["stateJson"].encode("utf-8"),
+                row["providerReadback"],
+            )
+            for role, row in original["hosts"].items()
+        }
+        capture = CleanupCapture(hosts, original["external"], original["externalSha256"])
+        report = self._reconcile_cleanup(work, capture)
+        require(
+            report["outcome"] == "reconciled"
+            and self._cleanup_evidence(capture, report) == evidence,
+            "droplet-native-cleanup-evidence-changed",
         )
 
     def submit(self, intent: bytes, allocation: bytes) -> None:
         scope, work = self._bound(intent, allocation)
         phase = work.phase.name
         require(
-            phase not in committed_receipts(self.attempt, scope),
+            phase not in committed_dispatches(self.attempt, scope),
             "droplet-native-dispatch-already-committed",
         )
         key = digest(work.intent)

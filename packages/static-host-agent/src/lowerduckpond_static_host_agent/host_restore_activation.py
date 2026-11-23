@@ -9,7 +9,8 @@ from lowerduckpond_static_contracts import canonical_json_bytes, decode_json_obj
 
 from lowerduckpond_static_host_agent import host_restore_services as services
 from lowerduckpond_static_host_agent.caddy_startup import CaddyStartupStore
-from lowerduckpond_static_host_agent.durable import DurableDirectory
+from lowerduckpond_static_host_agent.durable import DurableDirectory, StateAlreadyExistsError
+from lowerduckpond_static_host_agent.host_restore_authority import require_saved_authority
 from lowerduckpond_static_host_agent.host_restore_gate import (
     INGRESS,
     gate_pending,
@@ -27,6 +28,7 @@ from lowerduckpond_static_host_agent.host_restore_journal import (
 )
 from lowerduckpond_static_host_agent.host_restore_paths import private_directory
 from lowerduckpond_static_host_agent.host_restore_startup import complete_restore_startup
+from lowerduckpond_static_host_agent.host_restore_verification import verify_current_runtime
 
 CONFIGURATION = Path("/etc/lowerduckpond/static-publication.json")
 
@@ -58,12 +60,42 @@ def finish_public_ingress(
     pending = ingress_pending(store)
     # A completed projected restore may have been fenced again at boot.
     # It cannot clear the kernel table until the new boot's proof is present.
-    if pending or projected_recovery(store):
+    projected = projected_recovery(store)
+    if projected:
+        try:
+            require_scoped_activation(store)
+        except OSError, RuntimeError, ValueError:
+            services.close_public_ingress()
+            raise
+        if not pending and not services.public_gate_present():
+            return
+        services.close_public_ingress()
+        _start_projected_caddy(store)
+        verify_current_runtime(store, require_saved_authority(store)[0])
         require_scoped_activation(store)
-        services.remove_public_gate()
-        failure_hook("firewall")
-        store.directory.remove(INGRESS, missing_ok=True)
-        failure_hook("ingress")
+    elif pending:
+        require_scoped_activation(store)
+    else:
+        return
+    services.remove_public_gate()
+    failure_hook("firewall")
+    store.directory.remove(INGRESS, missing_ok=True)
+    failure_hook("ingress")
+
+
+def _start_projected_caddy(store: RestoreStore) -> None:
+    from scripts.m3_12_droplet_observe import boot_sha256  # noqa: PLC0415 - projected hosts only
+
+    if services.caddy_failed():
+        marker = f"projected-caddy-recovery-{boot_sha256(store.owner)}.json"
+        # Reserve this recovery before resetting the manager. An interrupted or
+        # repeatedly failing current-boot start must never reset the budget again.
+        try:
+            store.directory.create_immutable((marker,), ingress_record(store), mode=0o600)
+        except StateAlreadyExistsError:
+            raise HostRestoreError("restore_caddy_boot_recovery_exhausted") from None
+        services.reset_caddy_start_limit()
+    services.start_caddy()
 
 
 def _publication(path: Path, enabled: bool, owner: int) -> None:

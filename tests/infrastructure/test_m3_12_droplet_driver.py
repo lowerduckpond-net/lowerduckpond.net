@@ -129,6 +129,8 @@ class SimulatedNative:
         self.restore_closed = True
         self.local_gate_valid = True
         self.visible_grant_closed = False
+        self.unsafe_state = False
+        self.cleanup_reads = 0
         self.interrupt_restore = False
         self.interrupt_cleanup = False
         self.hide_reboot_result = False
@@ -227,7 +229,18 @@ class SimulatedNative:
 
     def inspect_cleanup(self, work: FixturePhase) -> CleanupCapture:
         assert work.phase.name == "teardown"
-        state = encode({"format_version": "1.0", "terraform_version": "1.12.6"})
+        self.cleanup_reads += 1
+        state = encode(
+            {
+                "format_version": "1.0",
+                "terraform_version": "1.12.6",
+                **(
+                    {"checks": [{"unreviewed": "synthetic-secret-canary"}]}
+                    if self.unsafe_state
+                    else {}
+                ),
+            }
+        )
         hosts = {}
         for role, plan in self.plans.items():
             original = plan.original
@@ -365,7 +378,7 @@ def native(
     return driver, sim
 
 
-def test_native_driver_recovers_cutover_and_cleanup_without_replaying_actions(
+def test_native_driver_recovers_cutover_and_cleanup_without_replaying_actions(  # noqa: PLR0915 - complete interruption and retained-evidence sequence
     native: tuple[NativePhaseDriver, SimulatedNative],
 ) -> None:
     driver, sim = native
@@ -409,12 +422,48 @@ def test_native_driver_recovers_cutover_and_cleanup_without_replaying_actions(
         for path in driver.attempt.directory.glob("*.json")
     )
     completed_actions = list(sim.actions)
+    completed_reads = sim.cleanup_reads
+    assert replace(driver).run()["sequenceComplete"]
+    assert sim.cleanup_reads == completed_reads
     original = read(driver.attempt.directory, "journey-teardown-result.json")
-    original_absence = original["evidence"]["hostAbsence"]
-    (driver.attempt.directory / f"native-evidence-{original_absence}.json").unlink()
+    captured_key = original["evidence"]["cleanupCapture"]
+    captured_name = f"native-evidence-{captured_key}.json"
+    captured = read(driver.attempt.directory, captured_name)
+    assert captured["externalSha256"] == digest(captured["external"])
+    for domain in ("dns", "storage", "grants"):
+        assert captured["external"][domain]
+        for row in captured["external"][domain].values():
+            assert row["evidenceSha256"] == proof(row["identitySha256"])
+    hosts = read(
+        driver.attempt.directory, f"native-evidence-{original['evidence']['hostAbsence']}.json"
+    )
+    for role, row in captured["hosts"].items():
+        assert hosts[role]["stateSha256"] == proof(row["stateJson"])
+        assert hosts[role]["readbackSha256"] == digest(row["providerReadback"])
+    captured_file = driver.attempt.directory / captured_name
+    captured_file.write_bytes(encode({**captured, "externalSha256": proof("substituted")}))
+    with pytest.raises(ValidationError, match="original-observation-changed"):
+        replace(driver).run()
+    captured_file.unlink()
     with pytest.raises(FileNotFoundError):
         replace(driver).run()
     assert sim.actions == completed_actions
+    assert sim.cleanup_reads == completed_reads
+
+
+def test_native_driver_excludes_unreviewed_teardown_state(
+    native: tuple[NativePhaseDriver, SimulatedNative],
+) -> None:
+    driver, sim = native
+    sim.visible_grant_closed = True
+    sim.unsafe_state = True
+    with pytest.raises(ValidationError, match="droplet-cleanup-unsafe-state-evidence"):
+        driver.run()
+    assert not (driver.attempt.directory / "journey-teardown-result.json").exists()
+    assert not any(
+        b"synthetic-secret-canary" in path.read_bytes()
+        for path in driver.attempt.directory.glob("*.json")
+    )
 
 
 def test_native_driver_never_delivers_when_source_ingress_stays_open(

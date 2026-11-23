@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import grp
+import pwd
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
@@ -233,18 +237,7 @@ def verify_installed_runtime(  # noqa: PLR0913 - selection proof and native runn
     if journal is None or mapping is None:
         raise HostRestoreError("restore_runtime_mapping_missing")
     with (
-        CaddyRuntime.open(
-            paths.caddy,
-            paths.state / "locks/publication.lock",
-            expected_owner=store.owner,
-            expected_group=paths.caddy_group,
-            validation_uid=caddy_uid,
-            validation_gid=paths.caddy_group,
-            expected_binary_sha256=str(inputs.caddy["binarySha256"]),
-            disposable=inputs.disposable_routing,
-            expected_lock_owner=store.owner,
-            expected_lock_group=store.owner,
-        ) as runtime,
+        _open_runtime(store, paths, inputs, caddy_uid) as runtime,
         CaddyStartupStore.open(paths.caddy / "intents", expected_owner=store.owner) as startup,
         repository.publication_transaction() as transaction,
         runtime.using_held_publication_lock(repository),
@@ -278,5 +271,48 @@ def verify_installed_runtime(  # noqa: PLR0913 - selection proof and native runn
             if _running_caddy_service_identity() != before:
                 raise HostRestoreError("restore_running_invocation_changed")
             return {"runtimeMapping": mapping.digest, "invocationId": before[1]}
+        finally:
+            selected.generation.close()
+
+
+@contextmanager
+def _open_runtime(
+    store: RestoreStore, paths: RestorePaths, inputs: RestoreInputs, caddy_uid: int
+) -> Iterator[CaddyRuntime]:
+    with CaddyRuntime.open(
+        paths.caddy,
+        paths.state / "locks/publication.lock",
+        expected_owner=store.owner,
+        expected_group=paths.caddy_group,
+        validation_uid=caddy_uid,
+        validation_gid=paths.caddy_group,
+        expected_binary_sha256=str(inputs.caddy["binarySha256"]),
+        disposable=inputs.disposable_routing,
+        expected_lock_owner=store.owner,
+        expected_lock_group=store.owner,
+    ) as runtime:
+        yield runtime
+
+
+def verify_current_runtime(store: RestoreStore, inputs: RestoreInputs) -> None:
+    """Prove the settled boot invocation and the current authorized routes."""
+    paths = RestorePaths(inputs.restore_id, grp.getgrnam("caddy").gr_gid)
+    with (
+        StateRepository(paths.state, expected_owner=store.owner) as repository,
+        _open_runtime(store, paths, inputs, pwd.getpwnam("caddy").pw_uid) as runtime,
+        CaddyStartupStore.open(paths.caddy / "intents", expected_owner=store.owner) as startup,
+        repository.publication_transaction() as transaction,
+        runtime.using_held_publication_lock(repository),
+    ):
+        selected = runtime.open_active_verified()
+        try:
+            before = _running_caddy_service_identity()
+            if startup.read() is not None or runtime.read_generation_route_snapshot(
+                selected.generation_id
+            ) != snapshot_tenant_routes(transaction):
+                raise HostRestoreError("restore_running_routes_changed")
+            verify_running_caddy(selected.generation)
+            if _running_caddy_service_identity() != before:
+                raise HostRestoreError("restore_running_invocation_changed")
         finally:
             selected.generation.close()

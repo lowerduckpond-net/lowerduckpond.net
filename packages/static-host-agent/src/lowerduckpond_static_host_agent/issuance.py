@@ -71,15 +71,16 @@ class ClosedPublicationGate:
 class CommandPublicationGate:
     """Delegate enablement to one fixed root-owned installed gate executable."""
 
-    def __init__(self, executable: Path) -> None:
+    def __init__(self, executable: Path, *, worker_job: str | None = None) -> None:
         if not executable.is_absolute():
             raise ValueError("publication gate executable must be absolute")
         self._executable = executable
+        self._arguments = ("job-issuance",) if worker_job is None else ("worker", worker_job)
 
     def require_enabled(self) -> None:
         try:
             completed = subprocess.run(  # noqa: S603
-                [self._executable, "job-issuance"],
+                [self._executable, *self._arguments],
                 check=False,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,

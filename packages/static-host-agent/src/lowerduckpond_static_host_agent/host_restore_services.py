@@ -155,6 +155,23 @@ def start_caddy() -> None:
     )
 
 
+def caddy_failed() -> bool:
+    # Result can retain an earlier exit-code failure when systemd rejects
+    # a subsequent attempt at the rate limit. Read the service state instead.
+    result = require_command(
+        ("/usr/bin/systemctl", "show", "--property=ActiveState", "--value", "caddy.service"),
+        failure="restore_caddy_start_state_unavailable",
+    )
+    return result.strip() == b"failed"
+
+
+def reset_caddy_start_limit() -> None:
+    require_command(
+        ("/usr/bin/systemctl", "reset-failed", "caddy.service"),
+        failure="restore_caddy_start_reset_failed",
+    )
+
+
 def public_gate_present() -> bool:
     """Inspect the current kernel gate without clearing it or parsing stderr."""
     raw = require_command(

@@ -17,6 +17,7 @@ PROTECTED_FILE_MODE = 0o400
 INSTALLATION = pathlib.Path("/opt/lowerduckpond/static-host-agent/current/site-packages")
 STATE = pathlib.Path("/var/lib/lowerduckpond/static")
 SUCCESSOR = pathlib.Path("/var/lib/lowerduckpond/convergence/m3-12")
+WORKER_CREDENTIALS = pathlib.Path("/run/credentials")
 TWO_ARGUMENTS = 2
 UUIDV7 = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
@@ -66,7 +67,7 @@ def require_restore_admission() -> None:
         fail("host_restore_pending", 78)
 
 
-def require_successor_launch() -> None:
+def require_successor_launch(boot_path: pathlib.Path | None) -> None:
     if not os.path.lexists(SUCCESSOR) and not os.path.lexists(STATE / "platform/launch.json"):
         return
     sys.path.insert(0, str(INSTALLATION))
@@ -86,7 +87,9 @@ def require_successor_launch() -> None:
         droplet = SUCCESSOR / PUBLICATION_VIEW
         authority = droplet if os.path.lexists(droplet) else SUCCESSOR
         receipt = verify_launch(STATE, authority)
-        require_local_launch_binding(authority, receipt, disposable=os.path.lexists("/.dockerenv"))
+        require_local_launch_binding(
+            authority, receipt, disposable=os.path.lexists("/.dockerenv"), boot_path=boot_path
+        )
     except Exception:
         fail("launch_authority_unavailable", 78)
 
@@ -94,6 +97,7 @@ def require_successor_launch() -> None:
 def main() -> None:
     require_restore_admission()
     arguments = sys.argv[1:]
+    boot_path = None
     if arguments == ["job-issuance"]:
         pass
     elif (
@@ -109,13 +113,17 @@ def main() -> None:
         and arguments[0] == "worker"
         and UUIDV7.fullmatch(arguments[1]) is not None
     ):
-        pass
+        boot_path = (
+            WORKER_CREDENTIALS
+            / f"lowerduckpond-static-worker@{arguments[1]}.service"
+            / "lowerduckpond-boot-id"
+        )
     else:
         fail("invalid static publication gate invocation", 64)
 
     if not publication_enabled():
         fail("publication_disabled", 78)
-    require_successor_launch()
+    require_successor_launch(boot_path)
 
 
 if __name__ == "__main__":

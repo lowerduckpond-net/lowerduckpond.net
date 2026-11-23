@@ -97,6 +97,9 @@ the real worker sandbox. These fixtures confer no real-provider authority.
 
 The Droplet worker and emergency reconciler mount the dedicated protected
 `droplet-publication` directory and three local identity files read-only.
+Systemd also passes an enrolled worker the current boot ID as a single read-only
+unit credential. A completed projected restore needs that identity to reopen
+its exact cutover receipt. The worker retains its restricted proc view.
 The private controller attempt and prerequisite receipts stay in the parent
 outside both service views. Revocation and the publication fence belong in
 the dedicated directory so a worker sees changes through the existing mount.

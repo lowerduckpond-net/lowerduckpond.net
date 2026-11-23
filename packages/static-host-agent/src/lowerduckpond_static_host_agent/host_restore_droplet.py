@@ -34,6 +34,7 @@ def require_activation(
     *,
     authority_path: Path | None = None,
     receipt: Document | None = None,
+    boot_path: Path | None = None,
 ) -> None:
     """Reopen native completion and independent local enrollment at each gate."""
     journal = store.read()
@@ -51,7 +52,7 @@ def require_activation(
         require_restore_cutover,
     )
 
-    require_restore_cutover(store, saved)
+    require_restore_cutover(store, saved, boot_path=boot_path)
     with DurableDirectory.open(
         authority_path, expected_owner=store.owner, expected_directory_mode=0o700
     ) as authority:

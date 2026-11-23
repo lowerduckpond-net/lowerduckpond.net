@@ -95,6 +95,7 @@ PHASES = (
         "dnsAbsence",
         "archiveDisposition",
         "credentialClosure",
+        "cleanupCapture",
     ),
 )
 
@@ -218,10 +219,10 @@ def require_dispatch(
     return scope, matches[0]
 
 
-def committed_receipts(attempt: Attempt, scope: Document) -> dict[str, Document]:
+def committed_dispatches(attempt: Attempt, scope: Document) -> dict[str, Dispatch]:
     """Reopen original phase evidence under the already validated allocation."""
     return {
-        phase: entry.receipt
+        phase: entry
         for phase, entry in _originals(attempt, scope).items()
         if entry.receipt is not None and entry.receipt["outcome"] == "committed"
     }

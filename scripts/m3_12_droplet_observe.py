@@ -192,8 +192,8 @@ def selected_artifact(owner: int) -> str | None:
     return target.name
 
 
-def boot_sha256(owner: int = 0) -> str:
-    boot = UUID(_system_file(BOOT_ID, owner).decode("ascii"))
+def boot_sha256(owner: int = 0, *, path: Path | None = None) -> str:
+    boot = UUID(_system_file(BOOT_ID if path is None else path, owner).decode("ascii"))
     require(boot.int != 0, "droplet-boot-id-invalid")
     return sha256(boot.bytes).hexdigest()
 

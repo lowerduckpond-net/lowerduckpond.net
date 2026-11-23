@@ -341,7 +341,7 @@ def executor_main(arguments: list[str] | None = None) -> int:
             ExportSpool(_STATE_ROOT, expected_owner=_EXPECTED_OWNER) as export_spool,
             _open_caddy_control_runtime() as runtime,
         ):
-            publication_gate = CommandPublicationGate(_PUBLICATION_GATE)
+            publication_gate = CommandPublicationGate(_PUBLICATION_GATE, worker_job=job_id)
             route_handler = RouteLifecycleHandler(repository, runtime, publication_gate)
             deployment_handler = DeploymentLifecycleHandler(
                 repository,

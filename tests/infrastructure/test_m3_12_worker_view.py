@@ -8,11 +8,87 @@ import sys
 from pathlib import Path
 
 import pytest
+from lowerduckpond_static_host_agent import droplet_enrollment, host_restore_gate, installed_routing
+from lowerduckpond_static_host_agent.host_restore_inputs import local_machine_id
+from lowerduckpond_static_host_agent.platform_launch import (
+    require_local_launch_binding,
+    verify_launch,
+)
 
 from scripts import check_m3_12_worker_view as controller
+from scripts import m3_12_droplet_observe as observe
 
 GUEST = controller.ROOT / "config/ansible/molecule/m3_8/m3_12_worker_view.py"
 MANAGER_QUERY = ("show", "--property=SystemState", "--value")
+
+
+def test_prepared_restore_requires_the_workers_owned_boot_input(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    guest = runpy.run_path(str(GUEST))
+    create_launch = guest["create_launch"]
+    state = tmp_path / "state"
+    root = tmp_path / "authority"
+    view = root / droplet_enrollment.PUBLICATION_VIEW
+    recovery = tmp_path / "recovery"
+    caddy = tmp_path / "caddy"
+    ssh = tmp_path / "ssh"
+    for directory in (state, recovery, caddy, ssh):
+        directory.mkdir(mode=0o700)
+    machine = tmp_path / "machine"
+    machine.write_bytes(b"b" * 32 + b"\n")
+    system = tmp_path / "uuid"
+    system.write_bytes(b"22222222-3333-4444-5555-666666666666\n")
+    boot = tmp_path / "current-boot"
+    boot.write_bytes(b"22222222-3333-4444-5555-666666666666\n")
+    artifact = tmp_path / ("a" * 64)
+    artifact.mkdir()
+    selected = tmp_path / "current"
+    selected.symlink_to(artifact)
+    owner = os.geteuid()
+    key = ssh / "ssh_host_ed25519_key.pub"
+    create_launch.__globals__.update(
+        STATE=state,
+        ROOT=root,
+        VIEW=view,
+        RECOVERY=recovery,
+        CADDY=caddy,
+        HOST_KEY=key,
+        local_machine_id=lambda **_: local_machine_id(machine, owner=owner),
+    )
+    monkeypatch.setattr(observe, "MACHINE_ID", machine)
+    monkeypatch.setattr(observe, "SYSTEM_UUID", system)
+    monkeypatch.setattr(observe, "HOST_KEY", key)
+    monkeypatch.setattr(observe, "BOOT_ID", boot)
+    monkeypatch.setattr(observe, "SELECTION", selected)
+    monkeypatch.setattr(droplet_enrollment, "DOCKER_MARKER", tmp_path / "not-docker")
+    monkeypatch.setattr(host_restore_gate, "RECOVERY_ROOT", recovery)
+    monkeypatch.setattr(installed_routing, "AUTHORITY", view)
+    monkeypatch.setattr(installed_routing, "CADDY_ROOT", caddy)
+    real_projection = installed_routing.installed_projection
+    monkeypatch.setattr(
+        installed_routing,
+        "installed_projection",
+        lambda **kwargs: real_projection(**kwargs, group=os.getegid()),
+    )
+    create_launch(artifact.name, owner=owner)
+    source = verify_launch(state, view, owner=owner)
+    guest["prepare_completed_restore"](artifact.name, owner=owner, caddy_group=os.getegid())
+    assert verify_launch(state, view, owner=owner) == source
+
+    worker_boot = tmp_path / "worker-boot"
+    with pytest.raises(FileNotFoundError):
+        require_local_launch_binding(
+            view, source, disposable=False, owner=owner, boot_path=worker_boot
+        )
+    worker_boot.write_bytes(b"11111111-3333-4444-5555-666666666666\n")
+    with pytest.raises(FileNotFoundError):
+        require_local_launch_binding(
+            view, source, disposable=False, owner=owner, boot_path=worker_boot
+        )
+    worker_boot.write_bytes(boot.read_bytes())
+    worker_boot.chmod(0o440)
+    require_local_launch_binding(view, source, disposable=False, owner=owner, boot_path=worker_boot)
 
 
 @pytest.mark.parametrize(

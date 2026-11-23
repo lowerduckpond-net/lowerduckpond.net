@@ -33,6 +33,7 @@ STOP_PROBE = f"{LIBEXEC}/m3-12-worker-view-stop"
 WORKER_DROPIN = f"""[Service]
 StandardError=file:{WITNESS}/stderr
 ExecStopPost=!{STOP_PROBE}
+BindReadOnlyPaths=/var/lib/lowerduckpond/recovery
 """
 PROBE_SOURCE = f"""#!/usr/bin/python3 -I
 import os
@@ -42,11 +43,13 @@ assert os.geteuid() == 0
 assert not os.path.lexists("/.dockerenv")
 assert not os.path.lexists("/var/lib/lowerduckpond/convergence/m3-12/controller-only-witness")
 assert not os.path.lexists("/etc/ssh/ssh_host_ed25519_key")
+assert not os.path.lexists("/proc/sys")
 assert os.statvfs("{VIEW}").f_flag & os.ST_RDONLY
 for path in (
     "/etc/machine-id",
     "/sys/devices/virtual/dmi/id/product_uuid",
     "/etc/ssh/ssh_host_ed25519_key.pub",
+    f"/run/credentials/lowerduckpond-static-worker@{{sys.argv[1]}}.service/lowerduckpond-boot-id",
 ):
     if os.path.lexists(path):
         assert os.statvfs(path).f_flag & os.ST_RDONLY
@@ -82,11 +85,13 @@ digest=$1
 groupadd caddy
 useradd --system --user-group ldp-provisioner
 install -d -m 0700 {INSTALL} {STATE} {RELEASES} /etc/lowerduckpond
+install -d -m 0700 /var/lib/lowerduckpond/recovery
 install -d -m 0755 {LIBEXEC} /run/caddy /etc/caddy /etc/ssh
 stage=artifact-extraction
 tar -xf {STAGING}/worker-artifact.tar -C {INSTALL}
 mv {INSTALL}/artifact {INSTALL}/"$digest"
 ln -s {INSTALL}/"$digest" {INSTALL}/current
+install -m 0600 /dev/null {INSTALL}/selection.lock
 stage=unit-install
 install -m 0755 {STAGING}/static-publication-gate {GATE}
 install -m 0755 {STAGING}/host-restore-gate {LIBEXEC}/host-restore-gate
@@ -158,6 +163,8 @@ def artifact_and_unit(directory: Path) -> str:
         "BindReadOnlyPaths=-/etc/machine-id",
         "BindReadOnlyPaths=-/sys/devices/virtual/dmi/id/product_uuid",
         "BindReadOnlyPaths=-/etc/ssh/ssh_host_ed25519_key.pub",
+        "# PID 1 supplies only the current boot identity to this worker's proc-limited view.",
+        "LoadCredential=lowerduckpond-boot-id:/proc/sys/kernel/random/boot_id",
     }
     require(
         set(enrolled.splitlines()) - set(ordinary.splitlines()) == expected_mounts

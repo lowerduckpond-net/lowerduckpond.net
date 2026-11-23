@@ -80,7 +80,9 @@ def require_role(
             raise HostRestoreError("restore_disposable_routing_role_changed")
 
 
-def require_restore_cutover(store: RestoreStore, inputs: RestoreInputs) -> None:
+def require_restore_cutover(
+    store: RestoreStore, inputs: RestoreInputs, *, boot_path: Path | None = None
+) -> None:
     routing = inputs.disposable_routing
     if routing is None:
         if os.path.lexists(AUTHORITY / ROLE):
@@ -89,7 +91,7 @@ def require_restore_cutover(store: RestoreStore, inputs: RestoreInputs) -> None:
     if installed_projection(owner=store.owner) != routing:
         raise HostRestoreError("restore_disposable_routing_changed")
     require_role(routing, "restore", owner=store.owner)
-    boot = _boot(store.owner)
+    boot = _boot(store.owner, boot_path)
     with _private(AUTHORITY, store.owner) as protected:
         raw = _record(protected, cutover_filename(boot), store.owner)
     fence = store.read_bytes(f"source-fence-{inputs.restore_id}.json")
@@ -100,10 +102,10 @@ def _private(path: Path, owner: int) -> DurableDirectory:
     return DurableDirectory.open(path, expected_owner=owner, expected_directory_mode=0o700)
 
 
-def _boot(owner: int) -> str:
+def _boot(owner: int, path: Path | None = None) -> str:
     from scripts.m3_12_droplet_observe import boot_sha256  # noqa: PLC0415 - scoped host only
 
-    return boot_sha256(owner)
+    return boot_sha256(owner, path=path)
 
 
 def _require_receipt(

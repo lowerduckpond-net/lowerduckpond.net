@@ -49,6 +49,10 @@ BindReadOnlyPaths=/etc/sudoers.d
 BindReadOnlyPaths={{ static_host_agent_install_root }}
 BindReadOnlyPaths=/etc/lowerduckpond/static-publication.json
 {% include "m3-12-droplet-publication-view.j2" %}
+{% if static_host_agent_droplet_publication.stat.exists | default(false) %}
+# PID 1 supplies only the current boot identity to this worker's proc-limited view.
+LoadCredential=lowerduckpond-boot-id:/proc/sys/kernel/random/boot_id
+{% endif %}
 BindPaths=/run/caddy
 BindReadOnlyPaths=/run/systemd
 {% if static_host_agent_archive_lifecycle_enabled | bool %}

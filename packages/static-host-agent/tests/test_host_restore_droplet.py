@@ -345,10 +345,12 @@ def _installed_boot(root: Path, calls: list[str], monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.parametrize("projected_scope", [True])
+@pytest.mark.parametrize("reboot_failure", ["startup", "verification"])
 def test_projected_ingress_reopens_only_for_enrolled_role_and_current_boot(  # noqa: PLR0915 - native failure and reboot sequence
     native_recovery: tuple[Path, RestoreInputs],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    reboot_failure: str,
 ) -> None:
     root, inputs = native_recovery
     routing = inputs.disposable_routing
@@ -377,8 +379,45 @@ def test_projected_ingress_reopens_only_for_enrolled_role_and_current_boot(  # n
 
     write(boot_file, b"11111111-3333-4444-5555-666666666666\n")
     calls: list[str] = []
+    fenced = True
+    start_limit = False
+    failure = ""
+
+    def close() -> None:
+        nonlocal fenced
+        fenced = True
+
+    def open_ingress() -> None:
+        nonlocal fenced
+        assert fenced and calls[-1] == "verified"
+        fenced = False
+        calls.append("opened")
+
+    def reset() -> None:
+        nonlocal start_limit
+        assert fenced and start_limit
+        calls.append("reset")
+        start_limit = False
+
+    def start() -> None:
+        assert fenced and not start_limit
+        if failure == "startup":
+            raise HostRestoreError("synthetic startup failure")
+        calls.append("started")
+
+    def verify(*_arguments: object) -> None:
+        assert fenced and calls[-1] == "started"
+        if failure == "verification":
+            raise HostRestoreError("synthetic verification failure")
+        calls.append("verified")
+
     monkeypatch.setattr(services, "restore_schedules", lambda **_: calls.append("timers"))
-    monkeypatch.setattr(services, "remove_public_gate", lambda: calls.append("opened"))
+    monkeypatch.setattr(services, "close_public_ingress", close)
+    monkeypatch.setattr(services, "remove_public_gate", open_ingress)
+    monkeypatch.setattr(services, "caddy_failed", lambda: start_limit)
+    monkeypatch.setattr(services, "reset_caddy_start_limit", reset)
+    monkeypatch.setattr(services, "start_caddy", start)
+    monkeypatch.setattr(activation, "verify_current_runtime", verify)
 
     def firewall_tables(command: tuple[str, ...], **_options: object) -> bytes:
         assert command == ("/usr/sbin/nft", "--json", "list", "tables")
@@ -386,7 +425,7 @@ def test_projected_ingress_reopens_only_for_enrolled_role_and_current_boot(  # n
             {"metainfo": {"version": "synthetic"}},
             {"table": {"family": "inet", "name": "ordinary_firewall"}},
         ]
-        if calls[-1] == "closed":
+        if fenced:
             tables.append({"table": {"family": "inet", "name": "lowerduckpond_restore"}})
         return encode({"nftables": tables})
 
@@ -450,7 +489,7 @@ def test_projected_ingress_reopens_only_for_enrolled_role_and_current_boot(  # n
         write(cutover, encode(original))
         assert restore_admission(root, owner=owner, caddy=True)
         activate()
-        assert calls == ["timers", "opened"]
+        assert calls == ["timers", "started", "verified", "opened"]
         assert restore_admission(root, owner=owner, boot=True)
         assert not activation.activation_pending(store)
 
@@ -458,6 +497,8 @@ def test_projected_ingress_reopens_only_for_enrolled_role_and_current_boot(  # n
         assert restore_admission(root, owner=owner, boot=True) is False
         assert activation.activation_pending(store)
         assert _installed_boot(root, calls, monkeypatch) == 0
+        fenced = True
+        start_limit = True
         assert activation.activation_pending(store)
         with pytest.raises(FileNotFoundError):
             restore_admission(root, owner=owner, caddy=True)
@@ -467,15 +508,26 @@ def test_projected_ingress_reopens_only_for_enrolled_role_and_current_boot(  # n
         write(refreshed, encode(original))
         with pytest.raises(HostRestoreError, match="cutover_changed"):
             activation.finish_public_ingress(store)
-        assert calls == ["timers", "opened", "closed"]
+        assert calls == ["timers", "started", "verified", "opened", "closed"]
 
         write(refreshed, encode({**original, "restoreBootSha256": observe.boot_sha256(owner)}))
         assert restore_admission(root, owner=owner, boot=True)
         assert _installed_boot(root, calls, monkeypatch) == 0
         assert activation.activation_pending(store)
+        failure = reboot_failure
+        with pytest.raises(HostRestoreError, match=f"synthetic {reboot_failure} failure"):
+            activation.finish_public_ingress(store)
+        assert fenced and activation.activation_pending(store)
+        assert calls.count("opened") == 1 and calls.count("reset") == 1
+        start_limit = True
+        with pytest.raises(HostRestoreError, match="restore_caddy_boot_recovery_exhausted"):
+            activation.finish_public_ingress(store)
+        assert fenced and calls.count("reset") == 1
+        failure = ""
+        start_limit = False
         activation.finish_public_ingress(store)
         assert not activation.activation_pending(store)
-        assert calls == ["timers", "opened", "closed", "opened"]
+        assert calls[-3:] == ["started", "verified", "opened"]
         assert cutover.read_bytes() == encode(original)
         assert store.read_bytes(f"source-fence-{inputs.restore_id}.json") == fence_raw
 
