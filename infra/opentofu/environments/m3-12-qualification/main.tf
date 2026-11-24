@@ -1,5 +1,10 @@
 locals {
   name = "ldp-m312-${replace(var.qualification_run_id, "-", "")}-${var.fixture_role}"
+
+  cloud_init = templatefile("${path.module}/../../modules/digitalocean-host/cloud-init.yaml.tftpl", {
+    admin_username       = "ldp-admin"
+    admin_ssh_public_key = regex("^ssh-ed25519 [A-Za-z0-9+/]+={0,3}", var.admin_ssh_public_key)
+  })
 }
 
 resource "digitalocean_droplet" "fixture" {
@@ -15,10 +20,7 @@ resource "digitalocean_droplet" "fixture" {
   graceful_shutdown = true
   ssh_keys          = [var.admin_ssh_key_fingerprint]
 
-  user_data = templatefile("${path.module}/../../modules/digitalocean-host/cloud-init.yaml.tftpl", {
-    admin_username       = "ldp-admin"
-    admin_ssh_public_key = regex("^ssh-ed25519 [A-Za-z0-9+/]+={0,3}", var.admin_ssh_public_key)
-  })
+  user_data = local.cloud_init
 }
 
 resource "digitalocean_firewall" "fixture" {

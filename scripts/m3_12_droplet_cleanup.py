@@ -17,7 +17,8 @@ from scripts.m3_12_contracts import (
     require,
 )
 from scripts.m3_12_droplet_inventory import ApprovedAllocation
-from scripts.m3_12_droplet_plan import CONFIGURATION_FIELDS, PROVIDER, _resource_index
+from scripts.m3_12_droplet_plan import CONFIGURATION_FIELDS, PLAN_OUTPUTS, PROVIDER, _resource_index
+from scripts.m3_12_droplet_plan_evidence import InitialPlanEvidence
 from scripts.m3_12_droplet_provider import ReviewedReadback, bind_initial_allocation
 
 
@@ -41,14 +42,12 @@ def _document(raw: bytes) -> Document:
 
 def capture_initial_retirement(
     review: ReviewedReadback,
-    plan_json: bytes,
+    plan: InitialPlanEvidence,
     state_json: bytes,
     provider: Document,
     production_exclusions: bytes,
 ) -> InitialRetirement:
-    allocation = bind_initial_allocation(
-        review, plan_json, state_json, provider, production_exclusions
-    )
+    allocation = bind_initial_allocation(review, plan, state_json, provider, production_exclusions)
     values = _document(state_json)["values"]
     allocation_output = values["outputs"]["allocation"]["value"]
     resources = _resource_index(values["root_module"]["resources"])
@@ -95,7 +94,7 @@ def verify_initial_destroy_plan(
         changes = _resource_index(plan["resource_changes"])
         outputs = plan.get("output_changes", {})
         require(
-            set(outputs) <= {"allocation"}
+            set(outputs) <= PLAN_OUTPUTS
             and all(
                 output["actions"] == ["delete"] and output["after"] is None
                 for output in outputs.values()

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
-from hashlib import sha256
+from hashlib import sha1, sha256
 
 import pytest
 
@@ -16,19 +16,63 @@ from scripts.m3_12_droplet_cleanup import (
     verify_initial_destroy_plan,
 )
 from scripts.m3_12_droplet_plan import (
+    CLOUD_INIT_OUTPUT,
     CONFIGURATION_FIELDS,
     EGRESS,
     FIREWALL,
     HOST,
     HOST_FIELDS,
     MEMBERSHIP,
+    PINNED_PROVIDER,
     PROVIDER,
     ApprovedHostPlan,
-    verify_initial_host_plan,
+)
+from scripts.m3_12_droplet_plan import (
+    verify_initial_host_plan as _verify_initial_host_plan,
+)
+from scripts.m3_12_droplet_plan_evidence import (
+    BACKEND_FILES,
+    INPUTS,
+    OFFLINE_FILES,
+    PLAN_VARIABLES,
+    ROOT,
+    InitialPlanEvidence,
+    configuration_digest,
 )
 from scripts.m3_12_droplet_provider import ReviewedReadback, bind_initial_allocation
 
 CLOUD_INIT = "#cloud-config\nssh_pwauth: false\n"
+
+
+def verify_initial_host_plan(plan: Document, scope: ApprovedHostPlan) -> None:
+    _verify_initial_host_plan(plan, scope, cloud_init=CLOUD_INIT.encode())
+
+
+def _approved_output(scope: ApprovedHostPlan) -> Document:
+    return {"sensitive": False, "type": "string", "value": scope.cloud_init_sha256}
+
+
+def _review(
+    plan: Document, scope: ApprovedHostPlan, state: bytes
+) -> tuple[ReviewedReadback, InitialPlanEvidence]:
+    files = dict.fromkeys(OFFLINE_FILES | BACKEND_FILES, b"synthetic reviewed file")
+    files[INPUTS] = encode(dict.fromkeys(PLAN_VARIABLES, "synthetic reviewed input"))
+    evidence = InitialPlanEvidence(
+        files,
+        encode({"encryption_version": "v0", "encrypted_data": "c3ludGhldGlj"}),
+        encode(plan),
+        CLOUD_INIT.encode(),
+    )
+    return (
+        ReviewedReadback(
+            scope,
+            configuration_digest(files),
+            evidence.evidence_sha256,
+            sha256(state).hexdigest(),
+            f"qualification/m3-12/{scope.run_id}/{scope.role}.tfstate",
+        ),
+        evidence,
+    )
 
 
 @pytest.fixture
@@ -63,7 +107,7 @@ def reviewed_plan() -> tuple[Document, ApprovedHostPlan]:
             {
                 **HOST_FIELDS,
                 "name": scope.name,
-                "user_data": CLOUD_INIT,
+                "user_data": sha1(CLOUD_INIT.encode(), usedforsecurity=False).hexdigest(),
                 "ssh_keys": [scope.ssh_key_fingerprint],
                 "id": "101",
             },
@@ -71,10 +115,16 @@ def reviewed_plan() -> tuple[Document, ApprovedHostPlan]:
                 "name": scope.name,
                 "droplet_ids": [101],
                 "inbound_rule": [
-                    {"protocol": "tcp", "port_range": "22", "source_addresses": ["192.0.2.14/32"]}
+                    {
+                        "action": "allow",
+                        "protocol": "tcp",
+                        "port_range": "22",
+                        "source_addresses": ["192.0.2.14/32"],
+                    }
                 ],
                 "outbound_rule": [
                     {
+                        "action": "allow",
                         "protocol": protocol,
                         "port_range": port,
                         "destination_addresses": ["0.0.0.0/0", "::/0"],
@@ -99,7 +149,24 @@ def reviewed_plan() -> tuple[Document, ApprovedHostPlan]:
             "qualification_run_id": {"value": scope.run_id},
             "fixture_role": {"value": scope.role},
         },
-        "configuration": {"root_module": {"resources": config}},
+        "configuration": {
+            "root_module": {"resources": config},
+            "provider_config": {"digitalocean": dict(PINNED_PROVIDER)},
+        },
+        "planned_values": {
+            "outputs": {"allocation": {}, CLOUD_INIT_OUTPUT: _approved_output(scope)}
+        },
+        "output_changes": {
+            "allocation": {},
+            CLOUD_INIT_OUTPUT: {
+                "actions": ["create"],
+                "before": None,
+                "after": scope.cloud_init_sha256,
+                "after_unknown": False,
+                "before_sensitive": False,
+                "after_sensitive": False,
+            },
+        },
         "resource_changes": changes,
     }, scope
 
@@ -111,7 +178,7 @@ def test_droplet_plan_accepts_only_the_reviewed_host_and_its_exact_attachments(
     verify_initial_host_plan(plan, scope)
     host, firewall, membership = [resource["change"] for resource in plan["resource_changes"]]
     host["after"].pop("id")
-    host["after_unknown"] = {"id": True}
+    host["after_unknown"] = {"id": True, "volume_ids": True}
     firewall["after"]["droplet_ids"] = [None]
     firewall["after_unknown"] = {"droplet_ids": [True]}
     membership["after"].pop("resources")
@@ -123,10 +190,39 @@ def test_droplet_plan_accepts_only_the_reviewed_host_and_its_exact_attachments(
         verify_initial_host_plan(plan, scope)
 
 
+def test_plan_accepts_only_the_pinned_provider_computed_volume_shape(
+    reviewed_plan: tuple[Document, ApprovedHostPlan],
+) -> None:
+    baseline, scope = reviewed_plan
+    host = baseline["resource_changes"][0]["change"]
+    host["after_unknown"] = {"volume_ids": True}
+
+    plan = deepcopy(baseline)
+    plan["configuration"]["provider_config"]["digitalocean"]["version_constraint"] = "2.107.0"
+    with pytest.raises(ValidationError, match="droplet-plan-provider-changed"):
+        verify_initial_host_plan(plan, scope)
+
+    plan = deepcopy(baseline)
+    plan["configuration"]["root_module"]["resources"][0]["expressions"]["volume_ids"] = {
+        "constant_value": []
+    }
+    with pytest.raises(ValidationError, match="droplet-plan-configuration-changed"):
+        verify_initial_host_plan(plan, scope)
+
+    plan = deepcopy(baseline)
+    plan["resource_changes"][0]["change"]["after_unknown"]["volume_ids"] = [True]
+    with pytest.raises(ValidationError, match="droplet-plan-unsafe-unknown"):
+        verify_initial_host_plan(plan, scope)
+
+    host["after"]["volume_ids"] = []
+    with pytest.raises(ValidationError, match="droplet-plan-unsafe-unknown"):
+        verify_initial_host_plan(baseline, scope)
+
+
 @pytest.mark.parametrize(
     ("address", "field", "value", "category"),
     [
-        (HOST, "user_data", "# altered bootstrap\n", "droplet-plan-host-changed"),
+        (HOST, "user_data", "1" * 40, "droplet-plan-provider-cloud-init-changed"),
         (HOST, "public_networking", False, "droplet-plan-host-changed"),
         (HOST, "volume_ids", ["unowned"], "droplet-plan-host-changed"),
         (FIREWALL, "droplet_ids", [999], "droplet-plan-attachment-changed"),
@@ -152,6 +248,24 @@ def test_droplet_plan_refuses_foreign_host_scope(
     plan, scope = reviewed_plan
     target = next(item for item in plan["resource_changes"] if item["address"] == address)
     target["change"]["after"][field] = value
+    with pytest.raises(ValidationError, match=category):
+        verify_initial_host_plan(plan, scope)
+
+
+@pytest.mark.parametrize(
+    ("direction", "category"),
+    [
+        ("inbound_rule", "droplet-plan-ingress-changed"),
+        ("outbound_rule", "droplet-plan-egress-changed"),
+    ],
+)
+@pytest.mark.parametrize("action", ["deny", "", None])
+def test_droplet_plan_rejects_unexpected_firewall_action(
+    reviewed_plan: tuple[Document, ApprovedHostPlan], direction: str, category: str, action: object
+) -> None:
+    plan, scope = reviewed_plan
+    firewall = next(item for item in plan["resource_changes"] if item["address"] == FIREWALL)
+    firewall["change"]["after"][direction][0]["action"] = action
     with pytest.raises(ValidationError, match=category):
         verify_initial_host_plan(plan, scope)
 
@@ -204,13 +318,14 @@ def readback(
         for row in plan["resource_changes"]
     ]
     host, firewall, membership = [row["values"] for row in resources]
-    host.update(ipv4_address="11.1.2.11", urn="do:droplet:101")
+    host.update(ipv4_address="11.1.2.11", urn="do:droplet:101", volume_ids=[])
     firewall["id"] = "00000000-0000-4000-8000-000000000003"
     state = {
         "format_version": "1.0",
         "values": {
             "root_module": {"resources": resources},
             "outputs": {
+                CLOUD_INIT_OUTPUT: _approved_output(scope),
                 "allocation": {
                     "sensitive": False,
                     "value": {
@@ -226,15 +341,20 @@ def readback(
             },
         },
     }
+    observed_firewall = deepcopy(firewall)
+    for direction in ("inbound_rule", "outbound_rule"):
+        for rule in observed_firewall[direction]:
+            rule.pop("action")
     observed = {
         "droplet": {
             "id": 101,
             "name": scope.name,
             "ipv4": host["ipv4_address"],
             "status": "active",
+            "volume_ids": [],
             **{key: host[key] for key in ("region", "image", "size", "ipv6", "backups")},
         },
-        "firewalls": [{**deepcopy(firewall), "settled": True}],
+        "firewalls": [{**observed_firewall, "settled": True}],
         "projectMembership": deepcopy(membership),
     }
     exclusions = {
@@ -251,15 +371,9 @@ def test_initial_provider_readback_joins_only_the_exact_reviewed_role(
 ) -> None:
     plan, scope = reviewed_plan
     state, observed, exclusions = readback
-    plan_raw = encode(plan)
     state_raw = encode(state)
-    review = ReviewedReadback(
-        scope,
-        sha256(plan_raw).hexdigest(),
-        sha256(state_raw).hexdigest(),
-        f"qualification/m3-12/{scope.run_id}/{scope.role}.tfstate",
-    )
-    result = bind_initial_allocation(review, plan_raw, state_raw, observed, encode(exclusions))
+    review, original_plan = _review(plan, scope, state_raw)
+    result = bind_initial_allocation(review, original_plan, state_raw, observed, encode(exclusions))
     assert result.run_id == scope.run_id
     assert result.role == scope.role
     assert result.identity.ipv4 == "11.1.2.11"
@@ -267,7 +381,7 @@ def test_initial_provider_readback_joins_only_the_exact_reviewed_role(
     with pytest.raises(ValidationError, match="droplet-readback-review-changed"):
         bind_initial_allocation(
             replace(review, state_key=review.state_key.replace("restore", "source")),
-            plan_raw,
+            original_plan,
             state_raw,
             observed,
             encode(exclusions),
@@ -280,22 +394,145 @@ def test_initial_provider_readback_joins_only_the_exact_reviewed_role(
     with pytest.raises(ValidationError, match="droplet-plan-resource-set-changed"):
         bind_initial_allocation(
             replace(review, state_json_sha256=sha256(foreign_raw).hexdigest()),
-            plan_raw,
+            original_plan,
             foreign_raw,
             observed,
             encode(exclusions),
         )
     observed["firewalls"][0]["settled"] = False
     with pytest.raises(ValidationError, match="droplet-readback-provider-firewall-changed"):
-        bind_initial_allocation(review, plan_raw, state_raw, observed, encode(exclusions))
+        bind_initial_allocation(review, original_plan, state_raw, observed, encode(exclusions))
     observed["firewalls"][0]["settled"] = True
     observed["projectMembership"]["resources"] = []
     with pytest.raises(ValidationError, match="droplet-readback-provider-identity-changed"):
-        bind_initial_allocation(review, plan_raw, state_raw, observed, encode(exclusions))
+        bind_initial_allocation(review, original_plan, state_raw, observed, encode(exclusions))
     observed["projectMembership"]["resources"] = ["do:droplet:101"]
     exclusions["dropletIds"] = [101]
     with pytest.raises(ValidationError, match="production-crossover"):
-        bind_initial_allocation(review, plan_raw, state_raw, observed, encode(exclusions))
+        bind_initial_allocation(review, original_plan, state_raw, observed, encode(exclusions))
+
+
+@pytest.mark.parametrize(
+    ("evidence", "category"),
+    [
+        ("state", "droplet-readback-host-changed"),
+        ("direct-get", "droplet-readback-provider-identity-changed"),
+    ],
+)
+@pytest.mark.parametrize(
+    "value",
+    ["missing", None, False, "", {}, ["00000000-0000-4000-8000-000000000004"]],
+)
+def test_enrollment_requires_an_explicit_empty_volume_list_in_each_readback(
+    reviewed_plan: tuple[Document, ApprovedHostPlan],
+    readback: tuple[Document, Document, Document],
+    evidence: str,
+    category: str,
+    value: object,
+) -> None:
+    plan, scope = reviewed_plan
+    state, observed, exclusions = readback
+    target = (
+        state["values"]["root_module"]["resources"][0]["values"]
+        if evidence == "state"
+        else observed["droplet"]
+    )
+    if value == "missing":
+        target.pop("volume_ids")
+    else:
+        target["volume_ids"] = value
+    raw_state = encode(state)
+    review, original_plan = _review(plan, scope, raw_state)
+    with pytest.raises(ValidationError, match=category):
+        bind_initial_allocation(review, original_plan, raw_state, observed, encode(exclusions))
+
+
+@pytest.mark.parametrize(
+    ("fault", "category"),
+    [
+        ("changed-render", "droplet-plan-cloud-init-render-changed"),
+        ("digest-unknown", "droplet-plan-cloud-init-digest-unverified"),
+        ("digest-output-missing", "droplet-plan-cloud-init-digest-unverified"),
+        ("digest-change-missing", "droplet-plan-cloud-init-digest-unverified"),
+        ("digest-differs", "droplet-plan-cloud-init-digest-unverified"),
+        ("different-provider-hash", "droplet-plan-provider-cloud-init-changed"),
+    ],
+)
+def test_enrollment_verifies_both_cloud_init_checks_even_with_matching_evidence_digest(
+    reviewed_plan: tuple[Document, ApprovedHostPlan],
+    readback: tuple[Document, Document, Document],
+    fault: str,
+    category: str,
+) -> None:
+    plan, scope = reviewed_plan
+    state, observed, exclusions = readback
+    raw_state = encode(state)
+    if fault == "digest-unknown":
+        plan["output_changes"][CLOUD_INIT_OUTPUT]["after_unknown"] = True
+    if fault == "digest-output-missing":
+        plan["planned_values"]["outputs"].pop(CLOUD_INIT_OUTPUT)
+    if fault == "digest-change-missing":
+        plan["output_changes"].pop(CLOUD_INIT_OUTPUT)
+    if fault == "digest-differs":
+        plan["output_changes"][CLOUD_INIT_OUTPUT]["after"] = "1" * 64
+    if fault == "different-provider-hash":
+        plan["resource_changes"][0]["change"]["after"]["user_data"] = "2" * 40
+    review, evidence = _review(plan, scope, raw_state)
+    if fault == "changed-render":
+        evidence = replace(evidence, cloud_init=b"# independent unapproved render\n")
+        review = replace(review, plan_evidence_sha256=evidence.evidence_sha256)
+    with pytest.raises(ValidationError, match=category):
+        bind_initial_allocation(review, evidence, raw_state, observed, encode(exclusions))
+
+
+@pytest.mark.parametrize(
+    ("fault", "category"),
+    [
+        ("configuration", "droplet-plan-producing-configuration-changed"),
+        ("offline-configuration", "droplet-readback-backend-evidence-required"),
+        ("plan-bytes", "droplet-plan-original-evidence-changed"),
+        ("detached-json", "droplet-plan-original-evidence-changed"),
+        ("missing-state-digest", "droplet-readback-state-resources-changed"),
+        ("wrong-state-digest", "droplet-readback-cloud-init-changed"),
+        ("plaintext", "droplet-plan-encrypted-envelope-required"),
+    ],
+)
+def test_enrollment_reopens_the_reviewed_plan_and_state(
+    reviewed_plan: tuple[Document, ApprovedHostPlan],
+    readback: tuple[Document, Document, Document],
+    fault: str,
+    category: str,
+) -> None:
+    plan, scope = reviewed_plan
+    state, observed, exclusions = readback
+    outputs = state["values"]["outputs"]
+    if fault == "missing-state-digest":
+        outputs.pop(CLOUD_INIT_OUTPUT)
+    if fault == "wrong-state-digest":
+        outputs[CLOUD_INIT_OUTPUT]["value"] = "1" * 64
+    raw_state = encode(state)
+    review, evidence = _review(plan, scope, raw_state)
+    if fault == "configuration":
+        evidence = replace(
+            evidence, configuration={**evidence.configuration, str(ROOT / "main.tf"): b"substitute"}
+        )
+        review = replace(review, plan_evidence_sha256=evidence.evidence_sha256)
+    if fault == "offline-configuration":
+        evidence = replace(
+            evidence,
+            configuration={
+                name: raw for name, raw in evidence.configuration.items() if name in OFFLINE_FILES
+            },
+        )
+    if fault == "plan-bytes":
+        evidence = replace(evidence, encrypted_plan=evidence.encrypted_plan + b"\n")
+    if fault == "detached-json":
+        evidence = replace(evidence, plan_json=evidence.plan_json + b"\n")
+    if fault == "plaintext":
+        evidence = replace(evidence, encrypted_plan=encode({"encrypted_data": "pretend"}))
+        review = replace(review, plan_evidence_sha256=evidence.evidence_sha256)
+    with pytest.raises(ValidationError, match=category):
+        bind_initial_allocation(review, evidence, raw_state, observed, encode(exclusions))
 
 
 @pytest.fixture
@@ -304,15 +541,11 @@ def retirement(
 ) -> tuple[InitialRetirement, Document, Document]:
     plan, scope = reviewed_plan
     state, provider, exclusions = readback
-    raw_plan, raw_state = encode(plan), encode(state)
+    raw_state = encode(state)
+    review, original_plan = _review(plan, scope, raw_state)
     original = capture_initial_retirement(
-        ReviewedReadback(
-            scope,
-            sha256(raw_plan).hexdigest(),
-            sha256(raw_state).hexdigest(),
-            f"qualification/m3-12/{scope.run_id}/{scope.role}.tfstate",
-        ),
-        raw_plan,
+        review,
+        original_plan,
         raw_state,
         provider,
         encode(exclusions),
@@ -322,6 +555,9 @@ def retirement(
         "errored": False,
         "prior_state": state,
         "planned_values": {"root_module": {}},
+        "output_changes": {
+            name: {"actions": ["delete"], "after": None} for name in state["values"]["outputs"]
+        },
         "resource_changes": [
             {
                 **{key: row[key] for key in ("address", "mode", "name", "type", "provider_name")},

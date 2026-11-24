@@ -5,13 +5,20 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from hashlib import sha256
+from hashlib import sha1, sha256
 from ipaddress import ip_network
 from typing import Any
 
 from scripts.m3_12_contracts import Document, ValidationError, require
 
 PROVIDER = "registry.opentofu.org/digitalocean/digitalocean"
+PINNED_PROVIDER = {
+    "name": "digitalocean",
+    "full_name": PROVIDER,
+    "version_constraint": "2.106.0",
+}
+CLOUD_INIT_OUTPUT = "cloud_init_sha256"
+PLAN_OUTPUTS = frozenset({"allocation", CLOUD_INIT_OUTPUT})
 HOST = "digitalocean_droplet.fixture"
 FIREWALL = "digitalocean_firewall.fixture"
 MEMBERSHIP = "digitalocean_project_resources.fixture"
@@ -159,7 +166,7 @@ def _firewall(after: Document, scope: ApprovedHostPlan) -> None:
     require(
         rule["protocol"] == "tcp"
         and rule["port_range"] == "22"
-        and not rule.get("action")
+        and rule.get("action", "allow") == "allow"
         and not any(
             rule.get(key)
             for key in (
@@ -178,7 +185,7 @@ def _firewall(after: Document, scope: ApprovedHostPlan) -> None:
         len(outgoing) == len(EGRESS)
         and {(item["protocol"], item["port_range"]) for item in outgoing} == EGRESS
         and all(
-            not item.get("action")
+            item.get("action", "allow") == "allow"
             and not any(
                 item.get(key)
                 for key in (
@@ -195,7 +202,9 @@ def _firewall(after: Document, scope: ApprovedHostPlan) -> None:
     )
 
 
-def verify_initial_host_plan(plan: Mapping[str, Any], scope: ApprovedHostPlan) -> None:
+def verify_initial_host_plan(
+    plan: Mapping[str, Any], scope: ApprovedHostPlan, *, cloud_init: bytes
+) -> None:
     """Allow only creation on an empty independently selected role state."""
     require(
         scope.role in {"source", "restore", "fresh"}
@@ -207,12 +216,42 @@ def verify_initial_host_plan(plan: Mapping[str, Any], scope: ApprovedHostPlan) -
         "droplet-plan-scope-invalid",
     )
     try:
-        _verify_initial_host_plan(plan, scope)
+        _verify_cloud_init(plan, scope.cloud_init_sha256, cloud_init)
+        _verify_initial_host_plan(plan, scope, cloud_init)
     except AttributeError, IndexError, KeyError, TypeError:
         raise ValidationError("invalid-droplet-plan") from None
 
 
-def _verify_initial_host_plan(plan: Mapping[str, Any], scope: ApprovedHostPlan) -> None:
+def _verify_cloud_init(plan: Mapping[str, Any], approved: str, rendered: bytes) -> None:
+    require(sha256(rendered).hexdigest() == approved, "droplet-plan-cloud-init-render-changed")
+    changes = plan.get("output_changes", {})
+    planned = plan.get("planned_values", {}).get("outputs", {})
+    require(
+        changes.keys() == planned.keys() == PLAN_OUTPUTS
+        and changes[CLOUD_INIT_OUTPUT]
+        == {
+            "actions": ["create"],
+            "before": None,
+            "after": approved,
+            "after_unknown": False,
+            "before_sensitive": False,
+            "after_sensitive": False,
+        }
+        and planned[CLOUD_INIT_OUTPUT]
+        == {
+            "value": approved,
+            "type": "string",
+            "sensitive": False,
+        },
+        "droplet-plan-cloud-init-digest-unverified",
+    )
+    provider = plan["configuration"].get("provider_config", {}).get("digitalocean")
+    require(provider == PINNED_PROVIDER, "droplet-plan-provider-changed")
+
+
+def _verify_initial_host_plan(
+    plan: Mapping[str, Any], scope: ApprovedHostPlan, cloud_init: bytes
+) -> None:
     prior = (plan.get("prior_state") or {}).get("values", {}).get("root_module", {})
     require(
         plan["errored"] is False
@@ -245,18 +284,27 @@ def _verify_initial_host_plan(plan: Mapping[str, Any], scope: ApprovedHostPlan) 
     _references(config, MEMBERSHIP, "resources", "urn")
     changes = _resource_index(plan["resource_changes"])
     host = _change(changes[HOST])
-    _require_known(host, CONFIGURATION_FIELDS[HOST] | {"tags", "volume_ids"})
+    _require_known(host, CONFIGURATION_FIELDS[HOST] | {"tags"})
     droplet = host["after"]
+    # The exact configuration above omits volume_ids. The pinned provider
+    # does not request attachments and leaves the field computed until readback.
+    if host.get("after_unknown", {}).get("volume_ids") is not True or "volume_ids" in droplet:
+        _require_known(host, {"volume_ids"})
+    # The provider hashes user_data for its state representation. Approval is
+    # established separately by the rendered bytes and the saved SHA-256 output.
+    require(
+        droplet["user_data"] == sha1(cloud_init, usedforsecurity=False).hexdigest(),
+        "droplet-plan-provider-cloud-init-changed",
+    )
     require(
         droplet["name"] == scope.name
         and droplet["ssh_keys"] == [scope.ssh_key_fingerprint]
-        and sha256(droplet["user_data"].encode()).hexdigest() == scope.cloud_init_sha256
         and all(
             type(droplet[key]) is type(value) and droplet[key] == value
             for key, value in HOST_FIELDS.items()
         )
         and not droplet.get("tags")
-        and not droplet.get("volume_ids"),
+        and ("volume_ids" not in droplet or droplet["volume_ids"] == []),
         "droplet-plan-host-changed",
     )
     firewall = _change(changes[FIREWALL])
