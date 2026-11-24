@@ -224,6 +224,18 @@ Any surviving or unverified observation remains unresolved. This covers the
 initial host allocation. Edge, DNS, archived objects, credentials, and
 their own teardown evidence remain separate obligations.
 
+OpenTofu 1.12.6 renders an empty role as a compact JSON object containing
+only the display format. Retain that exact display with a separate
+authenticated state observation for the same key. The observation records
+the state version from the decoded encrypted snapshot, the original and final
+ciphertext digests, and advancing serials on the original lineage. The
+original display digest binds the prior snapshot to the reviewed allocation.
+The independent provider readback binds the observation digest and still
+requires absence of the exact Droplet, firewall, and membership. The
+[compact-state adapter](../../scripts/m3_12_droplet_empty_state.py) retains
+these fields without adding a version to the display or retaining raw state
+and variable check details.
+
 The [journey teardown adapter](../../scripts/m3_12_droplet_teardown.py)
 reopens the scope and cleanup authority retained with the original evidence
 before accepting a per-host destroy plan. Its reconciliation joins the three

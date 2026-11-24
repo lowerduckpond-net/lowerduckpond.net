@@ -35,6 +35,7 @@ class HostAbsence:
     original: InitialRetirement
     state_json: bytes
     readback: Document
+    state_evidence: Document | None = None
 
 
 def _host_authority(scope: Document, role: str, original: InitialRetirement) -> str:
@@ -212,7 +213,7 @@ def reconcile_teardown(
             "droplet-teardown-host-authority-changed",
         )
         outcomes[role] = reconcile_initial_retirement(
-            capture.original, capture.state_json, capture.readback
+            capture.original, capture.state_json, capture.readback, capture.state_evidence
         )
     remaining = _normalize_external(scope, intent, original, external)
     complete = (

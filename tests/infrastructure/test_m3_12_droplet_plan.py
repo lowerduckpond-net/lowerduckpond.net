@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from dataclasses import replace
 from hashlib import sha1, sha256
 
 import pytest
 
-from scripts.m3_12_contracts import Document, ValidationError, encode
+from scripts.m3_12_contracts import Document, ValidationError, digest, encode
 from scripts.m3_12_droplet_cleanup import (
     InitialRetirement,
     capture_initial_retirement,
     reconcile_initial_retirement,
     verify_initial_destroy_plan,
+)
+from scripts.m3_12_droplet_empty_state import (
+    AuthenticatedStateSnapshot,
+    capture_empty_state_evidence,
 )
 from scripts.m3_12_droplet_plan import (
     CLOUD_INIT_OUTPUT,
@@ -635,3 +640,105 @@ def test_interrupted_retirement_requires_exact_independent_absence(
         reconcile_initial_retirement(original, clean, {**observed, "projectUrn": "do:droplet:999"})
     with pytest.raises(ValidationError, match="droplet-cleanup-readback-scope-changed"):
         reconcile_initial_retirement(original, nonempty, observed)
+
+
+@pytest.fixture
+def compact_retirement(
+    retirement: tuple[InitialRetirement, Document, Document],
+) -> tuple[InitialRetirement, AuthenticatedStateSnapshot, AuthenticatedStateSnapshot, Document]:
+    original, _, initial_display = retirement
+    header = {
+        "version": 4,
+        "terraform_version": "1.12.6",
+        "lineage": "00000000-0000-4000-8000-000000000011",
+    }
+    before = AuthenticatedStateSnapshot(
+        original.state_key,
+        encode(initial_display),
+        encode({"encryption_version": "v0", "encrypted_data": "fixture-before"}),
+        encode({**header, "serial": 1, "resources": [{"mode": "managed"}], "outputs": {}}),
+    )
+    after = AuthenticatedStateSnapshot(
+        original.state_key,
+        b'{"format_version":"1.0"}\n',
+        encode({"encryption_version": "v0", "encrypted_data": "fixture-after"}),
+        encode({**header, "serial": 2, "resources": [], "outputs": {}}),
+    )
+    return (
+        original,
+        before,
+        after,
+        {
+            "stateKey": original.state_key,
+            "allocationSha256": original.allocation.allocation_sha256,
+            "stateSha256": sha256(after.display).hexdigest(),
+            "projectIdSha256": original.allocation.identity.project_id_sha256,
+            "dropletId": original.allocation.identity.droplet_id,
+            "firewallId": original.firewall_id,
+            "projectUrn": original.urn,
+            "droplet": "absent",
+            "firewall": "absent",
+            "projectMembership": "absent",
+        },
+    )
+
+
+def test_compact_retirement_requires_bound_version_and_independent_absence(
+    compact_retirement: tuple[
+        InitialRetirement, AuthenticatedStateSnapshot, AuthenticatedStateSnapshot, Document
+    ],
+) -> None:
+    original, before, after, observation = compact_retirement
+    with pytest.raises(ValidationError, match="invalid-droplet-cleanup-state"):
+        reconcile_initial_retirement(original, after.display, observation)
+    evidence = capture_empty_state_evidence(before, after)
+    verified = {**observation, "stateEvidenceSha256": digest(evidence)}
+    assert (
+        reconcile_initial_retirement(original, after.display, verified, evidence)["outcome"]
+        == "absent"
+    )
+    assert (
+        reconcile_initial_retirement(
+            original, after.display, {**verified, "droplet": "unverified"}, evidence
+        )["outcome"]
+        == "unresolved"
+    )
+    with pytest.raises(ValidationError, match="readback-scope-changed"):
+        reconcile_initial_retirement(original, after.display, observation, evidence)
+    foreign = {**evidence, "stateKey": original.state_key.replace("restore", "source")}
+    with pytest.raises(ValidationError, match="evidence-scope-changed"):
+        reconcile_initial_retirement(
+            original, after.display, {**verified, "stateEvidenceSha256": digest(foreign)}, foreign
+        )
+    changed = {**evidence, "before": {**evidence["before"], "displaySha256": "9" * 64}}
+    with pytest.raises(ValidationError, match="evidence-scope-changed"):
+        reconcile_initial_retirement(
+            original, after.display, {**verified, "stateEvidenceSha256": digest(changed)}, changed
+        )
+
+
+@pytest.mark.parametrize(
+    ("fieldset", "category"),
+    [
+        ({"terraform_version": "1.12.7"}, "evidence-invalid"),
+        ({"terraform_version": None}, "evidence-invalid"),
+        ({"lineage": "00000000-0000-4000-8000-000000000012"}, "evidence-changed"),
+        ({"serial": 1}, "evidence-changed"),
+        ({"serial": True}, "evidence-invalid"),
+        ({"resources": [{"mode": "managed"}]}, "snapshot-not-empty"),
+        ({"outputs": {"allocation": {}}}, "snapshot-not-empty"),
+        ({"child_modules": []}, "snapshot-not-empty"),
+        ({"check_results": [{"object_kind": "var", "status": "fail"}]}, "snapshot-not-empty"),
+    ],
+)
+def test_compact_retirement_rejects_bad_authenticated_state(
+    compact_retirement: tuple[
+        InitialRetirement, AuthenticatedStateSnapshot, AuthenticatedStateSnapshot, Document
+    ],
+    fieldset: Document,
+    category: str,
+) -> None:
+    _, before, after, _ = compact_retirement
+    invalid = replace(after, decoded=encode({**json.loads(after.decoded), **fieldset}))
+    with pytest.raises(ValidationError, match=category):
+        capture_empty_state_evidence(before, invalid)
