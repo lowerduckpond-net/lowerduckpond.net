@@ -16,6 +16,7 @@ from scripts.m3_12_contracts import (
     encode,
     require,
 )
+from scripts.m3_12_droplet_empty_state import verify_empty_state_evidence
 from scripts.m3_12_droplet_inventory import ApprovedAllocation
 from scripts.m3_12_droplet_plan import CONFIGURATION_FIELDS, PLAN_OUTPUTS, PROVIDER, _resource_index
 from scripts.m3_12_droplet_plan_evidence import InitialPlanEvidence
@@ -132,8 +133,11 @@ def _empty_values(values: object) -> bool:
     )
 
 
-def retain_empty_state(raw: bytes) -> str:
+def retain_empty_state(raw: bytes, evidence: Document | None = None) -> str:
     """Keep exact empty-state bytes only when all fields are safe to retain."""
+    if evidence is not None:
+        verify_empty_state_evidence(raw, evidence)
+        return raw.decode("utf-8")
     state = _document(raw)
     require(
         set(state) <= {"format_version", "terraform_version", "values", "checks"}
@@ -150,10 +154,22 @@ def retain_empty_state(raw: bytes) -> str:
 
 
 def reconcile_initial_retirement(
-    original: InitialRetirement, state_json: bytes, readback: Document
+    original: InitialRetirement,
+    state_json: bytes,
+    readback: Document,
+    state_evidence: Document | None = None,
 ) -> Document:
     """Classify exact independent absence readback without attempting cleanup."""
     identity = original.allocation.identity
+    evidence_binding = {}
+    if state_evidence is not None:
+        verify_empty_state_evidence(state_json, state_evidence)
+        require(
+            state_evidence["stateKey"] == original.state_key
+            and state_evidence["before"]["displaySha256"] == original.allocation.state_sha256,
+            "droplet-cleanup-empty-state-evidence-scope-changed",
+        )
+        evidence_binding["stateEvidenceSha256"] = digest(state_evidence)
     require(
         set(readback)
         == {
@@ -167,7 +183,9 @@ def reconcile_initial_retirement(
             "droplet",
             "firewall",
             "projectMembership",
+            *evidence_binding,
         }
+        and all(readback[key] == value for key, value in evidence_binding.items())
         and readback["stateKey"] == original.state_key
         and readback["stateSha256"] == sha256(state_json).hexdigest()
         and readback["allocationSha256"] == original.allocation.allocation_sha256
@@ -188,7 +206,7 @@ def reconcile_initial_retirement(
     require(
         type(version) is str
         and version.startswith("1.")
-        and isinstance(observed_state.get("terraform_version"), str)
+        and (state_evidence is not None or isinstance(observed_state.get("terraform_version"), str))
         and set(observed_state) <= {"format_version", "terraform_version", "values", "checks"},
         "invalid-droplet-cleanup-state",
     )
@@ -198,6 +216,7 @@ def reconcile_initial_retirement(
         "allocationSha256": original.allocation.allocation_sha256,
         "stateSha256": sha256(state_json).hexdigest(),
         "readbackSha256": digest(readback),
+        **evidence_binding,
         "outcome": "absent"
         if state_is_empty and all(state == "absent" for state in states)
         else "unresolved",

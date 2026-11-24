@@ -40,6 +40,10 @@ from scripts.m3_12_droplet_driver import (
     NativePhaseDriver,
     ReviewedDestroy,
 )
+from scripts.m3_12_droplet_empty_state import (
+    AuthenticatedStateSnapshot,
+    capture_empty_state_evidence,
+)
 from scripts.m3_12_droplet_journey import PHASES
 from scripts.m3_12_droplet_plan import CONFIGURATION_FIELDS, PROVIDER
 from scripts.m3_12_droplet_scope import ReviewedJourney
@@ -104,6 +108,34 @@ def _cleanup_plans(
     return plans, authority
 
 
+COMPACT_STATE = b'{"format_version":"1.0"}\n'
+
+
+def _compact_state_evidence(original: InitialRetirement) -> Document:
+    header = {"version": 4, "terraform_version": "1.12.6", "lineage": INITIAL_BOOT}
+    before = AuthenticatedStateSnapshot(
+        original.state_key,
+        (original.allocation.role + " state").encode(),
+        encode({"encryption_version": "v0", "encrypted_data": "synthetic-before"}),
+        encode({**header, "serial": 1, "resources": [{"mode": "managed"}], "outputs": {}}),
+    )
+    after = AuthenticatedStateSnapshot(
+        original.state_key,
+        COMPACT_STATE,
+        encode({"encryption_version": "v0", "encrypted_data": "synthetic-after"}),
+        encode(
+            {
+                **header,
+                "serial": 2,
+                "resources": [],
+                "outputs": {},
+                "check_results": [{"object_kind": "var", "status": "pass"}],
+            }
+        ),
+    )
+    return capture_empty_state_evidence(before, after)
+
+
 class SimulatedNative:
     def __init__(  # noqa: PLR0913, PLR0917 - distinct fixture custody and boot inputs
         self,
@@ -130,6 +162,7 @@ class SimulatedNative:
         self.local_gate_valid = True
         self.visible_grant_closed = False
         self.unsafe_state = False
+        self.compact_source_state = False
         self.cleanup_reads = 0
         self.interrupt_restore = False
         self.interrupt_cleanup = False
@@ -245,13 +278,19 @@ class SimulatedNative:
         for role, plan in self.plans.items():
             original = plan.original
             allocation = original.allocation
+            evidence = (
+                _compact_state_evidence(original)
+                if self.compact_source_state and role == "source"
+                else None
+            )
+            display = COMPACT_STATE if evidence is not None else state
             hosts[role] = HostAbsence(
                 original,
-                state,
+                display,
                 {
                     "stateKey": original.state_key,
                     "allocationSha256": allocation.allocation_sha256,
-                    "stateSha256": proof(state.decode()),
+                    "stateSha256": proof(display.decode()),
                     "projectIdSha256": allocation.identity.project_id_sha256,
                     "dropletId": allocation.identity.droplet_id,
                     "firewallId": original.firewall_id,
@@ -259,7 +298,9 @@ class SimulatedNative:
                     "droplet": "absent",
                     "firewall": "absent",
                     "projectMembership": "absent",
+                    **({"stateEvidenceSha256": digest(evidence)} if evidence is not None else {}),
                 },
+                evidence,
             )
 
         def status(identity: str, result: str = "absent") -> Document:
@@ -378,10 +419,12 @@ def native(
     return driver, sim
 
 
+@pytest.mark.parametrize("compact_source_state", [False, True])
 def test_native_driver_recovers_cutover_and_cleanup_without_replaying_actions(  # noqa: PLR0915 - complete interruption and retained-evidence sequence
-    native: tuple[NativePhaseDriver, SimulatedNative],
+    native: tuple[NativePhaseDriver, SimulatedNative], compact_source_state: bool
 ) -> None:
     driver, sim = native
+    sim.compact_source_state = compact_source_state
     sim.interrupt_restore = sim.interrupt_cleanup = sim.hide_reboot_result = True
     first = driver.run()
     assert first["phases"]["restore"] == "uncertain"
@@ -440,6 +483,14 @@ def test_native_driver_recovers_cutover_and_cleanup_without_replaying_actions(  
     for role, row in captured["hosts"].items():
         assert hosts[role]["stateSha256"] == proof(row["stateJson"])
         assert hosts[role]["readbackSha256"] == digest(row["providerReadback"])
+    if compact_source_state:
+        assert captured["hosts"]["source"]["stateJson"].encode() == COMPACT_STATE
+        assert captured["hosts"]["source"]["stateEvidence"]["terraformVersion"] == "1.12.6"
+        assert hosts["source"]["stateEvidenceSha256"] == digest(
+            captured["hosts"]["source"]["stateEvidence"]
+        )
+    else:
+        assert "stateEvidence" not in captured["hosts"]["source"]
     captured_file = driver.attempt.directory / captured_name
     captured_file.write_bytes(encode({**captured, "externalSha256": proof("substituted")}))
     with pytest.raises(ValidationError, match="original-observation-changed"):

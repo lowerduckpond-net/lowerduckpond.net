@@ -295,8 +295,13 @@ class NativePhaseDriver:
                 "externalSha256": capture.independently_observed_sha256,
                 "hosts": {
                     role: {
-                        "stateJson": retain_empty_state(host.state_json),
+                        "stateJson": retain_empty_state(host.state_json, host.state_evidence),
                         "providerReadback": host.readback,
+                        **(
+                            {"stateEvidence": host.state_evidence}
+                            if host.state_evidence is not None
+                            else {}
+                        ),
                     }
                     for role, host in capture.hosts.items()
                 },
@@ -310,6 +315,7 @@ class NativePhaseDriver:
                 self.destroy_plans[role].original,
                 row["stateJson"].encode("utf-8"),
                 row["providerReadback"],
+                row.get("stateEvidence"),
             )
             for role, row in original["hosts"].items()
         }
