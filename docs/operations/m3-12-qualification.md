@@ -9,8 +9,14 @@ and has no routine for applying a plan or obtaining credentials.
 
 The [initial plan guard](../../scripts/m3_12_droplet_plan.py) checks the
 reviewed saved-plan JSON. The [readback adapter](../../scripts/m3_12_droplet_provider.py)
-takes exact plan and OpenTofu state JSON digests from reviewed custody, the
-approved per-role state key, and an independently gathered provider projection.
+reopens the [original plan evidence](../../scripts/m3_12_droplet_plan_evidence.py)
+bound to the reviewed producing configuration, its exact encrypted saved plan,
+the OpenTofu decode of that plan, and the reviewed cloud-init bytes. It also
+takes the exact state digest, the approved per-role state key, and an
+independent provider projection.
+The plan and state carry the SHA-256 digest of the cloud-init bytes. The
+independently approved SHA-256 identifies those bytes, and the provider's
+SHA-1 value checks consistency with its planned user data.
 That projection contains the active Droplet's identity and size, its exact
 project membership, and its one attached firewall with settled reviewed
 rules. For the pinned DigitalOcean provider, a no-volume create can leave
@@ -19,8 +25,8 @@ both reviewed OpenTofu state and an independent authenticated
 `GET /v2/droplets/{id}` of the exact Droplet must report `volume_ids: []`.
 Keep the field from the direct response in the provider projection so a
 missing, null, malformed, or nonempty value fails validation. Capture rule
-lists only after the provider confirms there are no
-pending changes. The adapter checks these facts against state and the
+lists only after the provider confirms there are no pending changes.
+The adapter checks these facts against state and the
 production exclusions before it constructs an allocation. A separately
 authenticated provisioning channel must supply the host's Ed25519 key.
 

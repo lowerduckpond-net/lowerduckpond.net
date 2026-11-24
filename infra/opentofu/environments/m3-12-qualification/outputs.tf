@@ -10,3 +10,8 @@ output "allocation" {
     firewall   = digitalocean_firewall.fixture.id
   }
 }
+
+output "cloud_init_sha256" {
+  description = "SHA-256 of the same rendered bootstrap supplied to the Droplet."
+  value       = nonsensitive(sha256(local.cloud_init))
+}

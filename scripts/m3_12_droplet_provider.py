@@ -20,30 +20,37 @@ from scripts.m3_12_contracts import (
 )
 from scripts.m3_12_droplet_inventory import ApprovedAllocation, ProviderIdentity
 from scripts.m3_12_droplet_plan import (
+    CLOUD_INIT_OUTPUT,
     FIREWALL,
     HOST,
     HOST_FIELDS,
     MEMBERSHIP,
+    PLAN_OUTPUTS,
     PROVIDER,
     ApprovedHostPlan,
     _droplet_id,
     _firewall,
     _resource_index,
-    verify_initial_host_plan,
+)
+from scripts.m3_12_droplet_plan_evidence import (
+    BACKEND_FILES,
+    InitialPlanEvidence,
+    verify_saved_initial_host_plan,
 )
 
 
 @dataclass(frozen=True)
 class ReviewedReadback:
     plan: ApprovedHostPlan
-    plan_json_sha256: str
+    configuration_sha256: str
+    plan_evidence_sha256: str
     state_json_sha256: str
     state_key: str
 
 
 def bind_initial_allocation(
     review: ReviewedReadback,
-    plan_json: bytes,
+    plan: InitialPlanEvidence,
     state_json: bytes,
     provider: Document,
     production_exclusions: bytes,
@@ -52,12 +59,18 @@ def bind_initial_allocation(
     scope = review.plan
     require(
         review.state_key == f"qualification/m3-12/{scope.run_id}/{scope.role}.tfstate"
-        and sha256(plan_json).hexdigest() == review.plan_json_sha256
         and sha256(state_json).hexdigest() == review.state_json_sha256,
         "droplet-readback-review-changed",
     )
-    plan = decode_json_object(plan_json, maximum_bytes=MAX_RECORD_BYTES)
-    verify_initial_host_plan(plan, scope)
+    require(
+        plan.configuration.keys() >= BACKEND_FILES, "droplet-readback-backend-evidence-required"
+    )
+    verify_saved_initial_host_plan(
+        plan,
+        scope,
+        reviewed_configuration_sha256=review.configuration_sha256,
+        reviewed_evidence_sha256=review.plan_evidence_sha256,
+    )
     state = decode_json_object(state_json, maximum_bytes=MAX_RECORD_BYTES)
     excluded = decode(production_exclusions, "droplet-production-exclusions")
     try:
@@ -75,9 +88,18 @@ def _state_identity(
     output = values["outputs"]["allocation"]
     require(
         not root.get("child_modules")
-        and set(values["outputs"]) == {"allocation"}
+        and values["outputs"].keys() == PLAN_OUTPUTS
         and output["sensitive"] is False,
         "droplet-readback-state-resources-changed",
+    )
+    require(
+        values["outputs"][CLOUD_INIT_OUTPUT]
+        == {
+            "sensitive": False,
+            "type": "string",
+            "value": scope.cloud_init_sha256,
+        },
+        "droplet-readback-cloud-init-changed",
     )
     resources = _resource_index(root["resources"])
     require(
@@ -204,7 +226,7 @@ def _enrolled(
         allocation_sha256=digest(
             {
                 **scope,
-                "planSha256": review.plan_json_sha256,
+                "planEvidenceSha256": review.plan_evidence_sha256,
                 "stateSha256": review.state_json_sha256,
                 "allocation": allocation,
             }
