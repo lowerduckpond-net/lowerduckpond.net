@@ -33,7 +33,7 @@ SELECTION = Path("/opt/lowerduckpond/static-host-agent/current")
 LEASE = Path("/run/lowerduckpond-m3-12-droplet/lease")
 
 
-def _require_metadata(enrolled: DropletEnrollment, observed: tuple[int, str]) -> None:
+def require_metadata(enrolled: DropletEnrollment, observed: tuple[int, str]) -> None:
     droplet_id, ipv4 = observed
     target = enrolled.target["droplet"]
     require(
@@ -61,7 +61,7 @@ def launch(token: str, raw: bytes, *, owner: int = 0) -> Document:
         enrolled.require_binding(admission["binding"])
         # This read can be interrupted before any action or publication lock is held.
         observed = metadata_identity()
-        _require_metadata(enrolled, observed)
+        require_metadata(enrolled, observed)
         with lease.action(LEASE, owner=owner, token=token):
             return _launch_locked(
                 root, publication, enrolled, admission, raw=raw, token=token, owner=owner

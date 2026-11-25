@@ -1,0 +1,43 @@
+#!/usr/bin/python3 -IB
+"""Enter the exact staged artifact without changing its selection."""
+
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+ARGUMENT_COUNT = 2
+
+
+def main() -> int:
+    if os.geteuid() or len(sys.argv[1:]) != ARGUMENT_COUNT:
+        return 2
+    operation, artifact = sys.argv[1:]
+    if re.fullmatch(r"[0-9a-f]{64}", artifact) is None:
+        return 2
+    staged = Path("/opt/lowerduckpond/static-host-agent") / artifact
+    if staged.resolve(strict=True) != staged:
+        return 2
+    result = subprocess.run(  # noqa: S603 - fixed installed verifier
+        ["/usr/local/libexec/lowerduckpond/verify-static-host-agent-artifact", str(staged)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if result.returncode:
+        return 2
+    sys.dont_write_bytecode = True
+    sys.path.insert(0, str(staged / "site-packages"))
+    from lowerduckpond_static_host_agent.source_bootstrap import main as source  # noqa: PLC0415
+
+    return source(artifact, operation)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except OSError, RuntimeError, ImportError:
+        print("m3_12_source_artifact_refused", file=sys.stderr)
+        raise SystemExit(2) from None

@@ -166,7 +166,7 @@ def _directory(parent: int, name: str, *, owner: int, group: int, mode: int) -> 
         os.close(descriptor)
 
 
-def _input(  # noqa: PLR0913 - exact input bytes and complete inode policy
+def install_runtime_input(  # noqa: PLR0913 - exact input bytes and complete inode policy
     directory: DurableDirectory, name: str, raw: bytes, *, owner: int, group: int, mode: int
 ) -> None:
     parent = directory.duplicate_descriptor()
@@ -255,11 +255,11 @@ def _layout(
                     raise HostRestoreError("restore_runtime_layout_unclassified")
         finally:
             os.close(descriptor)
-        _input(
+        install_runtime_input(
             directory, "environment", files.environment, owner=store.owner, group=group, mode=0o640
         )
         for index, pem in enumerate(files.current_pem):
-            _input(
+            install_runtime_input(
                 directory,
                 f"origin-pull-ca-{index}.pem",
                 pem,
@@ -284,7 +284,7 @@ def _install_projection(
         with DurableDirectory.open(
             root, expected_owner=store.owner, expected_directory_mode=0o750
         ) as directory:
-            _input(
+            install_runtime_input(
                 directory,
                 PROJECTION,
                 canonical_json_bytes(routing.document()),

@@ -134,6 +134,39 @@ delete markers and uploads. Restore rereads the original archive authority
 and uses the native exact-version verifier. The injected client must be a
 reader for that exact scoped bucket.
 
+## Source bootstrap handoff
+
+At `dark-stage` the existing driver prepares the exact source projection and
+sends the non-secret handoff using the pinned host key. It binds the accepted
+predecessor, candidate, current boot, original enrollment, and exact Restic
+and archive locators. The receiver uses the staged, verified host-agent
+artifact. It reopens the local identity and predecessor, and requires a dark
+publication gate, stopped and runtime-masked Caddy, and the exact existing
+kernel web drop before retaining any authority. An interrupted delivery keeps its marker and
+cannot fall back to canonical Caddy subjects. A missing or uncertain receipt
+does not authorize the converge.
+
+The normal `site.yml` checks the handoff before running any roles. It compares
+its effective storage inputs to the protected receipt and reopens the
+projection, enrolled role and kernel fence. Dark convergence also verifies
+the original boot and dark publication file. Enabled converge and repeat
+instead require the complete native launch chain, its original local source
+binding, the selected candidate and no rollback fence. The original handoff
+remains required even if its receipt is missing from a host enrolled as the
+source. Both branches keep ordinary web ingress closed. The check retains
+no credentials. The operator supplies the scoped credentials from their
+existing custody.
+
+This handoff does not supply a real provider executor, perform the historical
+M3.11 bootstrap or stop/fence the source. It does not change the native
+production lease check. A live source converge from the accepted M3.11
+journal still requires an operator path that admits a disposable successor
+lease and exact stage. The launch check is a prerequisite for enabled
+configuration under that authority. Source web ingress still needs its own
+reviewed release operation. The restore-side release applies to the fenced
+destination and cannot release the source. Real source start, edge, restore
+and cleanup remain separate proof boundaries.
+
 ## Restore delivery and readback
 
 Cold preparation binds trusted policy and the original source fence to both
