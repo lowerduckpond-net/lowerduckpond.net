@@ -452,22 +452,26 @@ def physical(journal: SuccessorJournal, token: str, operation: str) -> Document:
         return engine.reconcile(decision, authorize=authorize)
 
 
-def drain() -> None:
+def drain_unit(unit: str, events_file: Path) -> None:
     result = subprocess.run(  # noqa: S603 - fixed successor unit
-        ["/usr/bin/systemctl", "stop", UNIT], capture_output=True, check=False
+        ["/usr/bin/systemctl", "stop", unit], capture_output=True, check=False
     )
     if result.returncode:
         state = subprocess.run(  # noqa: S603 - fixed successor unit and field
-            ["/usr/bin/systemctl", "show", UNIT, "--property=LoadState", "--value"],
+            ["/usr/bin/systemctl", "show", unit, "--property=LoadState", "--value"],
             capture_output=True,
             check=False,
         )
         require(state.stdout == b"not-found\n", "native-successor-action-not-drained")
     try:
-        events = CGROUP_EVENTS.read_text(encoding="ascii")
+        events = events_file.read_text(encoding="ascii")
     except FileNotFoundError:
         return
     require("populated 0" in events.splitlines(), "native-successor-action-still-running")
+
+
+def drain() -> None:
+    drain_unit(UNIT, CGROUP_EVENTS)
 
 
 def dispatch(journal: SuccessorJournal, arguments: list[str]) -> int:

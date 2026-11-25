@@ -167,6 +167,56 @@ reviewed release operation. The restore-side release applies to the fenced
 destination and cannot release the source. Real source start, edge, restore
 and cleanup remain separate proof boundaries.
 
+## Leased source operator command
+
+The command below consumes the reviewed source packet and a pending
+`dark-stage` intent. Keep the complete accepted predecessor and its original
+observations in the attempt. Prepare the scoped Droplet, verified staged
+artifact, current boot identity, stopped and runtime-masked Caddy, and the
+exact kernel web drop before admission. The operator command uses one
+independently pinned SSH key and one dark phase.
+
+```bash
+uv run --frozen --no-sync python -m scripts.m3_12_source_operator \
+  "$PRIVATE_ATTEMPT" --review-sha256 "$INDEPENDENTLY_REVIEWED_SHA256" \
+  --identity-file "$DISPOSABLE_SSH_IDENTITY" --artifact "$REVIEWED_ARTIFACT" \
+  --ca "$REVIEWED_ORIGIN_PULL_CA"
+```
+
+Supply a second `--ca` only if its digest was reviewed in the ordered CA
+list. `source-operator.json` is a canonical mode-0600 file in the private
+attempt. It contains the format `lowerduckpond-m3-12-source-operator-v1`,
+`manifestSha256`, the exact `predecessor` records as ordered `name` and
+ASCII `raw` pairs, `predecessorBootstrapSha256`, the `sitePolicy` and
+`sitePolicySha256`, `candidate`, `observedResources`,
+`productionExclusions`, the independently verified Ed25519
+`hostPublicKey`, ordered `originPullCaSha256`, original
+`backupNodeName`, `operatorPublicKey` and `operatorPrincipal`.
+It contains no credentials. Review the file's whole digest independently
+of the command. Supply the already approved per-scope runtime credentials
+through the six environment variables declared in the operator module.
+The repository and archive bucket come from the reviewed manifest.
+
+The remote owner takes the existing native lease primitive in the separate
+disposable lease domain and delivers the exact handoff before issuing a
+token. The Ansible connection runs each command and piped transfer in the
+fixed disposable systemd action unit. The guest reopens the live owner,
+bound handoff, accepted predecessor, current boot and source identity, and
+closed ingress before running the command. The unchanged `site.yml` invokes
+its normal guard, which admits the exact dark configuration through this
+connection. The production and installed-fixture lease paths keep their own
+units and authorities.
+
+The controller records the original scope, dispatch, state key, artifact and
+handoff digests before dispatch. It records success only after exact
+single-host Ansible recap, owner release and independent pinned SSH
+readback of the selected artifact and dark publication. The attempt retains
+the original record and submission marker after any interruption. Reconcile
+that attempt before considering another submission. Preserve the original
+provider allocation and both authenticated role-state snapshots separately
+for independent teardown. This command provides no ingress release or
+provider acquisition, update, or cleanup operation.
+
 ## Restore delivery and readback
 
 Cold preparation binds trusted policy and the original source fence to both

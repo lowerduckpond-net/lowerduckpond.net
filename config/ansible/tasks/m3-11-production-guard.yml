@@ -67,6 +67,7 @@
   when:
     - m3_11_production_transaction.stat.exists
     - not m3_12_production_transaction.stat.exists
+    - ansible_connection | default('ssh') != 'ldp_m3_12_droplet'
   no_log: true
 
 - name: Verify the bound M3.12 successor configuration phase
@@ -90,3 +91,38 @@
   changed_when: false
   when: m3_12_production_transaction.stat.exists
   no_log: true
+
+- name: Verify the disposable source configuration under its current lease
+  when: ansible_connection | default('ssh') == 'ldp_m3_12_droplet'
+  block:
+    - name: Require the accepted predecessor and exclude the production successor
+      ansible.builtin.assert:
+        that:
+          - m3_11_production_transaction.stat.exists
+          - not m3_12_production_transaction.stat.exists
+        quiet: true
+
+    - name: Verify the bound disposable source stage
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - -I
+          - -B
+          - -c
+          - "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../roles/static_host_agent/files/m3-12-source-bootstrap') }}"
+          - gate
+          - "{{ static_host_agent_artifact_sha256 }}"
+          - "{{ lookup('ansible.builtin.env', 'LDP_M3_12_DROPLET_LEASE_TOKEN') }}"
+        stdin: >-
+          {{ {
+            'stage': m3_11_production_guard_stage,
+            'artifact_sha256': static_host_agent_artifact_sha256 | default(''),
+            'recovery_enabled': backup_static_recovery_enabled | default(false),
+            'rotation_enabled': backup_audit_rotation_enabled | default(false),
+            'publication_enabled': static_publication_enabled | default(false),
+            'reconstruction_enabled': host_recovery_bootstrap_enabled | default(false),
+            'archive_enabled': static_host_agent_archive_lifecycle_enabled | default(false),
+            'generation_enabled': caddy_generation_enabled | default(false)
+          } | to_json }}
+      changed_when: false
+      no_log: true

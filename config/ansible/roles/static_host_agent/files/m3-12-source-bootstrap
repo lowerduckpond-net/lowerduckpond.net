@@ -10,10 +10,11 @@ from pathlib import Path
 ARGUMENT_COUNT = 2
 
 
-def main() -> int:
-    if os.geteuid() or len(sys.argv[1:]) != ARGUMENT_COUNT:
+def main() -> int:  # noqa: PLR0911 - separate launcher refusal boundaries
+    arguments = sys.argv[1:]
+    if os.geteuid() or len(arguments) < ARGUMENT_COUNT:
         return 2
-    operation, artifact = sys.argv[1:]
+    operation, artifact, *extra = arguments
     if re.fullmatch(r"[0-9a-f]{64}", artifact) is None:
         return 2
     staged = Path("/opt/lowerduckpond/static-host-agent") / artifact
@@ -30,6 +31,12 @@ def main() -> int:
         return 2
     sys.dont_write_bytecode = True
     sys.path.insert(0, str(staged / "site-packages"))
+    if operation in {"owner", "action", "gate"}:
+        from scripts.m3_12_droplet_action import dispatch  # noqa: PLC0415 - verified artifact only
+
+        return dispatch(artifact, operation, extra)
+    if extra:
+        return 2
     from lowerduckpond_static_host_agent.source_bootstrap import main as source  # noqa: PLC0415
 
     return source(artifact, operation)
@@ -38,6 +45,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except OSError, RuntimeError, ImportError:
+    except OSError, RuntimeError, ImportError, ValueError, KeyError, TypeError:
         print("m3_12_source_artifact_refused", file=sys.stderr)
         raise SystemExit(2) from None

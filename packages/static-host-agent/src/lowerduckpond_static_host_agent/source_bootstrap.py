@@ -108,9 +108,9 @@ def _read(directory: DurableDirectory, name: str, owner: int) -> bytes:
     )
 
 
-def receive(raw: bytes, artifact: str, *, owner: int = 0) -> str:
-    """Deliver the pinned scope to a fenced source with a stopped prior Caddy."""
-    document, routing = _document(raw)
+def require_delivery(
+    document: Document, routing: DisposableRoutes, artifact: str, *, owner: int = 0
+) -> None:
     require(
         document["artifactSha256"] == artifact
         and document["bootSha256"] == boot_sha256(owner)
@@ -139,6 +139,12 @@ def receive(raw: bytes, artifact: str, *, owner: int = 0) -> str:
         == {"ActiveState=inactive", "UnitFileState=masked-runtime"},
         "droplet-source-caddy-not-fenced",
     )
+
+
+def receive(raw: bytes, artifact: str, *, owner: int = 0) -> str:
+    """Deliver the pinned scope to a fenced source with a stopped prior Caddy."""
+    document, routing = _document(raw)
+    require_delivery(document, routing, artifact, owner=owner)
     group = grp.getgrnam("caddy").gr_gid
     if not os.path.lexists(AUTHORITY.parent):
         private_directory(AUTHORITY.parent, owner=owner)
@@ -154,8 +160,8 @@ def receive(raw: bytes, artifact: str, *, owner: int = 0) -> str:
         # Pin the requirement first. An interrupted delivery must never allow the
         # canonical Caddy bootstrap to run before the projection is complete.
         _retain(view, SOURCE_BOOTSTRAP, raw, owner)
-        for name, payload in records.items():
-            _retain(view, name, payload, owner)
+        for name, row in document["enrollment"].items():
+            _retain(view, name, encode(row), owner)
         _retain(view, ROLE, encode(routing.role_document("source")), owner)
         install_runtime_input(
             caddy, PROJECTION, encode(routing.document()), owner=owner, group=group, mode=0o440
