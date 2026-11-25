@@ -217,6 +217,15 @@ provider allocation and both authenticated role-state snapshots separately
 for independent teardown. This command provides no ingress release or
 provider acquisition, update, or cleanup operation.
 
+If Ansible exits unsuccessfully or its recap is rejected, read
+`source-site-failure.json` in the private attempt. It records the actual
+Ansible return code and the last task started in `lastStarted`.
+`firstReportedFailure` records the first non-ignored failed or unreachable
+event. Ansible may rescue that event and continue to a later task. Each
+task identity uses an allowlisted source file and line. A missing event
+is null. If the controller stops before recording the exit,
+`source-site-tasks.json` retains the latest callback observation.
+
 ## Restore delivery and readback
 
 Cold preparation binds trusted policy and the original source fence to both

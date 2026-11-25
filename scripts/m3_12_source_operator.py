@@ -24,7 +24,7 @@ from scripts.m3_12_contracts import (
     encode,
     require,
 )
-from scripts.m3_12_diagnostic_store import Attempt, publish
+from scripts.m3_12_diagnostic_store import Attempt, publish, read
 from scripts.m3_12_disposable_routing import prepare_source_bootstrap
 from scripts.m3_12_droplet_inventory import ApprovedAllocation, ProviderIdentity
 from scripts.m3_12_droplet_journey import committed_dispatches
@@ -32,6 +32,7 @@ from scripts.m3_12_droplet_native import REPOSITORY, AdapterInputs, inspect_host
 from scripts.m3_12_droplet_scope import ReviewedJourney
 from scripts.m3_12_droplet_ssh import Endpoint, _arguments, installation_inventory, source_command
 from scripts.qualification_probe import bounded_command
+from scripts.qualification_task_timing import task_source
 
 FORMAT = "lowerduckpond-m3-12-source-operator-v1"
 HOST = "m312-source"
@@ -154,6 +155,39 @@ def _owner(endpoint: Endpoint, known_hosts: Path, handoff: Document) -> Iterator
         require(process.wait() == 0, "source-operator-release-unverified")
 
 
+def _site_failure(progress: Path, context: str, returncode: int) -> None:
+    # Reproject the private callback record before copying anything into the terminal receipt.
+    fields: Document = {"lastStarted": None, "firstReportedFailure": None}
+    try:
+        observed = read(progress.parent, progress.name)
+    except OSError, ValueError:
+        observed = {}
+    if observed.get("contextSha256") != context:
+        observed = {}
+    for name in fields:
+        row = observed.get(name)
+        if not isinstance(row, dict) or not isinstance(row.get("source"), str):
+            continue
+        if type(row.get("line")) is not int:
+            continue
+        try:
+            source, line = task_source(f"{REPOSITORY / row['source']}:{row['line']}")
+        except OSError, ValueError:
+            source, line = "unknown", 0
+        task: Document = {"source": source, "line": line}
+        if name == "firstReportedFailure":
+            if row.get("outcome") not in ("failed", "unreachable"):
+                continue
+            task["outcome"] = row["outcome"]
+        fields[name] = task
+    publish(
+        progress.parent,
+        "source-site-failure.json",
+        {"contextSha256": context, "returnCode": returncode, **fields},
+    )
+    progress.unlink(missing_ok=True)
+
+
 def _run_site(  # noqa: PLR0913 - exact private controller inputs
     directory: Path,
     endpoint: Endpoint,
@@ -174,6 +208,7 @@ def _run_site(  # noqa: PLR0913 - exact private controller inputs
         path.write_bytes(encode(contents))
         path.chmod(0o600)
     receipt = directory / "recap.json"
+    progress = directory.parent / "source-site-tasks.json"
     with _owner(endpoint, known_hosts, handoff) as token:
         environment = {
             # Do not inherit ANSIBLE, SSH agent, provider or vault overrides.
@@ -186,7 +221,8 @@ def _run_site(  # noqa: PLR0913 - exact private controller inputs
             "ANSIBLE_COLLECTIONS_PATH": str(Path.home() / ".ansible/collections"),
             "ANSIBLE_CONNECTION_PLUGINS": str(CONFIG / "plugins/connection"),
             "ANSIBLE_CALLBACK_PLUGINS": str(CONFIG / "plugins/callback"),
-            "ANSIBLE_CALLBACKS_ENABLED": "ldp_m3_11_receipt",
+            "ANSIBLE_CALLBACKS_ENABLED": "ldp_m3_11_receipt,ldp_m3_12_source",
+            "LDP_M3_12_SOURCE_TASK_RECEIPT": str(progress),
             "ANSIBLE_SSH_USETTY": "false",
             "ANSIBLE_SSH_RETRIES": "0",
             "ANSIBLE_SSH_TRANSFER_METHOD": "piped",
@@ -212,8 +248,13 @@ def _run_site(  # noqa: PLR0913 - exact private controller inputs
             stderr=subprocess.DEVNULL,
             check=False,
         )
-        require(result.returncode == 0, "source-operator-site-failed")
-        raw, counters = recap(receipt, context, idempotent=False, expected_host=HOST)
+        try:
+            require(result.returncode == 0, "source-operator-site-failed")
+            raw, counters = recap(receipt, context, idempotent=False, expected_host=HOST)
+        except ValueError, OSError:
+            _site_failure(progress, context, result.returncode)
+            raise
+        progress.unlink(missing_ok=True)
     return sha256(raw).hexdigest(), counters
 
 
