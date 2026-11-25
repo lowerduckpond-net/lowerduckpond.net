@@ -1,4 +1,4 @@
-"""Fixed read-only SSH transport to the independently approved disposable host."""
+"""Pinned SSH observations and the fixed source handoff for a disposable host."""
 
 from __future__ import annotations
 
@@ -137,7 +137,7 @@ def installation_inventory(endpoint: Endpoint, known_hosts: Path) -> Document:
     }
 
 
-class ReadExecutor(Protocol):
+class SSHExecutor(Protocol):
     def __call__(
         self,
         arguments: list[str],
@@ -147,6 +147,9 @@ class ReadExecutor(Protocol):
         timeout: float | None,
         maximum: int,
     ) -> bytes | None: ...
+
+
+ReadExecutor = SSHExecutor
 
 
 def _call(
@@ -266,3 +269,36 @@ def _restore_read(endpoint: Endpoint, operation: str, *, executor: ReadExecutor 
         raise ValidationError("droplet-restore-response-invalid") from None
     require(encode(value) == raw, "droplet-restore-response-invalid")
     return value
+
+
+def send_source_bootstrap(
+    endpoint: Endpoint, artifact: str, raw: bytes, *, execute: SSHExecutor
+) -> str:
+    """Send only the fixed source handoff command from the verified checkout."""
+    require(
+        endpoint.allocation.role == "source"
+        and re.fullmatch(r"[0-9a-f]{64}", artifact) is not None,
+        "droplet-source-bootstrap-target-changed",
+    )
+    launcher = (
+        PROBE.parents[1] / "config/ansible/roles/static_host_agent/files/m3-12-source-bootstrap"
+    ).read_text(encoding="utf-8")
+    command = shlex.join(
+        [
+            "/usr/bin/sudo",
+            "--non-interactive",
+            "/usr/bin/python3",
+            "-I",
+            "-B",
+            "-c",
+            launcher,
+            "receive",
+            artifact,
+        ]
+    )
+    reply = _call(endpoint, command, stdin=raw, executor=execute)
+    require(
+        re.fullmatch(rb"[0-9a-f]{64}\n", reply) is not None,
+        "droplet-source-bootstrap-response-invalid",
+    )
+    return reply.strip().decode("ascii")

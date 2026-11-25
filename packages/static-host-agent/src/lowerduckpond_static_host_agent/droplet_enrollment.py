@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,6 +54,23 @@ def lease_domain(run_id: str, system_uuid_sha256: str) -> str:
 
 
 def read_enrollment(path: Path, authority: DurableDirectory, *, owner: int) -> DropletEnrollment:
+    return validate_enrollment(
+        path, lambda name: protected_record(authority, name, owner), owner=owner
+    )
+
+
+ENROLLMENT_RECORDS = {
+    TARGET: "target",
+    ENROLLMENT: "droplet-enrollment",
+    EXCLUSIONS: "droplet-production-exclusions",
+}
+
+
+def validate_enrollment(
+    path: Path, read: Callable[[str], bytes], *, owner: int
+) -> DropletEnrollment:
+    # Delivery validates the same records against the guest before retaining
+    # any of them. The persistent reader uses this exact binding as well.
     require(
         path.name == PUBLICATION_VIEW
         and not os.path.lexists(DOCKER_MARKER)
@@ -63,10 +81,8 @@ def read_enrollment(path: Path, authority: DurableDirectory, *, owner: int) -> D
         ),
         "droplet-enrollment-conflicts",
     )
-    target = decode(protected_record(authority, TARGET, owner), "target")
-    registration = decode(protected_record(authority, ENROLLMENT, owner), "droplet-enrollment")
-    exclusions = decode(
-        protected_record(authority, EXCLUSIONS, owner), "droplet-production-exclusions"
+    target, registration, exclusions = (
+        decode(read(name), record_type) for name, record_type in ENROLLMENT_RECORDS.items()
     )
     local = host_identity(owner)
     require(

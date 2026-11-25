@@ -25,18 +25,27 @@ from lowerduckpond_static_host_agent.installed_routing import (
     ROLE,
     cutover_filename,
 )
+from lowerduckpond_static_host_agent.source_bootstrap import FORMAT as SOURCE_BOOTSTRAP_FORMAT
 
 from scripts.m3_12_contracts import (
     MAX_RECORD_BYTES,
     Document,
     ValidationError,
+    decode,
     digest,
     encode,
     require,
 )
 from scripts.m3_12_diagnostic_store import Attempt, publish, read
 from scripts.m3_12_droplet_native import AdapterInputs, inspect_host, require_endpoint
-from scripts.m3_12_droplet_ssh import Endpoint, ReadExecutor, observe_restore_fence
+from scripts.m3_12_droplet_ssh import (
+    Endpoint,
+    ReadExecutor,
+    SSHExecutor,
+    observe_restore_fence,
+    send_source_bootstrap,
+)
+from scripts.m3_12_droplet_storage import storage_target
 
 SOURCE_PHASES = frozenset(
     {
@@ -384,3 +393,44 @@ def _require_projection_admission(
             and not os.path.lexists(inputs.attempt.directory / "routing-source-fenced.json"),
             "droplet-routing-source-fenced",
         )
+
+
+def deliver_source_bootstrap(
+    inputs: AdapterInputs,
+    endpoint: Endpoint,
+    policy_raw: bytes,
+    execute: ReadExecutor,
+    *,
+    send: SSHExecutor,
+) -> str:
+    """Deliver only the original reviewed dark-stage receipt over the pinned transport."""
+    scope, action = inputs.open(frozenset({"dark-stage"}))
+    require(endpoint.allocation.role == "source", "droplet-routing-role-changed")
+    host = require_endpoint(endpoint, scope, action)
+    prepared = prepare_routing(inputs, endpoint, policy_raw, execute)
+    # Also enforce the original source-fence boundary for the policy being delivered.
+    _require_projection_admission(inputs, prepared, policy_raw, None)
+    restic = storage_target(scope, action, "source", "restic")
+    archive = storage_target(scope, action, "source", "archive")
+    candidate = scope["candidate"]["hostAgentSha256"]
+    document = {
+        "format": SOURCE_BOOTSTRAP_FORMAT,
+        "bootSha256": prepared.boot_sha256,
+        "predecessorSha256": scope["predecessorSha256"],
+        "artifactSha256": candidate,
+        "routing": prepared.policy.document(),
+        "repository": restic.repository,
+        "backupRegion": restic.region,
+        "archiveBucket": archive.bucket,
+        "archiveRegion": archive.region,
+        "enrollment": {
+            "droplet-target.json": host["target"],
+            "droplet-enrollment.json": host["enrollment"],
+            "droplet-production-exclusions.json": decode(
+                inputs.reviewed.production_exclusions, "droplet-journey-exclusions"
+            )["hosts"],
+        },
+    }
+    receipt = send_source_bootstrap(endpoint, candidate, encode(document), execute=send)
+    require(receipt == digest(document), "droplet-source-bootstrap-readback-changed")
+    return receipt

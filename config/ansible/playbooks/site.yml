@@ -9,10 +9,11 @@
   vars:
     firewall_web_source_cidrs: >-
       {{
-        (cloudflare_ipv4_cidrs + cloudflare_ipv6_cidrs +
-         retiring_ipv4_cidrs + retiring_ipv6_cidrs)
-        if caddy_origin_pull_enforcement_enabled | bool
-        else ["0.0.0.0/0", "::/0"]
+        [] if m3_12_source_bootstrap_active | default(false) | bool else
+        ((cloudflare_ipv4_cidrs + cloudflare_ipv6_cidrs +
+          retiring_ipv4_cidrs + retiring_ipv6_cidrs)
+         if caddy_origin_pull_enforcement_enabled | bool
+         else ["0.0.0.0/0", "::/0"])
       }}
   pre_tasks:
     - name: Guard an existing M3.11 production transaction before configuration
@@ -59,6 +60,9 @@
           through the documented environment variables.
         quiet: true
       no_log: true
+
+    - name: Guard the protected M3.12 disposable source before any roles run
+      ansible.builtin.import_tasks: ../tasks/m3-12-source-bootstrap.yml
 
   roles:
     - role: host_recovery

@@ -22,6 +22,7 @@ from scripts.m3_12_contracts import (
 from scripts.m3_12_diagnostic_store import Attempt, publish, read
 from scripts.m3_12_disposable_routing import (
     RoutingEndpoint,
+    deliver_source_bootstrap,
     prepare_routing,
     require_prepared_cutover,
     verify_cutover,
@@ -30,7 +31,7 @@ from scripts.m3_12_droplet_cleanup import InitialRetirement, retain_empty_state
 from scripts.m3_12_droplet_journey import PHASES, Phase, committed_dispatches, run_journey
 from scripts.m3_12_droplet_native import AdapterInputs, inspect_host, require_endpoint
 from scripts.m3_12_droplet_scope import ReviewedJourney, approved_scope
-from scripts.m3_12_droplet_ssh import Endpoint, ReadExecutor, restore_status
+from scripts.m3_12_droplet_ssh import Endpoint, ReadExecutor, SSHExecutor, restore_status
 from scripts.m3_12_droplet_teardown import HostAbsence, reconcile_teardown, review_destroy_plan
 
 PHASE_BY_NAME = {phase.name: phase for phase in PHASES}
@@ -93,6 +94,7 @@ class NativePhaseDriver:
     receiver: CutoverReceiver
     observe_local_fence: Callable[[str], dict[str, object]]
     read_ssh: ReadExecutor
+    source_delivery_ssh: SSHExecutor
     fixture: FixtureOperations
     destroy_plans: Mapping[str, ReviewedDestroy] = field(repr=False)
 
@@ -343,6 +345,16 @@ class NativePhaseDriver:
             self._reopen_originals(scope, phase)
         if phase == "teardown":
             self._review_cleanup(work)
+        if phase == "dark-stage":
+            assert work.endpoint is not None  # noqa: S101 - fixed source-role phase
+            receipt = deliver_source_bootstrap(
+                work.inputs,
+                work.endpoint,
+                self.site_policy,
+                self.read_ssh,
+                send=self.source_delivery_ssh,
+            )
+            self._retain("source-bootstrap", key, {"receiptSha256": receipt})
         if phase in INGRESS_PHASES:
             self._deliver(work)
         self.fixture.submit(work)

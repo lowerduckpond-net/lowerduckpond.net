@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 from dataclasses import replace
 from pathlib import Path
+from typing import cast
 
 import pytest
 from lowerduckpond_static_host_agent import droplet_enrollment
@@ -157,6 +159,7 @@ class SimulatedNative:
         self.actions: list[str] = []
         self.phase_results: set[str] = set()
         self.source_closed = False
+        self.source_bootstrap: Document | None = None
         self.fence_effect = True
         self.restore_closed = True
         self.local_gate_valid = True
@@ -215,6 +218,24 @@ class SimulatedNative:
             return encode(self.observation(role))
         if command.startswith(f"{REMOTE_PROBE} --restore-fence"):
             return encode(self.gate(role))
+        if shlex.split(command)[-2:-1] == ["receive"]:
+            assert role == "source"
+            assert self.actions == ["predecessor"]
+            raw = cast(bytes, _options["stdin"])
+            document = json.loads(raw)
+            assert document["bootSha256"] == proof("source")
+            assert document["routing"]["sourceTargetSha256"] == digest(
+                self.scope["resources"]["hosts"]["source"]["target"]
+            )
+            storage = self.scope["resources"]["storage"]["source"]
+            restic = storage["restic"]
+            assert document["repository"] == (
+                f"s3:https://{restic['region']}.digitaloceanspaces.com/"
+                f"{restic['bucket']}/{restic['prefix']}"
+            )
+            assert document["archiveBucket"] == storage["archive"]["bucket"]
+            self.source_bootstrap = document
+            return (digest(document) + "\n").encode()
         assert command == f"{REMOTE_RESTORE} --status"
         return encode(
             {
@@ -229,6 +250,8 @@ class SimulatedNative:
         phase = work.phase.name
         assert phase not in self.actions
         self.actions.append(phase)
+        if phase == "dark-stage":
+            assert self.source_bootstrap is not None
         if phase == "backup-fence":
             self.source_closed = self.fence_effect
         if phase in {"restore", RESUME}:
@@ -412,6 +435,7 @@ def native(
         inputs,
         receiver,
         sim.local_gate,
+        sim.wire,
         sim.wire,
         sim,
         plans,

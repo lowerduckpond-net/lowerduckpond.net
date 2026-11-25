@@ -188,6 +188,7 @@ def install(container: str, directory: Path, digest: str) -> None:
         directory / "m3-12-worker-view-stop",
         directory / "worker-view-receipt.conf",
         ROLE / "files/static-publication-gate",
+        ROLE / "files/m3-12-source-bootstrap",
         ROLE / "files/verify-static-host-agent-artifact",
         ROOT / "config/ansible/roles/host_recovery/files/host-restore-gate",
     )
@@ -290,6 +291,26 @@ def witness(image: str, directory: Path) -> None:
         docker("start", container)
         wait_for_systemd(container)
         install(container, directory, digest)
+        source_gate = docker(
+            "exec",
+            "-i",
+            container,
+            "/usr/bin/python3",
+            "-I",
+            "-B",
+            f"{STAGING}/m3-12-source-bootstrap",
+            "verify",
+            digest,
+            data="{}",
+            check=False,
+        )
+        require(
+            source_gate.returncode == 2  # noqa: PLR2004 - native refusal
+            and source_gate.stdout == ""
+            and source_gate.stderr == "m3_12_source_bootstrap_refused\n",
+            "installed source preflight did not refuse a missing handoff",
+        )
+        print("installed source preflight refused missing handoff", flush=True)
         code = (ROOT / "config/ansible/molecule/m3_8/m3_12_worker_view.py").read_text()
         observed = docker(
             "exec",

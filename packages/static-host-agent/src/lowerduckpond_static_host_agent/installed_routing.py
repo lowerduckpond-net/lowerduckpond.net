@@ -28,6 +28,7 @@ CADDY_ROOT = Path("/etc/caddy")
 AUTHORITY = Path("/var/lib/lowerduckpond/convergence/m3-12/droplet-publication")
 PROJECTION = "disposable-routing.json"
 ROLE = "routing-role.json"
+SOURCE_BOOTSTRAP = "source-bootstrap.json"
 CUTOVER_FORMAT = "lowerduckpond-m3-12-disposable-routing-cutover-v1"
 
 
@@ -210,7 +211,7 @@ class CutoverReceiver:
 def require_caddy_routing(routing: DisposableRoutes | None) -> None:
     """Privileged service hooks independently verify the install and role."""
     if not os.path.lexists(AUTHORITY / ROLE):
-        if routing is not None:
+        if routing is not None or os.path.lexists(AUTHORITY / SOURCE_BOOTSTRAP):
             raise HostRestoreError("restore_disposable_routing_role_missing")
         return
     if routing is None:
@@ -221,7 +222,15 @@ def require_caddy_routing(routing: DisposableRoutes | None) -> None:
         role = _record(protected, ROLE, 0)
     if role == canonical_json_bytes(routing.role_document("source")):
         require_role(routing, "source", owner=0)
+        if os.path.lexists(AUTHORITY / SOURCE_BOOTSTRAP):
+            from lowerduckpond_static_host_agent.source_bootstrap import (  # noqa: PLC0415 - source-only handoff
+                require_source_projection,
+            )
+
+            require_source_projection(routing)
         return
+    if os.path.lexists(AUTHORITY / SOURCE_BOOTSTRAP):
+        raise HostRestoreError("droplet_source_bootstrap_role_changed")
     with DurableDirectory.open(
         RECOVERY_ROOT, expected_owner=0, expected_directory_mode=0o700
     ) as recovery:
