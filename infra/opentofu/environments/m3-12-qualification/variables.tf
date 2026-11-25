@@ -72,3 +72,15 @@ variable "admin_source_cidrs" {
     error_message = "Specify one or more explicit administrator CIDRs without world-open access."
   }
 }
+
+variable "source_fixture_egress_isolated" {
+  description = "Allow only link-local metadata HTTP egress on the disposable historical source."
+  type        = bool
+  default     = false
+  nullable    = false
+
+  validation {
+    condition     = !var.source_fixture_egress_isolated || var.fixture_role == "source"
+    error_message = "Fixture egress isolation is available only to the source role."
+  }
+}

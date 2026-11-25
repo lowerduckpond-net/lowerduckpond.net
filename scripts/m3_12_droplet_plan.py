@@ -39,6 +39,8 @@ CONFIGURATION_FIELDS = {
     MEMBERSHIP: {"project", "resources"},
 }
 EGRESS = {("tcp", "53"), ("udp", "53"), ("udp", "123"), ("tcp", "80"), ("tcp", "443")}
+SOURCE_FIXTURE_EGRESS_OPTION = "source_fixture_egress_isolated"
+METADATA_DESTINATION = frozenset({"169.254.169.254/32"})
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,7 @@ class ApprovedHostPlan:
     ssh_key_fingerprint: str
     admin_cidrs: tuple[str, ...]
     cloud_init_sha256: str
+    source_fixture_egress_isolated: bool = False
 
     @property
     def name(self) -> str:
@@ -181,11 +184,15 @@ def _firewall(after: Document, scope: ApprovedHostPlan) -> None:
         "droplet-plan-ingress-changed",
     )
     outgoing = after["outbound_rule"]
+    protocol_ports = {("tcp", "80")} if scope.source_fixture_egress_isolated else EGRESS
+    destinations = (
+        METADATA_DESTINATION if scope.source_fixture_egress_isolated else {"0.0.0.0/0", "::/0"}
+    )
     require(
-        len(outgoing) == len(EGRESS)
-        and {(item["protocol"], item["port_range"]) for item in outgoing} == EGRESS
+        len(outgoing) == len(protocol_ports)
+        and {(item["protocol"], item["port_range"]) for item in outgoing} == protocol_ports
         and all(
-            item.get("action", "allow") == "allow"
+            item.get("action", None if scope.source_fixture_egress_isolated else "allow") == "allow"
             and not any(
                 item.get(key)
                 for key in (
@@ -195,7 +202,7 @@ def _firewall(after: Document, scope: ApprovedHostPlan) -> None:
                     "destination_tags",
                 )
             )
-            and _address_set(item["destination_addresses"], admin=False) == {"0.0.0.0/0", "::/0"}
+            and _address_set(item["destination_addresses"], admin=False) == destinations
             for item in outgoing
         ),
         "droplet-plan-egress-changed",
@@ -208,6 +215,8 @@ def verify_initial_host_plan(
     """Allow only creation on an empty independently selected role state."""
     require(
         scope.role in {"source", "restore", "fresh"}
+        and type(scope.source_fixture_egress_isolated) is bool
+        and (not scope.source_fixture_egress_isolated or scope.role == "source")
         and re.fullmatch(
             r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}",
             scope.run_id,
@@ -264,17 +273,26 @@ def _verify_initial_host_plan(
     )
     require(
         plan["variables"]["qualification_run_id"]["value"] == scope.run_id
-        and plan["variables"]["fixture_role"]["value"] == scope.role,
+        and plan["variables"]["fixture_role"]["value"] == scope.role
+        and plan["variables"].get(SOURCE_FIXTURE_EGRESS_OPTION, {"value": False})["value"]
+        is scope.source_fixture_egress_isolated,
         "droplet-plan-scope-changed",
     )
     root = plan["configuration"]["root_module"]
     require(not root.get("module_calls"), "droplet-plan-modules-changed")
     config = _resource_index(root["resources"])
     for address, fields in CONFIGURATION_FIELDS.items():
+        # OpenTofu omits dynamic nested blocks from the configuration
+        # representation. The expanded, known rules are checked below.
+        expected_fields = (
+            fields - {"outbound_rule"}
+            if address == FIREWALL and SOURCE_FIXTURE_EGRESS_OPTION in plan["variables"]
+            else fields
+        )
         resource = config[address]
         require(
             resource["provider_config_key"] == "digitalocean"
-            and resource["expressions"].keys() == fields
+            and resource["expressions"].keys() == expected_fields
             and not resource.get("depends_on")
             and "count_expression" not in resource
             and "for_each_expression" not in resource,

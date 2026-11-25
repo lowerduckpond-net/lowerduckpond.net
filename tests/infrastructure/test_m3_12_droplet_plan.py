@@ -30,6 +30,7 @@ from scripts.m3_12_droplet_plan import (
     MEMBERSHIP,
     PINNED_PROVIDER,
     PROVIDER,
+    SOURCE_FIXTURE_EGRESS_OPTION,
     ApprovedHostPlan,
 )
 from scripts.m3_12_droplet_plan import (
@@ -61,7 +62,10 @@ def _review(
     plan: Document, scope: ApprovedHostPlan, state: bytes
 ) -> tuple[ReviewedReadback, InitialPlanEvidence]:
     files = dict.fromkeys(OFFLINE_FILES | BACKEND_FILES, b"synthetic reviewed file")
-    files[INPUTS] = encode(dict.fromkeys(PLAN_VARIABLES, "synthetic reviewed input"))
+    inputs: Document = dict.fromkeys(PLAN_VARIABLES, "synthetic reviewed input")
+    if scope.source_fixture_egress_isolated:
+        inputs[SOURCE_FIXTURE_EGRESS_OPTION] = True
+    files[INPUTS] = encode(inputs)
     evidence = InitialPlanEvidence(
         files,
         encode({"encryption_version": "v0", "encrypted_data": "c3ludGhldGlj"}),
@@ -310,8 +314,7 @@ def test_droplet_plan_rejects_existing_changes_imports_and_unreviewed_graph(
         verify_initial_host_plan(plan, scope)
 
 
-@pytest.fixture
-def readback(
+def _readback(
     reviewed_plan: tuple[Document, ApprovedHostPlan],
 ) -> tuple[Document, Document, Document]:
     plan, scope = reviewed_plan
@@ -371,6 +374,20 @@ def readback(
     return state, observed, exclusions
 
 
+@pytest.fixture
+def readback(
+    reviewed_plan: tuple[Document, ApprovedHostPlan],
+) -> tuple[Document, Document, Document]:
+    return _readback(reviewed_plan)
+
+
+@pytest.fixture
+def isolated_source_readback(
+    isolated_source_plan: tuple[Document, ApprovedHostPlan],
+) -> tuple[Document, Document, Document]:
+    return _readback(isolated_source_plan)
+
+
 def test_initial_provider_readback_joins_only_the_exact_reviewed_role(
     reviewed_plan: tuple[Document, ApprovedHostPlan], readback: tuple[Document, Document, Document]
 ) -> None:
@@ -415,6 +432,79 @@ def test_initial_provider_readback_joins_only_the_exact_reviewed_role(
     exclusions["dropletIds"] = [101]
     with pytest.raises(ValidationError, match="production-crossover"):
         bind_initial_allocation(review, original_plan, state_raw, observed, encode(exclusions))
+
+
+@pytest.fixture
+def isolated_source_plan(
+    reviewed_plan: tuple[Document, ApprovedHostPlan],
+) -> tuple[Document, ApprovedHostPlan]:
+    plan, original = reviewed_plan
+    scope = replace(original, role="source", source_fixture_egress_isolated=True)
+    plan["variables"]["fixture_role"]["value"] = scope.role
+    plan["variables"][SOURCE_FIXTURE_EGRESS_OPTION] = {"value": True}
+    config = plan["configuration"]["root_module"]["resources"]
+    next(row for row in config if row["address"] == FIREWALL)["expressions"].pop("outbound_rule")
+    for resource in plan["resource_changes"]:
+        after = resource["change"]["after"]
+        if resource["address"] in {HOST, FIREWALL}:
+            after["name"] = scope.name
+        if resource["address"] == FIREWALL:
+            after["outbound_rule"] = [
+                {
+                    "action": "allow",
+                    "protocol": "tcp",
+                    "port_range": "80",
+                    "destination_addresses": ["169.254.169.254/32"],
+                }
+            ]
+    return plan, scope
+
+
+def test_isolated_source_requires_exact_reviewed_mode_and_rules(
+    isolated_source_plan: tuple[Document, ApprovedHostPlan],
+) -> None:
+    plan, scope = isolated_source_plan
+    verify_initial_host_plan(plan, scope)
+    with pytest.raises(ValidationError, match="droplet-plan-scope-changed"):
+        verify_initial_host_plan(plan, replace(scope, source_fixture_egress_isolated=False))
+    for role in ("restore", "fresh"):
+        with pytest.raises(ValidationError, match="droplet-plan-scope-invalid"):
+            verify_initial_host_plan(plan, replace(scope, role=role))
+    firewall = next(r for r in plan["resource_changes"] if r["address"] == FIREWALL)
+    rule = firewall["change"]["after"]["outbound_rule"][0]
+    rule["destination_addresses"] = ["0.0.0.0/0", "::/0"]
+    with pytest.raises(ValidationError, match="droplet-plan-egress-changed"):
+        verify_initial_host_plan(plan, scope)
+
+
+def test_isolated_source_binds_exact_state_and_independent_firewall(
+    isolated_source_plan: tuple[Document, ApprovedHostPlan],
+    isolated_source_readback: tuple[Document, Document, Document],
+) -> None:
+    plan, scope = isolated_source_plan
+    state, observed, exclusions = isolated_source_readback
+    state_raw = encode(state)
+    review, evidence = _review(plan, scope, state_raw)
+
+    def bind(provider: Document) -> None:
+        result = bind_initial_allocation(review, evidence, state_raw, provider, encode(exclusions))
+        assert result.role == "source"
+
+    outbound = observed["firewalls"][0]["outbound_rule"][0]
+    outbound["action"] = "allow"
+    bind(observed)
+    for fields in (
+        {"destination_addresses": ["0.0.0.0/0", "::/0"]},
+        {"action": "deny"},
+        {"port_range": "443"},
+    ):
+        changed = deepcopy(observed)
+        changed["firewalls"][0]["outbound_rule"][0].update(fields)
+        with pytest.raises(ValidationError, match="droplet-plan-egress-changed"):
+            bind(changed)
+    outbound.pop("action")
+    with pytest.raises(ValidationError, match="droplet-readback-provider-firewall-changed"):
+        bind(observed)
 
 
 @pytest.mark.parametrize(

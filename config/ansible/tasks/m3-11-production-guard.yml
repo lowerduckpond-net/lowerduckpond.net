@@ -37,6 +37,7 @@
     quiet: true
   when:
     - not m3_12_production_transaction.stat.exists
+    - ansible_connection | default('ssh') != 'ldp_m3_12_droplet'
     - >-
       m3_11_production_transaction.stat.exists or
       ansible_connection | default('ssh') == 'ldp_m3_11'
