@@ -147,16 +147,24 @@ cannot fall back to canonical Caddy subjects. A missing or uncertain receipt
 does not authorize the converge.
 
 The normal `site.yml` checks the handoff before running any roles. It compares
-its effective storage inputs to the protected receipt and reopens the current
-boot, projection, enrolled role and kernel fence. It keeps ordinary web
-ingress closed in this phase. It retains no credentials. The operator must
-supply the original scoped credentials through their existing custody.
+its effective storage inputs to the protected receipt and reopens the
+projection, enrolled role and kernel fence. Dark convergence also verifies
+the original boot and dark publication file. Enabled converge and repeat
+instead require the complete native launch chain, its original local source
+binding, the selected candidate and no rollback fence. The original handoff
+remains required even if its receipt is missing from a host enrolled as the
+source. Both branches keep ordinary web ingress closed. The check retains
+no credentials. The operator supplies the scoped credentials from their
+existing custody.
 
 This handoff does not supply a real provider executor, perform the historical
 M3.11 bootstrap or stop/fence the source. It does not change the native
 production lease check. A live source converge from the accepted M3.11
 journal still requires an operator path that admits a disposable successor
-lease and exact stage. The real source start and later publication, restore
+lease and exact stage. The launch check is a prerequisite for enabled
+configuration under that authority. Source web ingress still needs its own
+reviewed release operation. The restore-side release applies to the fenced
+destination and cannot release the source. Real source start, edge, restore
 and cleanup remain separate proof boundaries.
 
 ## Restore delivery and readback

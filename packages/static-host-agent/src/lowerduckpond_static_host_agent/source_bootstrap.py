@@ -31,14 +31,21 @@ from lowerduckpond_static_host_agent.installed_routing import (
     installed_projection,
     require_role,
 )
+from lowerduckpond_static_host_agent.platform_launch import (
+    ADMISSION,
+    require_local_launch_binding,
+    verify_launch,
+)
+from lowerduckpond_static_host_agent.successor_rollback import require_unfenced_publication
 from scripts.m3_12_contracts import (
     MAX_RECORD_BYTES,
     Document,
+    decode,
     digest,
     encode,
     require,
 )
-from scripts.m3_12_droplet import require_metadata
+from scripts.m3_12_droplet import STATE, _selected_candidate, require_metadata
 from scripts.m3_12_droplet_observe import (
     _command,
     _restore_firewall,
@@ -80,6 +87,10 @@ def _document(raw: bytes) -> tuple[Document, DisposableRoutes]:
 
 def _closed(owner: int) -> None:
     require(publication_state(owner) == "dark", "droplet-source-publication-open")
+    _require_closed_ingress()
+
+
+def _require_closed_ingress() -> None:
     firewall = _command("/usr/sbin/nft", "--json", "list", "table", "inet", "lowerduckpond_restore")
     require(_restore_firewall(json.loads(firewall)), "droplet-source-ingress-open")
 
@@ -162,22 +173,47 @@ def require_source_projection(routing: DisposableRoutes, *, owner: int = 0) -> N
     require(routing == reviewed, "droplet-source-projection-changed")
 
 
-def verify(request: Document, artifact: str, *, owner: int = 0) -> None:
-    """Validate effective installer inputs without reading any credentials."""
+def _require_launched_source(
+    view: DurableDirectory, routing: DisposableRoutes, artifact: str, owner: int
+) -> None:
+    require_unfenced_publication(AUTHORITY.parent)
+    receipt = verify_launch(STATE, AUTHORITY, owner=owner)
+    require_local_launch_binding(AUTHORITY, receipt, disposable=False, owner=owner)
+    admission = decode(_read(view, ADMISSION[0], owner), "admission")
+    require(
+        receipt["binding"]["targetSha256"] == routing.source_target
+        and receipt["admissionSha256"] == digest(admission)
+        and admission["candidate"]["hostAgentSha256"] == artifact
+        and _selected_candidate(admission["candidate"]),
+        "droplet-source-launch-changed",
+    )
+
+
+def verify(
+    request: Document, artifact: str, *, publication_enabled: bool = False, owner: int = 0
+) -> None:
+    """Check both stages without granting publication or opening the web fence."""
     with DurableDirectory.open(
         AUTHORITY, expected_owner=owner, expected_directory_mode=0o700
     ) as view:
         document, routing = _document(_read(view, SOURCE_BOOTSTRAP, owner))
-    require(
-        request == {key: document[key] for key in INPUTS}
-        and artifact == document["artifactSha256"]
-        and document["bootSha256"] == boot_sha256(owner)
-        and document["predecessorSha256"] == predecessor_digest(),
-        "droplet-source-site-inputs-changed",
-    )
-    require(installed_projection(owner=owner) == routing, "droplet-source-projection-changed")
-    require_role(routing, "source", owner=owner)
-    _closed(owner)
+        require(
+            request == {key: document[key] for key in INPUTS}
+            and artifact == document["artifactSha256"]
+            and document["predecessorSha256"] == predecessor_digest(),
+            "droplet-source-site-inputs-changed",
+        )
+        require(installed_projection(owner=owner) == routing, "droplet-source-projection-changed")
+        require_role(routing, "source", owner=owner)
+        if publication_enabled:
+            _require_launched_source(view, routing, artifact, owner)
+            _require_closed_ingress()
+        else:
+            require(
+                document["bootSha256"] == boot_sha256(owner),
+                "droplet-source-site-inputs-changed",
+            )
+            _closed(owner)
 
 
 def main(artifact: str, operation: str) -> int:
@@ -188,7 +224,10 @@ def main(artifact: str, operation: str) -> int:
             print(receive(raw, artifact))
         else:
             require(operation == "verify", "droplet-source-operation-invalid")
-            verify(decode_json_object(raw), artifact)
+            request = decode_json_object(raw)
+            enabled = request.pop("publicationEnabled", False)
+            require(isinstance(enabled, bool), "droplet-source-site-inputs-changed")
+            verify(request, artifact, publication_enabled=enabled is True)
             print("verified")
         return 0
     except ValueError, RuntimeError, OSError, TypeError, KeyError:

@@ -12,15 +12,20 @@ from lowerduckpond_static_host_agent import (
     droplet_enrollment,
     installed_routing,
     source_bootstrap,
+    successor_rollback,
 )
 from lowerduckpond_static_host_agent.caddy_routes import build_platform_only_caddy_routes
 from lowerduckpond_static_host_agent.disposable_routes import project_native_routes
 from lowerduckpond_static_host_agent.host_restore_journal import HostRestoreError
 
+from infrastructure.test_m3_12_contracts import _pin_droplet_attempt
+from infrastructure.test_m3_12_contracts import droplet_attempt as droplet_attempt  # noqa: PLC0414
 from infrastructure.test_m3_12_disposable_routing import _native_firewall
 from infrastructure.test_m3_12_droplet_journey import fixture as fixture  # noqa: PLC0414
 from infrastructure.test_m3_12_droplet_journey import proof
 from infrastructure.test_m3_12_droplet_journey import records as records  # noqa: PLC0414
+from scripts import m3_11_production_lease as lease
+from scripts import m3_12_droplet as droplet
 from scripts.m3_12_contracts import Document, ValidationError, digest, encode
 from scripts.m3_12_diagnostic_store import Attempt
 from scripts.m3_12_droplet_scope import ReviewedJourney
@@ -182,3 +187,62 @@ def test_pending_delivery_cannot_start_caddy_with_canonical_subjects(
     original.chmod(0o600)
     with pytest.raises(HostRestoreError, match="restore_disposable_routing_role_missing"):
         installed_routing.require_caddy_routing(None)
+
+
+def test_enabled_site_handoff_requires_the_original_verified_launch(
+    handoff: tuple[Document, Path, Path],
+    droplet_attempt: tuple[Document, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document, _, caddy = handoff
+    admission, state, authority = droplet_attempt
+    owner = os.geteuid()
+    artifact = admission["candidate"]["hostAgentSha256"]
+    document["artifactSha256"] = artifact
+    document["routing"].update(
+        runId=admission["binding"]["runId"], sourceTargetSha256=digest(admission["target"])
+    )
+    for name in document["enrollment"]:
+        document["enrollment"][name] = json.loads((authority / name).read_bytes())
+    receipt = authority / installed_routing.SOURCE_BOOTSTRAP
+    original = encode(document)
+    receipt.write_bytes(original)
+    receipt.chmod(0o600)
+    routing = source_bootstrap.DisposableRoutes.from_bytes(encode(document["routing"]))
+    role = authority / installed_routing.ROLE
+    role.write_bytes(encode(routing.role_document("source")))
+    role.chmod(0o600)
+    projection = caddy / installed_routing.PROJECTION
+    projection.write_bytes(encode(routing.document()))
+    projection.chmod(0o440)
+    monkeypatch.setattr(source_bootstrap, "AUTHORITY", authority)
+    monkeypatch.setattr(installed_routing, "AUTHORITY", authority)
+    monkeypatch.setattr(source_bootstrap, "STATE", state)
+    request = {key: document[key] for key in source_bootstrap.INPUTS}
+    with pytest.raises(FileNotFoundError, match=r"admission\.json"):
+        source_bootstrap.verify(request, artifact, publication_enabled=True, owner=owner)
+
+    with lease.controller(droplet.LEASE, owner=owner, drain=lambda: None) as token:
+        _pin_droplet_attempt(authority, admission, token)
+        droplet.launch(token, encode(admission), owner=owner)
+
+    source_bootstrap.verify(request, artifact, publication_enabled=True, owner=owner)
+    monkeypatch.setattr(source_bootstrap, "publication_state", lambda _owner: "enabled")
+    monkeypatch.setattr(source_bootstrap, "boot_sha256", lambda _owner: proof("current reboot"))
+    source_bootstrap.verify(request, artifact, publication_enabled=True, owner=owner)
+    with pytest.raises(ValidationError, match="droplet-source-site-inputs-changed"):
+        source_bootstrap.verify(
+            {**request, "archiveBucket": "foreign"}, artifact, publication_enabled=True, owner=owner
+        )
+    with monkeypatch.context() as changed:
+        changed.setattr(droplet, "SELECTION", caddy / "missing-selector")
+        with pytest.raises(ValidationError, match="droplet-source-launch-changed"):
+            source_bootstrap.verify(request, artifact, publication_enabled=True, owner=owner)
+    with monkeypatch.context() as changed:
+        changed.setattr(source_bootstrap, "_command", lambda *_: "{}")
+        with pytest.raises(ValidationError, match="droplet-source-ingress-open"):
+            source_bootstrap.verify(request, artifact, publication_enabled=True, owner=owner)
+    authority.joinpath(*successor_rollback.FENCE).touch(mode=0o600)
+    with pytest.raises(ValidationError, match="successor-publication-fenced"):
+        source_bootstrap.verify(request, artifact, publication_enabled=True, owner=owner)
+    assert receipt.read_bytes() == original

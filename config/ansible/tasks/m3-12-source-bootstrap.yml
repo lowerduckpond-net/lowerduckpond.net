@@ -8,22 +8,60 @@
     get_attributes: false
   register: m3_12_source_bootstrap_authority
 
+- name: Inspect the protected disposable routing role
+  ansible.builtin.stat:
+    path: /var/lib/lowerduckpond/convergence/m3-12/droplet-publication/routing-role.json
+    follow: false
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
+  register: m3_12_routing_role_metadata
+
+- name: Classify the existing protected routing role
+  when: m3_12_routing_role_metadata.stat.exists
+  block:
+    - name: Require protected routing role metadata
+      ansible.builtin.assert:
+        that:
+          - m3_12_routing_role_metadata.stat.isreg
+          - m3_12_routing_role_metadata.stat.uid == 0
+          - m3_12_routing_role_metadata.stat.gid == 0
+          - m3_12_routing_role_metadata.stat.mode == '0600'
+          - m3_12_routing_role_metadata.stat.nlink == 1
+          - m3_12_routing_role_metadata.stat.size <= 4096
+        quiet: true
+
+    - name: Read the small non-secret installed role
+      ansible.builtin.slurp:
+        src: /var/lib/lowerduckpond/convergence/m3-12/droplet-publication/routing-role.json
+      register: m3_12_routing_role_bytes
+
+    - name: Require a known disposable role
+      ansible.builtin.assert:
+        that:
+          - role_record.format == 'lowerduckpond-m3-12-installed-routing-role-v1'
+          - role_record.role in ['source', 'restore']
+        quiet: true
+      vars:
+        role_record: "{{ m3_12_routing_role_bytes.content | b64decode | from_json }}"
+
 - name: Determine whether the disposable source handoff applies
   ansible.builtin.set_fact:
     m3_12_source_bootstrap_active: >-
       {{ m3_12_source_bootstrap_authority.stat.exists or
+         ((m3_12_routing_role_bytes.content | default('e30=') |
+           b64decode | from_json).role | default('') == 'source') or
          (m3_12_source_bootstrap_required | default(false) | bool) }}
 
 - name: Verify the admitted disposable source stage before configuring services
   when: m3_12_source_bootstrap_active | bool
   block:
-    - name: Require dark immutable source configuration
+    - name: Require an immutable source configuration with closed web ingress
       ansible.builtin.assert:
         that:
           - caddy_generation_enabled | bool
           - backup_static_recovery_enabled | bool
           - static_host_agent_archive_lifecycle_enabled | bool
-          - not (static_publication_enabled | bool)
           - not (host_recovery_bootstrap_enabled | default(false) | bool)
           - firewall_web_source_cidrs | length == 0
         quiet: true
@@ -41,6 +79,7 @@
         stdin: >-
           {{ {
             'artifactSha256': static_host_agent_artifact_sha256,
+            'publicationEnabled': static_publication_enabled | bool,
             'repository': backup_repository,
             'backupRegion': backup_spaces_region,
             'archiveBucket': static_host_agent_archive_configuration.bucket,
