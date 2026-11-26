@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from enum import StrEnum
 from pathlib import Path
 from typing import Final
@@ -27,7 +27,10 @@ from lowerduckpond_static_host_agent.caddy_routes import (
     build_platform_only_caddy_routes,
     build_tenant_caddy_routes,
 )
-from lowerduckpond_static_host_agent.caddy_runtime import CaddyRuntime
+from lowerduckpond_static_host_agent.caddy_runtime import (
+    CaddyRouteBindingMismatchError,
+    CaddyRuntime,
+)
 from lowerduckpond_static_host_agent.caddy_startup import (
     CaddyStartIntent,
     CaddyStartMode,
@@ -36,6 +39,8 @@ from lowerduckpond_static_host_agent.caddy_startup import (
     CaddyStartupStore,
     start_target,
 )
+
+type SourcePredecessor = Callable[[PinnedCaddyGeneration], bool]
 
 _READ_CHUNK_BYTES: Final = 64 * 1024
 
@@ -58,6 +63,7 @@ def ensure_platform_generation(  # noqa: PLR0913
     origin_pull_ca_der: tuple[bytes, ...],
     origin_pull_required: bool,
     startup: CaddyStartupStore | None = None,
+    source_predecessor: SourcePredecessor | None = None,
 ) -> bool:
     """Publish and select the exact platform-only generation only when needed."""
 
@@ -77,7 +83,9 @@ def ensure_platform_generation(  # noqa: PLR0913
         except FileNotFoundError:
             previous = None
         if startup is not None and (intent := startup.read()) is not None:
-            active = _require_resumable_transaction(runtime, store, payload, intent)
+            active = _require_resumable_transaction(
+                runtime, store, payload, intent, source_predecessor
+            )
             if intent.previous is None:  # pragma: no cover - validation proves this
                 raise CaddyStartupError("bootstrap intent has no preceding generation")
             if active == intent.previous.generation_id:
@@ -91,8 +99,9 @@ def ensure_platform_generation(  # noqa: PLR0913
                 (intent.previous.generation_id, intent.candidate.generation_id)
             )
             return True
+        current = _active_matches(runtime, store, payload, source_predecessor)
         retained = _prune_bootstrap_generations(store, previous)
-        if _active_matches(runtime, payload):
+        if current:
             return False
         store.admit_candidate(payload, retained)
         manifest = store.publish(generation_id, payload)
@@ -147,6 +156,7 @@ def platform_generation_state(  # noqa: PLR0913
     origin_pull_ca_der: tuple[bytes, ...],
     origin_pull_required: bool,
     startup: CaddyStartupStore | None = None,
+    source_predecessor: SourcePredecessor | None = None,
 ) -> PlatformGenerationState:
     """Classify exact current, safely resumable, and ordinary changed state."""
 
@@ -159,6 +169,7 @@ def platform_generation_state(  # noqa: PLR0913
             origin_pull_ca_der=origin_pull_ca_der,
             origin_pull_required=origin_pull_required,
             startup=startup,
+            source_predecessor=source_predecessor,
         )
 
 
@@ -171,6 +182,7 @@ def platform_generation_state_under_lock(  # noqa: PLR0913
     origin_pull_ca_der: tuple[bytes, ...],
     origin_pull_required: bool,
     startup: CaddyStartupStore | None = None,
+    source_predecessor: SourcePredecessor | None = None,
 ) -> PlatformGenerationState:
     """Classify the platform generation while the caller holds publication."""
 
@@ -185,9 +197,9 @@ def platform_generation_state_under_lock(  # noqa: PLR0913
         intent = startup.read()
         if intent is None:
             raise CaddyStartupError("startup intent namespace is not resumable")
-        _require_resumable_transaction(runtime, store, payload, intent)
+        _require_resumable_transaction(runtime, store, payload, intent, source_predecessor)
         return PlatformGenerationState.PENDING
-    if not _active_matches(runtime, payload):
+    if not _active_matches(runtime, store, payload, source_predecessor):
         return PlatformGenerationState.CHANGED
     return (
         PlatformGenerationState.UNCHANGED
@@ -201,6 +213,7 @@ def _require_resumable_transaction(
     store: CaddyGenerationStore,
     payload: CaddyGenerationPayload,
     intent: CaddyStartIntent,
+    source_predecessor: SourcePredecessor | None,
 ) -> str:
     if intent.mode is not CaddyStartMode.TRANSACTIONAL or intent.phase not in {
         CaddyStartPhase.CANDIDATE_PREPARED,
@@ -218,8 +231,9 @@ def _require_resumable_transaction(
             != intent.candidate
         ):
             raise CaddyStartupError("startup candidate manifest disagrees with intent")
-        if not _generation_matches(candidate, payload):
+        if not generation_matches(candidate, payload):
             raise CaddyStartupError("startup candidate disagrees with host inputs")
+    active = runtime.read_active()
     with store.open_verified(intent.previous.generation_id) as previous:
         if (
             start_target(
@@ -229,7 +243,13 @@ def _require_resumable_transaction(
             != intent.previous
         ):
             raise CaddyStartupError("startup predecessor manifest disagrees with intent")
-    active = runtime.read_active()
+        if (
+            active == intent.previous.generation_id
+            and source_predecessor is not None
+            and not source_predecessor(previous)
+        ):
+            with runtime.open_verified_generation(active):
+                pass
     admitted = (
         {intent.previous.generation_id, intent.candidate.generation_id}
         if intent.phase is CaddyStartPhase.CANDIDATE_PREPARED
@@ -276,10 +296,11 @@ def digest_path(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _generation_matches(
+def generation_matches(
     generation: PinnedCaddyGeneration,
     payload: CaddyGenerationPayload,
 ) -> bool:
+    """Require all four manifest-bound files to match the independently rendered payload."""
     expected = {
         CADDY_BINARY_NAME: digest_path(payload.binary.path),
         CADDY_ENVIRONMENT_NAME: hashlib.sha256(payload.environment).hexdigest(),
@@ -293,13 +314,26 @@ def _generation_matches(
     return {item.name: item.sha256 for item in generation.manifest.files} == expected
 
 
-def _active_matches(runtime: CaddyRuntime, payload: CaddyGenerationPayload) -> bool:
+def _active_matches(
+    runtime: CaddyRuntime,
+    store: CaddyGenerationStore,
+    payload: CaddyGenerationPayload,
+    source_predecessor: SourcePredecessor | None,
+) -> bool:
     try:
-        selected = runtime.open_active_verified()
+        active = runtime.read_active()
     except FileNotFoundError:
         return False
-    with selected.generation as active:
-        return _generation_matches(active, payload)
+    try:
+        selected = runtime.open_verified_generation(active)
+    except CaddyRouteBindingMismatchError:
+        if source_predecessor is not None:
+            with store.open_verified(active) as generation:
+                if source_predecessor(generation):
+                    return False
+        raise
+    with selected as generation:
+        return generation_matches(generation, payload)
 
 
 def empty_tenant_generation_matches_under_lock(  # noqa: PLR0913 - exact installed inputs
@@ -326,7 +360,7 @@ def empty_tenant_generation_matches_under_lock(  # noqa: PLR0913 - exact install
             origin_pull_required=origin_pull_required,
         )
         routes = runtime.project_routes(routes)
-        return selected.generation_id in identifiers and _generation_matches(
+        return selected.generation_id in identifiers and generation_matches(
             active,
             CaddyGenerationPayload(
                 binary=binary,

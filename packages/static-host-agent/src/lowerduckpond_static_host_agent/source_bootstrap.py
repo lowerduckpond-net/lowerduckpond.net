@@ -11,6 +11,13 @@ from urllib.parse import urlsplit
 from lowerduckpond_static_contracts import decode_json_object
 
 from lowerduckpond_static_host_agent.backup_identity import canonical_locator
+from lowerduckpond_static_host_agent.caddy_bootstrap import generation_matches
+from lowerduckpond_static_host_agent.caddy_generation import (
+    CaddyBinarySource,
+    CaddyGenerationPayload,
+    PinnedCaddyGeneration,
+)
+from lowerduckpond_static_host_agent.caddy_routes import build_platform_only_caddy_routes
 from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
 from lowerduckpond_static_host_agent.droplet_enrollment import (
     ENROLLMENT,
@@ -47,11 +54,13 @@ from scripts.m3_12_contracts import (
 )
 from scripts.m3_12_droplet import STATE, _selected_candidate, require_metadata
 from scripts.m3_12_droplet_observe import (
+    LAUNCH,
     _command,
     _restore_firewall,
     boot_sha256,
     metadata_identity,
     publication_state,
+    selected_artifact,
 )
 from scripts.m3_12_installed_root import predecessor_digest
 
@@ -109,7 +118,7 @@ def _read(directory: DurableDirectory, name: str, owner: int) -> bytes:
 
 
 def require_delivery(
-    document: Document, routing: DisposableRoutes, artifact: str, *, owner: int = 0
+    document: Document, routing: DisposableRoutes, artifact: str | None, *, owner: int = 0
 ) -> None:
     require(
         document["artifactSha256"] == artifact
@@ -177,6 +186,36 @@ def require_source_projection(routing: DisposableRoutes, *, owner: int = 0) -> N
     ) as view:
         _, reviewed = _document(_read(view, SOURCE_BOOTSTRAP, owner))
     require(routing == reviewed, "droplet-source-projection-changed")
+
+
+def matches_fenced_caddy_predecessor(
+    generation: PinnedCaddyGeneration,
+    *,
+    routing: DisposableRoutes,
+    binary: CaddyBinarySource,
+    environment: bytes,
+    origin_pull_ca_der: tuple[bytes, ...],
+) -> bool:
+    """Recognize only the exact pre-projection platform payload on the fenced source."""
+    if routing.tenants or not os.path.lexists(AUTHORITY / SOURCE_BOOTSTRAP):
+        return False
+    native = build_platform_only_caddy_routes(
+        origin_pull_ca_der=origin_pull_ca_der,
+        origin_pull_required=True,
+    )
+    if not generation_matches(
+        generation,
+        CaddyGenerationPayload(binary, environment, native.configuration, native.route_metadata),
+    ):
+        return False
+    with DurableDirectory.open(AUTHORITY, expected_owner=0, expected_directory_mode=0o700) as view:
+        document, reviewed = _document(_read(view, SOURCE_BOOTSTRAP, 0))
+    require(
+        reviewed == routing and not os.path.lexists(LAUNCH), "droplet-source-transition-unbound"
+    )
+    require_role(routing, "source", owner=0)
+    require_delivery(document, routing, selected_artifact(0))
+    return True
 
 
 def _require_launched_source(

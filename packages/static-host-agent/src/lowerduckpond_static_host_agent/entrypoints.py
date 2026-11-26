@@ -46,6 +46,7 @@ from lowerduckpond_static_host_agent.caddy_admin import (
 )
 from lowerduckpond_static_host_agent.caddy_bootstrap import (
     PlatformGenerationState,
+    SourcePredecessor,
     empty_tenant_generation_matches_under_lock,
     ensure_platform_generation,
     platform_generation_state,
@@ -98,6 +99,7 @@ from lowerduckpond_static_host_agent.deployment_handler import (
 )
 from lowerduckpond_static_host_agent.deployment_prepare import DeploymentPreparationError
 from lowerduckpond_static_host_agent.deployment_recover import DeploymentRecoveryError
+from lowerduckpond_static_host_agent.disposable_routes import DisposableRoutes
 from lowerduckpond_static_host_agent.execution import (
     AuthorizationExecutor,
     ExecutionError,
@@ -629,6 +631,29 @@ def caddy_current_generation_main(arguments: list[str] | None = None) -> int:
     return 0
 
 
+def _source_predecessor_matcher(
+    routing: DisposableRoutes | None,
+    binary: CaddyBinarySource,
+    environment: bytes,
+    origin_pull_ca_der: tuple[bytes, ...],
+    *,
+    origin_pull_required: bool,
+) -> SourcePredecessor | None:
+    if routing is None or not origin_pull_required:
+        return None
+    from lowerduckpond_static_host_agent.source_bootstrap import (  # noqa: PLC0415 - disposable bootstrap only
+        matches_fenced_caddy_predecessor,
+    )
+
+    return partial(
+        matches_fenced_caddy_predecessor,
+        routing=routing,
+        binary=binary,
+        environment=environment,
+        origin_pull_ca_der=origin_pull_ca_der,
+    )
+
+
 def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
     """Create or verify the first production-dark complete generation."""
 
@@ -691,6 +716,13 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
             )
             for path in ca_paths
         )
+        source_predecessor = _source_predecessor_matcher(
+            routing,
+            binary,
+            environment,
+            origin_pull_ca_der,
+            origin_pull_required=origin_pull_required,
+        )
         with (
             CaddyRuntime.open(
                 _CADDY_RUNTIME_ROOT,
@@ -737,6 +769,7 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
                     origin_pull_ca_der=origin_pull_ca_der,
                     origin_pull_required=origin_pull_required,
                     startup=startup,
+                    source_predecessor=source_predecessor,
                 )
             else:
                 changed = ensure_platform_generation(
@@ -751,6 +784,7 @@ def caddy_bootstrap_main(arguments: list[str] | None = None) -> int:
                     origin_pull_ca_der=origin_pull_ca_der,
                     origin_pull_required=origin_pull_required,
                     startup=startup,
+                    source_predecessor=source_predecessor,
                 )
     except (
         CaddyRuntimeError,
