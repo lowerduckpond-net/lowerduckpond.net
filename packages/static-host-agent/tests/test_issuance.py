@@ -727,7 +727,7 @@ def test_only_reviewed_canary_jobs_reach_normal_issuance(
         )
         # A follow-up grant alone cannot select the target. The original
         # successful create result is the source of the server-assigned ID.
-        result = _fixture("operation-result.json")
+        result: Document = _fixture("operation-result.json")
         result.update(
             provenance={"kind": "authorization-job", "jobId": first.job_id},
             correlationId=create_request(1)["correlationId"],

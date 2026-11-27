@@ -7,6 +7,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from lowerduckpond_static_host_agent import first_canary, platform_launch
@@ -21,6 +22,7 @@ from infrastructure.test_m3_12_contracts import (
     retain,
     uuid,
 )
+from scripts import m3_11_production_lease as lease
 from scripts import m3_12_droplet_observe
 from scripts import m3_12_native as native
 from scripts.m3_12_contracts import (
@@ -98,7 +100,7 @@ def canary(
             for r in (create_request(1), create_request(2))
         ],
     }
-    records = {}
+    records: dict[str, bytes] = {}
     admission.update(authoritySha256=retain(records, decision), decision=decision)
     for slot, key in list(admission["prerequisites"].items()):
         row = old.read(key, "receipt")
@@ -151,7 +153,7 @@ def test_original_canary_cannot_be_replayed(tmp_path: Path, field: str, value: o
             root,
             encode(admission),
             evidence,
-            lambda: replace(ctx, **{field: value}),
+            lambda: replace(ctx, **cast(dict[str, Any], {field: value})),
             owner=os.geteuid(),
         )
     assert not (state / "platform/launch.json").exists()
@@ -244,9 +246,9 @@ def test_launch_worker_restore_and_rollback(
             open_worker()
 
 
-@pytest.mark.parametrize("wrong_backup", [False, True])
+@pytest.mark.parametrize(("wrong_backup", "crash"), [(False, False), (False, True), (True, False)])
 def test_native_launch_consumes_original_backup_and_seals_worker_view(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wrong_backup: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wrong_backup: bool, crash: bool
 ) -> None:
     state, root, admission, ctx, evidence = canary(tmp_path)
     owner = os.geteuid()
@@ -272,7 +274,7 @@ def test_native_launch_consumes_original_backup_and_seals_worker_view(
     )
     monkeypatch.setattr(native, "read_authority", lambda _journal, _token: trusted)
     monkeypatch.setattr(native, "require_dark_health", lambda: None)
-    monkeypatch.setattr(native.lease, "require_action", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(lease, "require_action", lambda *_args, **_kwargs: None)
 
     # The native program runs as root. The test owns its synthetic data.
     def initialize(
@@ -308,7 +310,45 @@ def test_native_launch_consumes_original_backup_and_seals_worker_view(
                 native.launch(journal, "synthetic")
             assert not (state / "platform/launch.json").exists()
         else:
-            receipt = native.launch(journal, "synthetic")
+            if crash:
+                project = first_canary.project_launch
+
+                def interrupted(source: DurableDirectory, uid: int) -> None:
+                    project(source, uid)
+                    (root / first_canary.VIEW / "launch-receipt.json").unlink()
+                    raise OSError("interrupted during worker projection")
+
+                with monkeypatch.context() as patch:
+                    patch.setattr(native, "project_launch", interrupted)
+                    with pytest.raises(OSError, match="interrupted"):
+                        native.launch(journal, "synthetic")
+                receipt = platform_launch.verify_launch(state, root, owner=owner)
+                monkeypatch.setattr(native, "verify_launch", lambda state, root: receipt)
+                current = journal.snapshot().history
+                observation = digest(receipt)
+                journal.immutable("evidence-" + observation + ".json", encode(receipt))
+                journal.immutable(
+                    "phase-readback.json",
+                    encode(
+                        {
+                            "format": "lowerduckpond-m3-12-native-phase-readback-v1",
+                            "transactionSha256": current.transaction_sha256,
+                            "priorHeadSha256": current.head_sha256,
+                            "phase": current.phase,
+                            "invocationId": ctx.invocation_id,
+                            "leaseSha256": ctx.lease_sha256,
+                            "readbackSha256": observation,
+                            "outcome": "committed",
+                            "processDrained": True,
+                            "originalPreconditions": True,
+                            "configurationSha256": proof("configuration"),
+                        }
+                    ),
+                )
+                native.phase(journal, "reconcile", "synthetic")
+                assert journal.snapshot().history.phase == "enabled-convergence"
+            else:
+                receipt = native.launch(journal, "synthetic")
             assert receipt == platform_launch.verify_launch(
                 state, root / first_canary.VIEW, owner=owner
             )

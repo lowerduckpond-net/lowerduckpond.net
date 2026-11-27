@@ -14,7 +14,7 @@ from pathlib import Path
 from lowerduckpond_static_host_agent.caddy_startup import CaddyStartupStore
 from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.entrypoints import _open_caddy_control_runtime
-from lowerduckpond_static_host_agent.first_canary import fence_worker_view
+from lowerduckpond_static_host_agent.first_canary import fence_worker_view, project_launch
 from lowerduckpond_static_host_agent.host_restore_gate import require_restore_admission
 from lowerduckpond_static_host_agent.platform_launch import initialize_launch, verify_launch
 from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
@@ -290,8 +290,6 @@ def launch(journal: SuccessorJournal, token: str) -> Document:
 
     receipt = initialize_launch(STATE, ROOT, raw, evidence, reopen_lease)
     if admission["format"] == FIRST_CANARY:
-        from lowerduckpond_static_host_agent.first_canary import project_launch  # noqa: PLC0415
-
         project_launch(journal.root, journal.owner)
     return receipt
 
@@ -399,6 +397,8 @@ def phase(journal: SuccessorJournal, operation: str, token: str) -> Document:
                 raw == encode(verify_launch(STATE, ROOT)),
                 "native-successor-launch-readback-changed",
             )
+            if trusted.context.transaction_id == CANARY_TRANSACTION:
+                project_launch(journal.root, journal.owner)
         else:
             require(
                 not os.path.lexists(ROOT / "launch-intent.json"),

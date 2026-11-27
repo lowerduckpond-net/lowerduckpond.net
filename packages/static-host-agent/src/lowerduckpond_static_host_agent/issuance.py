@@ -7,7 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, Protocol, cast
+from typing import TYPE_CHECKING, Final, Protocol, cast
 
 from lowerduckpond_static_contracts import (
     archive_record_digest,
@@ -24,13 +24,15 @@ from lowerduckpond_static_host_agent.correlations import (
     CorrelationAdmission,
     CorrelationResolution,
 )
-from lowerduckpond_static_host_agent.first_canary import JobStateReader
 from lowerduckpond_static_host_agent.locks import LockMode
 from lowerduckpond_static_host_agent.repository import (
     StateRecordPath,
     StateRepository,
     StoredContract,
 )
+
+if TYPE_CHECKING:
+    from lowerduckpond_static_host_agent.first_canary import JobStateReader
 
 _PRINCIPAL: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,127}", flags=re.ASCII)
 _DISABLED_STATUS: Final = 78
