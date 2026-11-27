@@ -11,7 +11,16 @@ from lowerduckpond_static_host_agent.platform_launch import verify_launch
 
 from scripts import m3_11_production_journal as predecessor_journal
 from scripts import m3_11_production_records as predecessor_records
-from scripts.m3_12_contracts import AdmissionContext, Document, decode, digest, require
+from scripts.m3_12_contracts import (
+    CANARY_TRANSACTION,
+    AdmissionContext,
+    Document,
+    Evidence,
+    decode,
+    digest,
+    require,
+    require_canary_binding,
+)
 from scripts.m3_12_successor_journal import SuccessorJournal
 from scripts.m3_12_transaction import STAGE_VIEWS, Reconciliation
 
@@ -141,7 +150,7 @@ def preview(directory: Path) -> Document:
             and target["predecessorSha256"] == transaction["predecessorSha256"],
             "successor-proposal-binding-changed",
         )
-        return {
+        result: Document = {
             "transactionSha256": snapshot.history.transaction_sha256,
             "predecessorSha256": transaction["predecessorSha256"],
             "target": target,
@@ -156,3 +165,17 @@ def preview(directory: Path) -> Document:
                 for phase in CONFIGURATION_PHASES
             },
         }
+        if transaction["transactionId"] == CANARY_TRANSACTION:
+            key = transaction["authorizationSha256"]
+            decision = Evidence({key: journal.read("evidence-" + key + ".json")}).read(
+                key, "first-canary-decision"
+            )
+            require_canary_binding(decision, target, binding)
+            require(
+                transaction["originalProposalSha256"] == target["successorProposalSha256"]
+                and transaction["leaseDomainSha256"] == target["leaseDomainSha256"],
+                "first-canary-authority-changed",
+            )
+            result["firstCanaryDecision"] = decision
+            result["authoritySha256"] = key
+        return result

@@ -19,11 +19,14 @@ from lowerduckpond_static_host_agent.durable import DurableDirectory, FailureHoo
 from lowerduckpond_static_host_agent.locks import LockName
 from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
 from scripts.m3_12_contracts import (
+    CANARY_TRANSACTION,
+    FIRST_CANARY,
     MAX_RECORD_BYTES,
     AdmissionContext,
     Document,
     Evidence,
     decode,
+    decode_launch_admission,
     digest,
     encode,
     instant,
@@ -136,11 +139,18 @@ def initialize_launch(  # noqa: PLR0913 - explicit authority, host and durabilit
         context = observe()
         fresh = validate_admission(admission_raw, context, evidence)
         original_raw = _optional(authority, ADMISSION, owner)
-        admission = fresh if original_raw is None else decode(original_raw, "admission")
+        admission = fresh if original_raw is None else decode_launch_admission(original_raw)
         require(
             all(
                 admission[name] == fresh[name]
-                for name in ("binding", "target", "candidate", "platform", "authoritySha256")
+                for name in (
+                    "format",
+                    "binding",
+                    "target",
+                    "candidate",
+                    "platform",
+                    "authoritySha256",
+                )
             ),
             "launch-original-admission-changed",
         )
@@ -220,7 +230,7 @@ def verify_launch(state_path: Path, authority_path: Path, *, owner: int = 0) -> 
             maximum_bytes=0,
         )
         admission_raw = _read(authority, ADMISSION, owner)
-        admission = decode(admission_raw, "admission")
+        admission = decode_launch_admission(admission_raw)
         receipt = validate_launch(
             admission_raw,
             _read(authority, INTENT, owner),
@@ -264,9 +274,37 @@ def require_local_launch_binding(
                 authority_path, receipt, enrolled, owner=owner, boot_path=boot_path
             )
             return
+        from lowerduckpond_static_host_agent.first_canary import FENCE, VIEW  # noqa: PLC0415
+
+        projected = authority_path.name == VIEW
+        if projected:
+            require(
+                not os.path.lexists(authority_path.joinpath(*FENCE)), "first-canary-worker-fenced"
+            )
         transaction_raw = _optional(authority, ("transaction.json",), owner)
         if transaction_raw is not None:
             transaction = decode(transaction_raw, "transaction")
+            if projected:
+                require(
+                    transaction["transactionId"] == CANARY_TRANSACTION,
+                    "first-canary-wrong-transaction",
+                )
+            if "admissionSha256" in receipt or transaction["transactionId"] == CANARY_TRANSACTION:
+                admission = decode_launch_admission(_read(authority, ADMISSION, owner))
+                require(
+                    (admission["format"] == FIRST_CANARY)
+                    == (transaction["transactionId"] == CANARY_TRANSACTION),
+                    "native-publication-binding-changed",
+                )
+                if admission["format"] == FIRST_CANARY:
+                    from scripts.m3_12_droplet_observe import host_identity  # noqa: PLC0415
+
+                    require(
+                        digest(admission) == receipt.get("admissionSha256")
+                        and digest(admission["decision"]) == transaction["authorizationSha256"]
+                        and admission["decision"]["hostIdentity"] == host_identity(owner),
+                        "first-canary-wrong-guest",
+                    )
             require(
                 not disposable
                 and binding["targetKind"] == "production-host"

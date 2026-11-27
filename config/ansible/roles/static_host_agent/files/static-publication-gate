@@ -17,6 +17,7 @@ PROTECTED_FILE_MODE = 0o400
 INSTALLATION = pathlib.Path("/opt/lowerduckpond/static-host-agent/current/site-packages")
 STATE = pathlib.Path("/var/lib/lowerduckpond/static")
 SUCCESSOR = pathlib.Path("/var/lib/lowerduckpond/convergence/m3-12")
+CANARY_WORKER = pathlib.Path("/run/lowerduckpond-static-worker/first-canary-publication")
 WORKER_CREDENTIALS = pathlib.Path("/run/credentials")
 TWO_ARGUMENTS = 2
 UUIDV7 = re.compile(
@@ -86,6 +87,14 @@ def require_successor_launch(boot_path: pathlib.Path | None) -> None:
         require_unfenced_publication(SUCCESSOR)
         droplet = SUCCESSOR / PUBLICATION_VIEW
         authority = droplet if os.path.lexists(droplet) else SUCCESSOR
+        if os.path.lexists(CANARY_WORKER):
+            if (
+                authority == droplet
+                or os.path.lexists(SUCCESSOR / "transaction.json")
+                or sys.argv[1] not in {"worker", "caddy-generation"}
+            ):
+                fail("launch_authority_unavailable", 78)
+            authority = CANARY_WORKER
         receipt = verify_launch(STATE, authority)
         disposable = os.path.lexists("/.dockerenv")
         if authority == droplet and boot_path is not None:

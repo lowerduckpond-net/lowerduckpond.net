@@ -24,6 +24,7 @@ from lowerduckpond_static_host_agent.correlations import (
     CorrelationAdmission,
     CorrelationResolution,
 )
+from lowerduckpond_static_host_agent.first_canary import JobStateReader
 from lowerduckpond_static_host_agent.locks import LockMode
 from lowerduckpond_static_host_agent.repository import (
     StateRecordPath,
@@ -99,6 +100,15 @@ class CommandPublicationGate:
         ):
             raise PublicationDisabledError("publication_disabled")
         raise IssuanceError("publication gate failed closed")
+
+    def require_job(self, transaction: JobStateReader, job: dict[str, object]) -> None:
+        from lowerduckpond_static_host_agent.first_canary import require_job  # noqa: PLC0415
+
+        self.require_unfenced()
+        try:
+            require_job(transaction, job)
+        except (OSError, RuntimeError, ValueError) as error:
+            raise PublicationDisabledError("publication_disabled") from error
 
     def require_unfenced(self) -> None:
         """Check the native fence again while the admission transaction is held."""
@@ -201,9 +211,7 @@ class AuthorizationIssuer:
             now=accepted_at,
             blocking=blocking,
             before_commit=(
-                self._gate.require_unfenced
-                if isinstance(self._gate, CommandPublicationGate)
-                else None
+                self._gate.require_job if isinstance(self._gate, CommandPublicationGate) else None
             ),
         )
         return _issued(resolution)
@@ -236,6 +244,9 @@ class AuthorizationIssuer:
                 "artifact": request.get("artifact"),
             },
             blocking=blocking,
+            before_commit=self._gate.require_job
+            if isinstance(self._gate, CommandPublicationGate)
+            else None,
         )
         return None if resolution is None else _issued(resolution)
 
