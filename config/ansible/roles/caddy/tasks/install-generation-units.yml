@@ -1,0 +1,20 @@
+---
+- name: Install the immutable Caddy unit
+  ansible.builtin.template:
+    src: caddy-generation.service.j2
+    dest: /etc/systemd/system/caddy.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install the immutable Caddy recovery unit
+  ansible.builtin.template:
+    src: caddy-recovery.service.j2
+    dest: /etc/systemd/system/caddy-recovery.service
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Reload systemd inside the immutable bootstrap transaction
+  ansible.builtin.systemd_service:
+    daemon_reload: true

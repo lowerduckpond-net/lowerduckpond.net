@@ -140,6 +140,21 @@ def test_origin_pull_ca_extensions_are_validated_before_installation() -> None:
     assert "- -text" not in tasks[tasks.index(basic_constraints) : tasks.index(installation)]
 
 
+def test_dark_source_selects_before_installing_the_systemd_units() -> None:
+    tasks = (_CADDY_ROLE / "tasks/main.yml").read_text(encoding="utf-8")
+    # The /etc service fragment shadows a runtime mask as soon as systemd reloads.
+    # The disposable source must validate/select its predecessor before that point.
+    unit_install = "ansible.builtin.include_tasks: install-generation-units.yml"
+    before_units, between_units, after_units = tasks.split(unit_install)
+    assert "not static_publication_enabled | bool" in before_units
+    assert "m3_12_source_bootstrap_active | default(false) | bool" in before_units
+    assert "- not caddy_defer_generation_units | bool" in between_units
+    assert "Build, validate, and select the complete platform-only generation" in between_units
+    assert after_units.index("- caddy_defer_generation_units | bool") < after_units.index(
+        "Remove any immutable-bootstrap runtime mask"
+    )
+
+
 def test_generation_migration_is_stopped_masked_and_defaults_on() -> None:
     defaults = (_CADDY_ROLE / "defaults/main.yml").read_text(encoding="utf-8")
     tasks = (_CADDY_ROLE / "tasks/main.yml").read_text(encoding="utf-8")

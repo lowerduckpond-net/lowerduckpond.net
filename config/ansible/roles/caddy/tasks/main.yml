@@ -631,6 +631,10 @@
 
 - name: Decide whether a stopped and masked bootstrap transaction is required
   ansible.builtin.set_fact:
+    # An /etc unit shadows the runtime mask needed to authenticate the predecessor.
+    caddy_defer_generation_units: >-
+      {{ m3_12_source_bootstrap_active | default(false) | bool and
+         not static_publication_enabled | bool }}
     caddy_generation_bootstrap_required: >-
       {{ not caddy_preserve_selected_generation | bool and
          (caddy_generation_check.skipped | default(false) or
@@ -733,34 +737,12 @@
     - caddy_generation_enabled | bool
     - caddy_generation_bootstrap_required | bool
 
-- name: Install the immutable Caddy unit
-  ansible.builtin.template:
-    src: caddy-generation.service.j2
-    dest: /etc/systemd/system/caddy.service
-    owner: root
-    group: root
-    mode: "0644"
+- name: Install the immutable Caddy units before ordinary bootstrap
+  ansible.builtin.include_tasks: install-generation-units.yml
   when:
     - caddy_generation_enabled | bool
     - caddy_generation_bootstrap_required | bool
-
-- name: Install the immutable Caddy recovery unit
-  ansible.builtin.template:
-    src: caddy-recovery.service.j2
-    dest: /etc/systemd/system/caddy-recovery.service
-    owner: root
-    group: root
-    mode: "0644"
-  when:
-    - caddy_generation_enabled | bool
-    - caddy_generation_bootstrap_required | bool
-
-- name: Reload systemd inside the immutable bootstrap transaction
-  ansible.builtin.systemd_service:
-    daemon_reload: true
-  when:
-    - caddy_generation_enabled | bool
-    - caddy_generation_bootstrap_required | bool
+    - not caddy_defer_generation_units | bool
 
 - name: Build, validate, and select the complete platform-only generation
   ansible.builtin.command:
@@ -781,6 +763,13 @@
     - not (host_recovery_bootstrap_enabled | default(false) | bool)
     - caddy_generation_enabled | bool
     - caddy_generation_bootstrap_required | bool
+
+- name: Install the immutable Caddy units after dark source selection
+  ansible.builtin.include_tasks: install-generation-units.yml
+  when:
+    - caddy_generation_enabled | bool
+    - caddy_generation_bootstrap_required | bool
+    - caddy_defer_generation_units | bool
 
 - name: Remove any immutable-bootstrap runtime mask
   ansible.builtin.command:
