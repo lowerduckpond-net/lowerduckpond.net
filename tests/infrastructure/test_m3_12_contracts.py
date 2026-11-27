@@ -1264,7 +1264,8 @@ def droplet_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Do
     admission, _, earlier = enroll(DISPOSABLE)
     binding = admission["binding"]
     original_target = admission["target"]
-    local = droplet_observe.host_identity(owner)
+    # Use the same module hook as the reader: a consuming fixture patches it.
+    local = droplet_enrollment.host_identity(owner)  # type: ignore[attr-defined]
     exclusions = record(
         "droplet-production-exclusions",
         dropletIds=[100],
