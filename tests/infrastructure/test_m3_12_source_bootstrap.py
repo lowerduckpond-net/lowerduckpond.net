@@ -4,17 +4,31 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
+from collections.abc import Callable
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from lowerduckpond_static_host_agent import (
+    caddy_runtime,
     droplet_enrollment,
+    entrypoints,
     installed_routing,
     source_bootstrap,
     successor_rollback,
 )
+from lowerduckpond_static_host_agent.caddy_generation import (
+    CADDY_GENERATION_ROOT_MODE,
+    CaddyBinarySource,
+    CaddyGenerationPayload,
+    CaddyGenerationStore,
+    caddy_route_state_digest,
+)
 from lowerduckpond_static_host_agent.caddy_routes import build_platform_only_caddy_routes
+from lowerduckpond_static_host_agent.caddy_runtime import CADDY_PUBLICATION_LOCK_MODE
+from lowerduckpond_static_host_agent.caddy_startup import CaddyStartupStore
 from lowerduckpond_static_host_agent.disposable_routes import project_native_routes
 from lowerduckpond_static_host_agent.host_restore_journal import HostRestoreError
 
@@ -26,6 +40,7 @@ from infrastructure.test_m3_12_droplet_journey import proof
 from infrastructure.test_m3_12_droplet_journey import records as records  # noqa: PLC0414
 from scripts import m3_11_production_lease as lease
 from scripts import m3_12_droplet as droplet
+from scripts import m3_12_droplet_observe
 from scripts.m3_12_contracts import Document, ValidationError, digest, encode
 from scripts.m3_12_diagnostic_store import Attempt
 from scripts.m3_12_droplet_scope import ReviewedJourney
@@ -246,3 +261,181 @@ def test_enabled_site_handoff_requires_the_original_verified_launch(
     with pytest.raises(ValidationError, match="successor-publication-fenced"):
         source_bootstrap.verify(request, artifact, publication_enabled=True, owner=owner)
     assert receipt.read_bytes() == original
+
+
+def _installed_bootstrap_command(
+    caddy: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> Callable[..., tuple[int, str, str]]:
+    for name, mode in (("generations", CADDY_GENERATION_ROOT_MODE), ("intents", 0o700)):
+        (caddy / name).mkdir(mode=mode)
+        (caddy / name).chmod(mode)
+    lock = tmp_path / "publication.lock"
+    lock.touch(mode=CADDY_PUBLICATION_LOCK_MODE)
+    lock.chmod(CADDY_PUBLICATION_LOCK_MODE)
+    monkeypatch.setattr(entrypoints, "_CADDY_RUNTIME_ROOT", caddy)
+    monkeypatch.setattr(entrypoints, "_CADDY_GENERATION_ROOT", caddy / "generations")
+    monkeypatch.setattr(entrypoints, "_CADDY_INTENT_ROOT", caddy / "intents")
+    monkeypatch.setattr(entrypoints, "_PUBLICATION_LOCK", lock)
+    monkeypatch.setattr(entrypoints.pwd, "getpwnam", lambda _: SimpleNamespace(pw_uid=0))
+    monkeypatch.setattr(entrypoints.grp, "getgrnam", lambda _: SimpleNamespace(gr_gid=0))
+    binary = tmp_path / "caddy-bin"
+    binary.write_bytes(Path("/usr/bin/true").read_bytes())
+    binary.chmod(0o755)
+    environment = tmp_path / "environment"
+    environment.write_bytes(b"CLOUDFLARE_API_TOKEN=fixture\n")
+    environment.chmod(0o640)
+    ca = tmp_path / "ca.pem"
+    der = b"fixture public CA"
+    ca.write_text(ssl.DER_cert_to_PEM_cert(der))
+    ca.chmod(0o440)
+    args = [
+        "--origin-pull-required",
+        str(binary),
+        sha256(binary.read_bytes()).hexdigest(),
+        str(environment),
+        str(ca),
+    ]
+
+    def command(*flags: str) -> tuple[int, str, str]:
+        status = entrypoints.caddy_bootstrap_main([*flags, *args])
+        output = capfd.readouterr()
+        return status, output.out.strip(), output.err.strip()
+
+    # systemd's transient validation scope is outside the local filesystem fixture.
+    monkeypatch.setattr(caddy_runtime, "_validate_generation_candidate", lambda *_args, **_kw: None)
+    return command
+
+
+def _select_forged_predecessor(caddy: Path, tmp_path: Path, drift: str) -> None:
+    # Publish a manifest-consistent forgery, including a new metadata digest.
+    routes = build_platform_only_caddy_routes(
+        origin_pull_ca_der=(b"fixture public CA",), origin_pull_required=True
+    )
+    if drift == "configuration":
+        routes.configuration["apps"]["http"]["servers"].clear()
+    else:
+        routes.route_metadata["routeState"]["platformDomain"] = "other.example"
+        routes.route_metadata["routeStateDigest"] = caddy_route_state_digest(
+            routes.route_metadata["routeState"]
+        ).to_dict()
+    bad = "0198d17f-6f4a-7000-8000-000000000099"
+    with CaddyGenerationStore.open(
+        caddy / "generations", expected_owner=0, expected_group=0
+    ) as store:
+        store.publish(
+            bad,
+            CaddyGenerationPayload(
+                CaddyBinarySource(tmp_path / "caddy-bin", 0, 0),
+                (tmp_path / "environment").read_bytes(),
+                routes.configuration,
+                routes.route_metadata,
+            ),
+        )
+    (caddy / "active").write_bytes(bad.encode() + b"\n")
+
+
+def _interrupt_before_selection(
+    caddy: Path,
+    previous: bytes,
+    command: Callable[..., tuple[int, str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def stop(*_args: object, **_kwargs: object) -> None:
+        raise caddy_runtime.CaddyRuntimeError("fixture interruption before selection")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(caddy_runtime.CaddyRuntime, "select_active", stop)
+        assert command() == (1, "", "caddy_generation_bootstrap_failed")
+    assert (caddy / "active").read_bytes() == previous
+    with monkeypatch.context() as patch:
+        patch.setattr(source_bootstrap, "_command", lambda *_args: "{}")
+        assert command("--check") == (1, "", "caddy_generation_bootstrap_failed")
+        assert command() == (1, "", "caddy_generation_bootstrap_failed")
+    assert (caddy / "active").read_bytes() == previous
+    assert command("--check") == (0, "pending", "")
+
+
+@pytest.mark.skipif(os.geteuid() != 0, reason="installed bootstrap verifies root ownership")
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "none",
+        "configuration",
+        "metadata",
+        "ingress",
+        "launch",
+        "wrong-artifact",
+        "active-caddy",
+        "interrupted",
+    ],
+)
+def test_installed_source_platform_transition(
+    handoff: tuple[Document, Path, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+    drift: str,
+) -> None:
+    document, _, caddy = handoff
+    artifact = document["artifactSha256"]
+    command = _installed_bootstrap_command(caddy, tmp_path, monkeypatch, capfd)
+    # Seed the native predecessor before installing any disposable route authority.
+    assert command() == (0, "changed", "")
+    previous = (caddy / "active").read_bytes()
+    assert command("--check") == (0, "unchanged", "")
+    if drift in ("configuration", "metadata"):
+        _select_forged_predecessor(caddy, tmp_path, drift)
+        previous = (caddy / "active").read_bytes()
+    selector = tmp_path / "current"
+    target = tmp_path / artifact
+    target.mkdir(mode=0o755)
+    selector.symlink_to(target)
+
+    monkeypatch.setattr(m3_12_droplet_observe, "SELECTION", selector)
+    monkeypatch.setattr(source_bootstrap, "LAUNCH", tmp_path / "absent-launch", raising=False)
+    source_bootstrap.receive(encode(document), artifact, owner=0)
+    if drift == "ingress":
+        monkeypatch.setattr(source_bootstrap, "_command", lambda *_: "{}")
+    if drift == "launch":
+        (tmp_path / "absent-launch").touch()
+    if drift == "wrong-artifact":
+        selector.unlink()
+    if drift == "active-caddy":
+        command_readback = source_bootstrap._command
+        monkeypatch.setattr(
+            source_bootstrap,
+            "_command",
+            lambda *args: (
+                "ActiveState=active" if args[0] == "/usr/bin/systemctl" else command_readback(*args)
+            ),
+        )
+    if drift not in ("none", "interrupted"):
+        for flags in (("--check",), ()):
+            assert command(*flags) == (1, "", "caddy_generation_bootstrap_failed")
+        assert (caddy / "active").read_bytes() == previous
+        assert not list((caddy / "intents").iterdir())
+        return
+    assert command("--check") == (0, "changed", "")
+    assert (caddy / "active").read_bytes() == previous
+    if drift == "interrupted":
+        _interrupt_before_selection(caddy, previous, command, monkeypatch)
+    assert command() == (0, "changed", "")
+    selected = (caddy / "active").read_text().strip()
+    assert selected.encode() + b"\n" != previous
+    assert command("--check") == (0, "pending", "")
+    with CaddyStartupStore.open(caddy / "intents", expected_owner=0) as startup:
+        pending = startup.read()
+        assert pending is not None and pending.previous is not None
+        assert pending.previous.generation_id == previous.decode().strip()
+        assert pending.candidate.generation_id == selected
+        invocation = "5" * 32
+        startup.prepare_start(active=pending.candidate, invocation_id=invocation)
+        startup.commit_success(
+            startup.require_matching_success(active=pending.candidate, invocation_id=invocation)
+        )
+    assert command("--check") == (0, "unchanged", "")
+    assert command() == (0, "unchanged", "")
+    assert (caddy / "active").read_text().strip() == selected

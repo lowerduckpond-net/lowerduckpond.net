@@ -87,3 +87,43 @@ run "zero_prefix_with_leading_zero_is_rejected" {
 
   expect_failures = [var.admin_source_cidrs]
 }
+
+run "source_fixture_can_only_contact_metadata" {
+  command = plan
+
+  variables {
+    fixture_role                   = "source"
+    source_fixture_egress_isolated = true
+  }
+
+  assert {
+    condition = (
+      length(digitalocean_firewall.fixture.outbound_rule) == 1 &&
+      one(digitalocean_firewall.fixture.outbound_rule).protocol == "tcp" &&
+      one(digitalocean_firewall.fixture.outbound_rule).port_range == "80" &&
+      toset(one(digitalocean_firewall.fixture.outbound_rule).destination_addresses) == toset(["169.254.169.254/32"])
+    )
+    error_message = "Isolated source setup may only reach the native Droplet metadata service."
+  }
+}
+
+run "fixture_egress_isolation_is_refused_for_restore" {
+  command = plan
+
+  variables {
+    source_fixture_egress_isolated = true
+  }
+
+  expect_failures = [var.source_fixture_egress_isolated]
+}
+
+run "fixture_egress_isolation_is_refused_for_fresh" {
+  command = plan
+
+  variables {
+    fixture_role                   = "fresh"
+    source_fixture_egress_isolated = true
+  }
+
+  expect_failures = [var.source_fixture_egress_isolated]
+}

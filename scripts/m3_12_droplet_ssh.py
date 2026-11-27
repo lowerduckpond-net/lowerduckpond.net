@@ -280,25 +280,28 @@ def send_source_bootstrap(
         and re.fullmatch(r"[0-9a-f]{64}", artifact) is not None,
         "droplet-source-bootstrap-target-changed",
     )
-    launcher = (
-        PROBE.parents[1] / "config/ansible/roles/static_host_agent/files/m3-12-source-bootstrap"
-    ).read_text(encoding="utf-8")
-    command = shlex.join(
-        [
-            "/usr/bin/sudo",
-            "--non-interactive",
-            "/usr/bin/python3",
-            "-I",
-            "-B",
-            "-c",
-            launcher,
-            "receive",
-            artifact,
-        ]
-    )
+    command = source_command(artifact, "receive")
     reply = _call(endpoint, command, stdin=raw, executor=execute)
     require(
         re.fullmatch(rb"[0-9a-f]{64}\n", reply) is not None,
         "droplet-source-bootstrap-response-invalid",
     )
     return reply.strip().decode("ascii")
+
+
+def source_command(artifact: str, operation: str, *arguments: str) -> str:
+    """Use the fixed verified-artifact launcher, with quoted arguments."""
+    return shlex.join(
+        ["/usr/bin/sudo", "--non-interactive", *source_argv(artifact, operation, *arguments)]
+    )
+
+
+def source_argv(artifact: str, operation: str, *arguments: str) -> list[str]:
+    require(
+        re.fullmatch(r"[0-9a-f]{64}", artifact) is not None,
+        "droplet-source-bootstrap-target-changed",
+    )
+    launcher = (
+        PROBE.parents[1] / "config/ansible/roles/static_host_agent/files/m3-12-source-bootstrap"
+    ).read_text(encoding="utf-8")
+    return ["/usr/bin/python3", "-I", "-B", "-c", launcher, operation, artifact, *arguments]

@@ -33,44 +33,23 @@ resource "digitalocean_firewall" "fixture" {
     source_addresses = var.admin_source_cidrs
   }
 
-  outbound_rule {
-    protocol   = "tcp"
-    port_range = "53"
-    # Public DNS resolution is required for the disposable host.
-    #trivy:ignore:DIG-0003
-    destination_addresses = ["0.0.0.0/0", "::/0"]
-  }
-
-  outbound_rule {
-    protocol   = "udp"
-    port_range = "53"
-    # Public DNS resolution is required for the disposable host.
-    #trivy:ignore:DIG-0003
-    destination_addresses = ["0.0.0.0/0", "::/0"]
-  }
-
-  outbound_rule {
-    protocol   = "udp"
-    port_range = "123"
-    # The disposable host uses ordinary time synchronization.
-    #trivy:ignore:DIG-0003
-    destination_addresses = ["0.0.0.0/0", "::/0"]
-  }
-
-  outbound_rule {
-    protocol   = "tcp"
-    port_range = "80"
-    # Ubuntu package bootstrap may use HTTP before HTTPS repositories are staged.
-    #trivy:ignore:DIG-0003
-    destination_addresses = ["0.0.0.0/0", "::/0"]
-  }
-
-  outbound_rule {
-    protocol   = "tcp"
-    port_range = "443"
-    # Ubuntu packages and later scoped qualification APIs use HTTPS.
-    #trivy:ignore:DIG-0003
-    destination_addresses = ["0.0.0.0/0", "::/0"]
+  dynamic "outbound_rule" {
+    for_each = var.source_fixture_egress_isolated ? [
+      { protocol = "tcp", port = "80", destinations = ["169.254.169.254/32"] },
+      ] : [
+      { protocol = "tcp", port = "53", destinations = ["0.0.0.0/0", "::/0"] },
+      { protocol = "udp", port = "53", destinations = ["0.0.0.0/0", "::/0"] },
+      { protocol = "udp", port = "123", destinations = ["0.0.0.0/0", "::/0"] },
+      { protocol = "tcp", port = "80", destinations = ["0.0.0.0/0", "::/0"] },
+      { protocol = "tcp", port = "443", destinations = ["0.0.0.0/0", "::/0"] },
+    ]
+    content {
+      action     = "allow"
+      protocol   = outbound_rule.value.protocol
+      port_range = outbound_rule.value.port
+      #trivy:ignore:DIG-0003
+      destination_addresses = outbound_rule.value.destinations
+    }
   }
 }
 

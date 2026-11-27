@@ -178,6 +178,9 @@ def _provider_identity(
         "droplet-readback-provider-identity-changed",
     )
     observed = provider["firewalls"][0]
+    outbound_fields = {"protocol", "port_range", "destination_addresses"}
+    if scope.source_fixture_egress_isolated:
+        outbound_fields.add("action")
     require(
         set(observed) == {"id", "name", "droplet_ids", "inbound_rule", "outbound_rule", "settled"}
         and observed["id"] == firewall["id"]
@@ -187,10 +190,7 @@ def _provider_identity(
             set(row) == {"protocol", "port_range", "source_addresses"}
             for row in observed["inbound_rule"]
         )
-        and all(
-            set(row) == {"protocol", "port_range", "destination_addresses"}
-            for row in observed["outbound_rule"]
-        ),
+        and all(set(row) == outbound_fields for row in observed["outbound_rule"]),
         "droplet-readback-provider-firewall-changed",
     )
     _firewall(observed, scope)

@@ -14,7 +14,11 @@ from tempfile import TemporaryDirectory
 from lowerduckpond_static_contracts import decode_json_object
 
 from scripts.m3_12_contracts import MAX_RECORD_BYTES, digest, require
-from scripts.m3_12_droplet_plan import ApprovedHostPlan, verify_initial_host_plan
+from scripts.m3_12_droplet_plan import (
+    SOURCE_FIXTURE_EGRESS_OPTION,
+    ApprovedHostPlan,
+    verify_initial_host_plan,
+)
 
 ROOT = Path("infra/opentofu/environments/m3-12-qualification")
 INPUTS = str(ROOT / "reviewed.tfvars.json")
@@ -53,8 +57,10 @@ def configuration_digest(files: Mapping[str, bytes]) -> str:
         files.keys() in (OFFLINE_FILES, OFFLINE_FILES | BACKEND_FILES),
         "droplet-plan-producing-files-changed",
     )
+    inputs = decode_json_object(files[INPUTS], maximum_bytes=MAX_RECORD_BYTES)
     require(
-        decode_json_object(files[INPUTS], maximum_bytes=MAX_RECORD_BYTES).keys() == PLAN_VARIABLES,
+        inputs.keys() in (PLAN_VARIABLES, PLAN_VARIABLES | {SOURCE_FIXTURE_EGRESS_OPTION})
+        and type(inputs.get(SOURCE_FIXTURE_EGRESS_OPTION, False)) is bool,
         "droplet-plan-producing-inputs-changed",
     )
     return digest({name: sha256(raw).hexdigest() for name, raw in files.items()})
@@ -97,6 +103,11 @@ def verify_saved_initial_host_plan(
     require(
         evidence.evidence_sha256 == reviewed_evidence_sha256,
         "droplet-plan-original-evidence-changed",
+    )
+    inputs = decode_json_object(evidence.configuration[INPUTS], maximum_bytes=MAX_RECORD_BYTES)
+    require(
+        inputs.get(SOURCE_FIXTURE_EGRESS_OPTION, False) is scope.source_fixture_egress_isolated,
+        "droplet-plan-egress-review-changed",
     )
     envelope = decode_json_object(evidence.encrypted_plan, maximum_bytes=MAX_RECORD_BYTES)
     ciphertext = envelope.get("encrypted_data")

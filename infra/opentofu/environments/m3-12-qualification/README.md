@@ -13,6 +13,16 @@ and HTTPS ingress, reserved IP assignment, DNS, Spaces, and credentials are
 outside this initial plan. The existing cloud-init template receives the
 approved Ed25519 public key with its optional comment removed.
 
+For the historical fixture source, independently review
+`source_fixture_egress_isolated = true`. That source firewall allows
+new outbound traffic only to TCP/80 at the DigitalOcean link-local metadata
+address. The source uses local fixture services and pre-staged dependencies.
+The option applies only to the source. The restore and fresh plans retain
+their existing rules and this allocation authorizes only their enrollment
+in a source-only rehearsal. Verify the settled single attached firewall,
+exact outbound action and destination before installing the source.
+The source option defaults to false for existing callers.
+
 The [read-only plan guard](../../../../scripts/m3_12_droplet_plan.py) compares
 the initial plan with independently selected run, role, project, SSH key,
 CIDRs, and cloud-init digest. The same HCL local supplies Droplet user data

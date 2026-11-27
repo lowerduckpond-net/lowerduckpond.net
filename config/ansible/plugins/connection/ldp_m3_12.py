@@ -15,11 +15,16 @@ EXECUTABLE = "/usr/local/libexec/lowerduckpond/m3-12-successor-action"
 
 class Connection(ssh.Connection):  # type: ignore[misc]
     transport = "ldp_m3_12"
+    lease_variable = "LDP_M3_12_LEASE_TOKEN"
+    action_unit = "lowerduckpond-m3-12-action.service"
+
+    def action_argv(self, token: str, cmd: str) -> list[str]:
+        return [EXECUTABLE, "action", token, cmd]
 
     def exec_command(
         self, cmd: str, in_data: bytes | None = None, sudoable: bool = True
     ) -> tuple[int, bytes, bytes]:
-        token = os.environ.get("LDP_M3_12_LEASE_TOKEN", "")
+        token = os.environ.get(self.lease_variable, "")
         if (
             self.get_option("use_tty")
             or self.get_option("reconnection_retries") != 0
@@ -40,15 +45,12 @@ class Connection(ssh.Connection):  # type: ignore[misc]
                 "--pipe",
                 "--collect",
                 "--expand-environment=no",
-                "--unit=lowerduckpond-m3-12-action.service",
+                f"--unit={self.action_unit}",
                 "--service-type=exec",
                 "--property=ExitType=cgroup",
                 "--property=KillMode=control-group",
                 "--property=UMask=0077",
-                EXECUTABLE,
-                "action",
-                token,
-                cmd,
+                *self.action_argv(token, cmd),
             ]
         )
         result: tuple[int, bytes, bytes] = super().exec_command(

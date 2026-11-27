@@ -136,6 +136,10 @@ class CaddyRuntimeError(RuntimeError):
     """The selected Caddy runtime or launcher boundary is unsafe."""
 
 
+class CaddyRouteBindingMismatchError(CaddyRuntimeError):
+    """The manifest is intact but reconstruction does not match its route payload."""
+
+
 class CaddySelectionBoundary(StrEnum):
     """Observable durability barriers for active-reference failure injection."""
 
@@ -1081,7 +1085,9 @@ def _validate_route_binding(
     except (ContractError, CaddyRouteError, KeyError, TypeError, ValueError) as error:
         raise CaddyRuntimeError("selected Caddy route state is malformed") from error
     if configuration != expected.configuration or route_metadata != expected.route_metadata:
-        raise CaddyRuntimeError("selected Caddy configuration and declared route state disagree")
+        raise CaddyRouteBindingMismatchError(
+            "selected Caddy configuration and declared route state disagree"
+        )
 
 
 def _tenant_route_inputs(

@@ -395,15 +395,13 @@ def _require_projection_admission(
         )
 
 
-def deliver_source_bootstrap(
+def prepare_source_bootstrap(
     inputs: AdapterInputs,
     endpoint: Endpoint,
     policy_raw: bytes,
     execute: ReadExecutor,
-    *,
-    send: SSHExecutor,
-) -> str:
-    """Deliver only the original reviewed dark-stage receipt over the pinned transport."""
+) -> Document:
+    """Prepare only the original reviewed dark-stage handoff."""
     scope, action = inputs.open(frozenset({"dark-stage"}))
     require(endpoint.allocation.role == "source", "droplet-routing-role-changed")
     host = require_endpoint(endpoint, scope, action)
@@ -413,7 +411,7 @@ def deliver_source_bootstrap(
     restic = storage_target(scope, action, "source", "restic")
     archive = storage_target(scope, action, "source", "archive")
     candidate = scope["candidate"]["hostAgentSha256"]
-    document = {
+    return {
         "format": SOURCE_BOOTSTRAP_FORMAT,
         "bootSha256": prepared.boot_sha256,
         "predecessorSha256": scope["predecessorSha256"],
@@ -431,6 +429,20 @@ def deliver_source_bootstrap(
             )["hosts"],
         },
     }
-    receipt = send_source_bootstrap(endpoint, candidate, encode(document), execute=send)
+
+
+def deliver_source_bootstrap(
+    inputs: AdapterInputs,
+    endpoint: Endpoint,
+    policy_raw: bytes,
+    execute: ReadExecutor,
+    *,
+    send: SSHExecutor,
+) -> str:
+    """Deliver only the original reviewed dark-stage receipt over the pinned transport."""
+    document = prepare_source_bootstrap(inputs, endpoint, policy_raw, execute)
+    receipt = send_source_bootstrap(
+        endpoint, document["artifactSha256"], encode(document), execute=send
+    )
     require(receipt == digest(document), "droplet-source-bootstrap-readback-changed")
     return receipt
