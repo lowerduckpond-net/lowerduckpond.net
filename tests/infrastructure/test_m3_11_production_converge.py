@@ -15,6 +15,7 @@ from ansible.plugins.loader import callback_loader  # type: ignore[import-untype
 
 from scripts import m3_11_production_converge as converge
 from scripts import m3_11_production_journal as journal
+from scripts.m3_11_playbook_recap import MAX_RECEIPT_BYTES
 
 CONTEXT = "a" * 64
 
@@ -153,7 +154,7 @@ def test_recap_requires_bounded_private_original_file(receipt: Path, fault: str)
         receipt.unlink()
         os.mkfifo(receipt, 0o600)
     else:
-        receipt.write_bytes(receipt.read_bytes() + b" " * converge.MAX_RECEIPT_BYTES)
+        receipt.write_bytes(receipt.read_bytes() + b" " * MAX_RECEIPT_BYTES)
     with pytest.raises((OSError, ValueError)):
         converge.recap(receipt, CONTEXT, idempotent=True)
 
