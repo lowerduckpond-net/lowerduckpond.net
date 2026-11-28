@@ -7,7 +7,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Final, Protocol, cast
+from typing import TYPE_CHECKING, Final, Protocol, cast
 
 from lowerduckpond_static_contracts import (
     archive_record_digest,
@@ -30,6 +30,9 @@ from lowerduckpond_static_host_agent.repository import (
     StateRepository,
     StoredContract,
 )
+
+if TYPE_CHECKING:
+    from lowerduckpond_static_host_agent.first_canary import JobStateReader
 
 _PRINCIPAL: Final = re.compile(r"[A-Za-z0-9][A-Za-z0-9._@-]{0,127}", flags=re.ASCII)
 _DISABLED_STATUS: Final = 78
@@ -99,6 +102,15 @@ class CommandPublicationGate:
         ):
             raise PublicationDisabledError("publication_disabled")
         raise IssuanceError("publication gate failed closed")
+
+    def require_job(self, transaction: JobStateReader, job: dict[str, object]) -> None:
+        from lowerduckpond_static_host_agent.first_canary import require_job  # noqa: PLC0415
+
+        self.require_unfenced()
+        try:
+            require_job(transaction, job)
+        except (OSError, RuntimeError, ValueError) as error:
+            raise PublicationDisabledError("publication_disabled") from error
 
     def require_unfenced(self) -> None:
         """Check the native fence again while the admission transaction is held."""
@@ -201,9 +213,7 @@ class AuthorizationIssuer:
             now=accepted_at,
             blocking=blocking,
             before_commit=(
-                self._gate.require_unfenced
-                if isinstance(self._gate, CommandPublicationGate)
-                else None
+                self._gate.require_job if isinstance(self._gate, CommandPublicationGate) else None
             ),
         )
         return _issued(resolution)
@@ -236,6 +246,9 @@ class AuthorizationIssuer:
                 "artifact": request.get("artifact"),
             },
             blocking=blocking,
+            before_commit=self._gate.require_job
+            if isinstance(self._gate, CommandPublicationGate)
+            else None,
         )
         return None if resolution is None else _issued(resolution)
 

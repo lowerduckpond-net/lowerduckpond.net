@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from infrastructure.test_m3_12_first_canary import canary, create_request
 from lowerduckpond_static_contracts import (
     ContractError,
     canonical_json_bytes,
@@ -33,10 +34,13 @@ from lowerduckpond_static_host_agent import (
     StateRecordPath,
     StateRepository,
     VerifiedArtifact,
+    first_canary,
+    platform_launch,
     successor_rollback,
 )
 
 from config.ansible.molecule.m3_8.tests import admission_probe, correlation_pacing
+from scripts.m3_12_contracts import Document, digest, encode
 
 _FIXTURE_ROOT = Path(__file__).parents[3] / "tests/static-publication/fixtures/accepted"
 _NOW = datetime(2026, 8, 30, 12, 0, tzinfo=UTC)
@@ -682,4 +686,97 @@ def test_standalone_manifest_never_reaches_the_publication_gate(tmp_path: Path) 
                 operator_principal="operator@example.test",
                 now=_NOW,
                 artifact=None,
+            )
+
+
+def test_only_reviewed_canary_jobs_reach_normal_issuance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state, root, admission, ctx, evidence = canary(tmp_path)
+    platform_launch.initialize_launch(
+        state, root, encode(admission), evidence, lambda: ctx, owner=os.geteuid()
+    )
+    monkeypatch.setattr(first_canary, "AUTHORITY", root)
+    monkeypatch.setattr(first_canary, "OWNER", os.geteuid())
+    # The networkless launch view and fence are exercised separately. This check
+    # uses the installed issuer's CommandPublicationGate and a real state lock.
+    with _repository(state) as repo:
+        issuer = AuthorizationIssuer(
+            repo, gate=CommandPublicationGate(Path("/usr/bin/true")), entropy=_Entropy()
+        )
+
+        def issue(
+            request: Document, principal: str = "operator@example.test"
+        ) -> IssuedAuthorization:
+            return issuer.issue(
+                encode(request), operator_principal=principal, now=_NOW, artifact=None
+            )
+
+        first = issue(create_request(1))
+        assert not issue(create_request(1)).created
+        assert issue(create_request(2)).created
+        for request, principal in [
+            (create_request(3), "operator@example.test"),
+            (create_request(1), "foreign"),
+            ({**create_request(1), "slug": "some-customer"}, "operator@example.test"),
+        ]:
+            with pytest.raises(PublicationDisabledError):
+                issue(request, principal)
+        assert repo.measure_authorization_records().record_count == 2 * len(
+            admission["decision"]["creates"]
+        )
+        # A follow-up grant alone cannot select the target. The original
+        # successful create result is the source of the server-assigned ID.
+        result: Document = _fixture("operation-result.json")
+        result.update(
+            provenance={"kind": "authorization-job", "jobId": first.job_id},
+            correlationId=create_request(1)["correlationId"],
+        )
+        desired = result["manifest"]
+        desired["metadata"]["slug"] = create_request(1)["slug"]
+        _write(state, StateRecordPath.authorization_result(first.job_id), result)
+        tenant = result["tenantId"]
+        _write(state, StateRecordPath.tenant_desired(tenant), desired)
+        rename = {k: v for k, v in create_request(8).items() if k != "quotas"}
+        rename.update(operation="rename", slug="m312-canary-renamed", tenantId=tenant)
+
+        def grant(request: Document, slot: int) -> None:
+            target = root / ("canary-job-" + request["correlationId"] + ".json")
+            target.write_bytes(
+                encode(
+                    {
+                        "format": "lowerduckpond-m3-12-first-canary-job-v1",
+                        "authoritySha256": ctx.authority_sha256,
+                        "createCorrelationId": create_request(slot)["correlationId"],
+                        "requestSha256": digest(request),
+                    }
+                )
+            )
+            target.chmod(0o600)
+
+        with pytest.raises(PublicationDisabledError):
+            issue(rename)
+        grant(rename, 1)
+        assert issue(rename).created
+        foreign = {
+            **rename,
+            "correlationId": create_request(9)["correlationId"],
+            "tenantId": "0191e2c4-8f7a-7c3b-8d1e-5f62047a3300",
+        }
+        foreign_site = deepcopy(desired)
+        foreign_site["metadata"]["id"] = foreign["tenantId"]
+        foreign_site["metadata"]["canonicalOrigin"] = (
+            "t-" + foreign["tenantId"].replace("-", "") + ".lowerduckpond.com"
+        )
+        _write(state, StateRecordPath.tenant_desired(foreign["tenantId"]), foreign_site)
+        grant(foreign, 1)
+        with pytest.raises(PublicationDisabledError):
+            issue(foreign)
+        (root / "canary-closed").touch(mode=0o600)
+        with pytest.raises(PublicationDisabledError):
+            issue(create_request(2))
+        assert first.created
+        with pytest.raises(PublicationDisabledError):
+            issuer.recognize_exact_retry(
+                encode(create_request(1)), operator_principal="operator@example.test", artifact=None
             )

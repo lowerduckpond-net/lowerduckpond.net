@@ -137,7 +137,7 @@ class CorrelationAdmission:
         *,
         now: datetime,
         blocking: bool = False,
-        before_commit: Callable[[], None] | None = None,
+        before_commit: Callable[[_CorrelationTransaction, dict[str, object]], None] | None = None,
     ) -> CorrelationResolution:
         """Return an exact retry or durably admit one new pending job."""
 
@@ -150,7 +150,7 @@ class CorrelationAdmission:
             blocking=blocking,
         ) as transaction:
             if before_commit is not None:
-                before_commit()
+                before_commit(transaction, candidate)
             inventory = transaction.measure_authorization_records(limits=self._limits)
             correlations, repaired_records = _reconcile_pairs(
                 transaction,
@@ -273,6 +273,7 @@ class CorrelationAdmission:
         *,
         binding: dict[str, object],
         blocking: bool = False,
+        before_commit: Callable[[_CorrelationTransaction, dict[str, object]], None] | None = None,
     ) -> CorrelationResolution | None:
         """Resolve one caller binding from durable authority without rebuilding it."""
 
@@ -281,6 +282,8 @@ class CorrelationAdmission:
             mode=LockMode.EXCLUSIVE,
             blocking=blocking,
         ) as transaction:
+            if before_commit is not None:
+                before_commit(transaction, binding)
             inventory = transaction.measure_authorization_records(limits=self._limits)
             correlations, repaired_records = _reconcile_pairs(
                 transaction,

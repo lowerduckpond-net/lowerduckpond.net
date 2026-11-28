@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from runpy import run_path
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 import pytest
@@ -214,14 +214,20 @@ def enroll(
         "successor": (55, 56),
         "backupRestore": (80, 81),
     }
-    records = {}
+    records: dict[str, bytes] = {}
     for key, receipt_kind in slots.items():
         observation = {
             "predecessor": target.get("predecessorSha256"),
             "successor": target.get("successorProposalSha256"),
         }.get(key)
         admission["prerequisites"][key] = retain(
-            records, receipt(admission, receipt_kind, *times[key], observation)
+            records,
+            receipt(
+                admission,
+                receipt_kind,
+                *times[key],
+                observation if isinstance(observation, str) else None,
+            ),
         )
     platform_digest = None
     if report is not None:
@@ -293,7 +299,7 @@ def launch_records(admission: Document, minute: int) -> tuple[Document, Document
 def completed(kind: str) -> tuple[Document, Evidence]:
     admission, _, evidence = enroll(kind)
     # Earlier owned run with the same candidate.
-    records = {}
+    records: dict[str, bytes] = {}
     admission["preparedAt"] = fixture_time(-10)
     for key, value in admission["prerequisites"].items():
         original = evidence.read(value, "receipt")
@@ -443,7 +449,7 @@ def test_crossover_cannot_be_selected_by_an_argument_or_mixed_pair() -> None:
         {"observed_disposable_identifiers": frozenset({"reserved-address"})},
     ],
 )
-def test_current_authority_and_history_are_mandatory(changed: dict[str, object]) -> None:
+def test_current_authority_and_history_are_mandatory(changed: dict[str, Any]) -> None:
     bundle, context, receipts = enroll(DISPOSABLE)
     with pytest.raises(ValidationError):
         validate_admission(encode(bundle), replace(context, **changed), receipts)
@@ -1258,7 +1264,8 @@ def droplet_attempt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Do
     admission, _, earlier = enroll(DISPOSABLE)
     binding = admission["binding"]
     original_target = admission["target"]
-    local = droplet_enrollment.host_identity(owner)
+    # Use the same module hook as the reader: a consuming fixture patches it.
+    local = droplet_enrollment.host_identity(owner)  # type: ignore[attr-defined]
     exclusions = record(
         "droplet-production-exclusions",
         dropletIds=[100],

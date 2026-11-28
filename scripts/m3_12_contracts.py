@@ -24,6 +24,13 @@ MAX_RECORD_BYTES = 256 * 1024
 CLOCK_TOLERANCE = timedelta(minutes=5)
 LIVE_EVIDENCE_AGE = timedelta(days=7)
 SCHEMA = Path(__file__).resolve().parents[1] / "schemas/m3-12/v1/contracts.schema.json"
+FIRST_CANARY = "lowerduckpond-m3-12-first-production-canary-v1"
+CANARY_TRANSACTION = "01a21d1c-672f-7111-83be-f9a37c3bc632"
+CANARY_DROPLET = 593949487
+CANARY_COUNT = 2
+CANARY_PROJECT_SHA = sha256(b"2d1c1a69-d3dd-4eca-bb3f-cea6a9d7f158").hexdigest()
+CANARY_PREDECESSOR = "01a19b8a-4ad9-70c1-b831-11e3dd65bcc0"
+CANARY_PREDECESSOR_HEAD = "43f6b4eade5d945c1b299d65075a4cefd1de3091fe60adc201bf3c8d86f3fc5d"
 PRODUCTION = "production-host"
 DISPOSABLE = "disposable-droplet"
 INSTALLED = "installed-fixture"
@@ -92,6 +99,15 @@ def decode(raw: bytes, name: str) -> Document:
     return document
 
 
+def decode_launch_admission(raw: bytes) -> Document:
+    try:
+        record = decode_json_object(raw, maximum_bytes=MAX_RECORD_BYTES)
+    except ContractError:
+        raise ValidationError("invalid-record") from None
+    schema = "first-canary-admission" if record.get("format") == FIRST_CANARY else "admission"
+    return decode(raw, schema)
+
+
 def instant(value: str) -> datetime:
     return datetime.fromisoformat(value)
 
@@ -135,6 +151,9 @@ class AdmissionContext:
     production_identifiers: frozenset[str | int]
     observed_disposable_identifiers: frozenset[str | int] = frozenset()
     qualified_disposable_platform_sha256: str | None = None
+    transaction_id: str | None = None
+    predecessor_transaction: str | None = None
+    predecessor_head: str | None = None
 
 
 def _binding(admission: Document) -> Document:
@@ -180,7 +199,9 @@ def _prerequisites(admission: Document, evidence: Evidence) -> tuple[datetime, d
     slots = PRODUCTION_SLOTS if production else COMMON_SLOTS
     supplied = admission["prerequisites"]
     require(
-        supplied.keys() == slots.keys() | ({"completeDisposable"} if production else set()),
+        supplied.keys()
+        == slots.keys()
+        | ({"completeDisposable"} if production and admission["format"] != FIRST_CANARY else set()),
         "wrong-prerequisites",
     )
     prepared = instant(admission["preparedAt"])
@@ -225,9 +246,35 @@ def _prerequisites(admission: Document, evidence: Evidence) -> tuple[datetime, d
     )
 
 
+def require_canary_decision(
+    decision: Document, target: Document, binding: Document, context: AdmissionContext
+) -> None:
+    require(
+        context.transaction_id == CANARY_TRANSACTION
+        and context.predecessor_transaction == CANARY_PREDECESSOR
+        and context.predecessor_head == CANARY_PREDECESSOR_HEAD,
+        "first-canary-authority-changed",
+    )
+    require_canary_binding(decision, target, binding)
+
+
+def require_canary_binding(decision: Document, target: Document, binding: Document) -> None:
+    require(
+        target["targetKind"] == PRODUCTION
+        and target["droplet"]["projectIdSha256"] == CANARY_PROJECT_SHA
+        and target["droplet"]["dropletId"] == CANARY_DROPLET
+        and decision["binding"] == binding
+        and decision["predecessorSha256"] == target["predecessorSha256"]
+        and decision["successorProposalSha256"] == target["successorProposalSha256"]
+        and len({item["correlationId"] for item in decision["creates"]}) == CANARY_COUNT
+        and len({item["requestSha256"] for item in decision["creates"]}) == CANARY_COUNT,
+        "first-canary-authority-changed",
+    )
+
+
 def validate_admission(raw: bytes, context: AdmissionContext, evidence: Evidence) -> Document:
     """Check a first-launch bundle against the current independent authority."""
-    admission = decode(raw, "admission")
+    admission = decode_launch_admission(raw)
     binding = _binding(admission)
     target = admission["target"]
     require(
@@ -265,8 +312,14 @@ def validate_admission(raw: bytes, context: AdmissionContext, evidence: Evidence
             ),
             "production-crossover",
         )
-    _prerequisites(admission, evidence)
-    if binding["targetKind"] == PRODUCTION:
+    first, _ = _prerequisites(admission, evidence)
+    if admission["format"] == FIRST_CANARY:
+        decision = evidence.read(context.authority_sha256, "first-canary-decision")
+        require(decision == admission["decision"], "first-canary-authority-changed")
+        require_canary_decision(decision, target, binding, context)
+        require(context.now - first <= LIVE_EVIDENCE_AGE, "stale-canary-evidence")
+    elif binding["targetKind"] == PRODUCTION:
+        require(context.transaction_id != CANARY_TRANSACTION, "first-canary-admission-required")
         _validate_qualification(admission, context, evidence)
     return admission
 
@@ -275,7 +328,7 @@ def validate_launch(
     admission_raw: bytes, intent_raw: bytes, launch_raw: bytes, receipt_raw: bytes
 ) -> Document:
     """Verify immutable links and the existing on-host launch-record contract."""
-    admission = decode(admission_raw, "admission")
+    admission = decode_launch_admission(admission_raw)
     intent = decode(intent_raw, "launch-intent")
     receipt = decode(receipt_raw, "launch-receipt")
     binding = _binding(admission)

@@ -10,6 +10,9 @@
       "$ref": "#/$defs/admission"
     },
     {
+      "$ref": "#/$defs/first-canary-admission"
+    },
+    {
       "$ref": "#/$defs/launch-intent"
     },
     {
@@ -1071,6 +1074,197 @@
         "leaseSha256",
         "preparedAt",
         "prerequisites"
+      ],
+      "additionalProperties": false
+    },
+    "first-canary-create": {
+      "type": "object",
+      "properties": {
+        "correlationId": {
+          "$ref": "#/$defs/uuid7"
+        },
+        "slug": {
+          "type": "string",
+          "pattern": "^m312-canary-[a-z0-9]{1,12}(?![\\s\\S])"
+        },
+        "requestSha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "required": [
+        "correlationId",
+        "slug",
+        "requestSha256"
+      ],
+      "additionalProperties": false
+    },
+    "first-canary-decision": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-m3-12-first-canary-decision-v1"
+        },
+        "approval": {
+          "const": "Sentinel_c1a03d66ef1c819188af86d6dbc24b64"
+        },
+        "transactionId": {
+          "const": "01a21d1c-672f-7111-83be-f9a37c3bc632"
+        },
+        "binding": {
+          "$ref": "#/$defs/binding"
+        },
+        "predecessorSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "successorProposalSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "hostIdentity": {
+          "type": "object",
+          "properties": {
+            "machineSha256": { "$ref": "#/$defs/sha256" },
+            "systemUuidSha256": { "$ref": "#/$defs/sha256" },
+            "hostKeySha256": { "$ref": "#/$defs/sha256" }
+          },
+          "required": ["machineSha256", "systemUuidSha256", "hostKeySha256"],
+          "additionalProperties": false
+        },
+        "operatorPrincipal": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}(?![\\s\\S])"
+        },
+        "creates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/first-canary-create"
+          },
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true
+        },
+        "renameSlug": {
+          "type": "string",
+          "pattern": "^m312-canary-[a-z0-9]{1,12}(?![\\s\\S])"
+        },
+        "unproven": {
+          "const": [
+            "complete-disposable",
+            "hostile-isolation",
+            "origin-outage",
+            "acme-failure-and-rollover",
+            "disposable-fresh-and-recovery-matrix"
+          ]
+        },
+        "customerAdmission": {
+          "const": "closed"
+        }
+      },
+      "required": [
+        "format",
+        "approval",
+        "transactionId",
+        "binding",
+        "predecessorSha256",
+        "successorProposalSha256",
+        "hostIdentity",
+        "operatorPrincipal",
+        "creates",
+        "renameSlug",
+        "unproven",
+        "customerAdmission"
+      ],
+      "additionalProperties": false
+    },
+    "first-canary-admission": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "const": "lowerduckpond-m3-12-first-production-canary-v1"
+        },
+        "binding": {
+          "$ref": "#/$defs/binding"
+        },
+        "target": {
+          "$ref": "#/$defs/target"
+        },
+        "candidate": {
+          "$ref": "#/$defs/candidate"
+        },
+        "platform": {
+          "$ref": "#/$defs/platform"
+        },
+        "invocationId": {
+          "$ref": "#/$defs/uuid7"
+        },
+        "authoritySha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "leaseSha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "preparedAt": {
+          "$ref": "#/$defs/time"
+        },
+        "prerequisites": {
+          "type": "object",
+          "properties": {
+            "component": {
+              "$ref": "#/$defs/sha256"
+            },
+            "transportBootstrap": {
+              "$ref": "#/$defs/sha256"
+            },
+            "darkStage": {
+              "$ref": "#/$defs/sha256"
+            },
+            "darkRepeat": {
+              "$ref": "#/$defs/sha256"
+            },
+            "targetSafety": {
+              "$ref": "#/$defs/sha256"
+            },
+            "livePreflight": {
+              "$ref": "#/$defs/sha256"
+            },
+            "predecessor": {
+              "$ref": "#/$defs/sha256"
+            },
+            "successor": {
+              "$ref": "#/$defs/sha256"
+            },
+            "backupRestore": {
+              "$ref": "#/$defs/sha256"
+            }
+          },
+          "required": [
+            "component",
+            "transportBootstrap",
+            "darkStage",
+            "darkRepeat",
+            "targetSafety",
+            "livePreflight",
+            "predecessor",
+            "successor",
+            "backupRestore"
+          ],
+          "additionalProperties": false
+        },
+        "decision": {
+          "$ref": "#/$defs/first-canary-decision"
+        }
+      },
+      "required": [
+        "format",
+        "binding",
+        "target",
+        "candidate",
+        "platform",
+        "invocationId",
+        "authoritySha256",
+        "leaseSha256",
+        "preparedAt",
+        "prerequisites",
+        "decision"
       ],
       "additionalProperties": false
     },

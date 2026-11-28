@@ -14,6 +14,7 @@ from pathlib import Path
 from lowerduckpond_static_host_agent.caddy_startup import CaddyStartupStore
 from lowerduckpond_static_host_agent.durable import DurableDirectory
 from lowerduckpond_static_host_agent.entrypoints import _open_caddy_control_runtime
+from lowerduckpond_static_host_agent.first_canary import fence_worker_view, project_launch
 from lowerduckpond_static_host_agent.host_restore_gate import require_restore_admission
 from lowerduckpond_static_host_agent.platform_launch import initialize_launch, verify_launch
 from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
@@ -22,15 +23,20 @@ from lowerduckpond_static_host_agent.successor_rollback import PhysicalRollback
 from scripts import m3_11_production_lease as lease
 from scripts import m3_11_production_records as predecessor_records
 from scripts.m3_12_contracts import (
+    CANARY_DROPLET,
+    CANARY_TRANSACTION,
+    FIRST_CANARY,
     MAX_RECORD_BYTES,
     AdmissionContext,
     Document,
     Evidence,
     decode,
+    decode_launch_admission,
     digest,
     encode,
     instant,
     require,
+    require_canary_decision,
 )
 from scripts.m3_12_successor import (
     CONFIGURATION_PHASES,
@@ -106,7 +112,9 @@ def read_authority(journal: SuccessorJournal, token: str) -> NativeAuthority:
     )
     read_enrollment(journal, target)
     predecessor_raw = predecessor_records.operate(PREDECESSOR, ["read"], b"", owner=0)
-    prior, previous = accepted_predecessor(predecessor_records.decode(predecessor_raw))
+    predecessor_chain = predecessor_records.decode(predecessor_raw)
+    prior, previous = accepted_predecessor(predecessor_chain)
+    canary = original["transactionId"] == CANARY_TRANSACTION
     invoked_raw = journal.read("invocation.json")
     invocation = decode_json_object(invoked_raw)
     lease_sha = sha256(token.encode()).hexdigest()
@@ -119,9 +127,14 @@ def read_authority(journal: SuccessorJournal, token: str) -> NativeAuthority:
             "invocationId",
             "leaseSha256",
             "preflightSha256",
-            "qualifiedDisposablePlatformSha256",
         }
-        and invocation["format"] == "lowerduckpond-m3-12-native-invocation-v1"
+        | (set() if canary else {"qualifiedDisposablePlatformSha256"})
+        and invocation["format"]
+        == (
+            "lowerduckpond-m3-12-first-canary-invocation-v1"
+            if canary
+            else "lowerduckpond-m3-12-native-invocation-v1"
+        )
         and invocation["transactionSha256"] == snapshot.history.transaction_sha256
         and invocation["leaseSha256"] == lease_sha
         and not os.path.lexists(ROOT / "revoked"),
@@ -185,8 +198,23 @@ def read_authority(journal: SuccessorJournal, token: str) -> NativeAuthority:
         tenant_generation=False,
         unfinished_lifecycle=False,
         production_identifiers=frozenset(),
-        qualified_disposable_platform_sha256=invocation["qualifiedDisposablePlatformSha256"],
+        qualified_disposable_platform_sha256=invocation.get("qualifiedDisposablePlatformSha256"),
+        transaction_id=original["transactionId"],
+        predecessor_transaction=previous["transaction_id"],
+        predecessor_head=sha256(predecessor_chain[-1][1]).hexdigest(),
     )
+    if canary:
+        decision = Evidence(
+            {context.authority_sha256: evidence_bytes(journal, context.authority_sha256)}
+        ).read(context.authority_sha256, "first-canary-decision")
+        require_canary_decision(decision, target, binding, context)
+        from scripts.m3_12_droplet_observe import host_identity, metadata_identity  # noqa: PLC0415
+
+        require(
+            metadata_identity()[0] == CANARY_DROPLET
+            and host_identity() == decision["hostIdentity"],
+            "first-canary-wrong-guest",
+        )
     return NativeAuthority(context, prior, candidate, platform, preflight)
 
 
@@ -234,7 +262,8 @@ def launch(journal: SuccessorJournal, token: str) -> Document:
         "native-successor-activation-not-current",
     )
     raw = journal.read("prepared-admission.json")
-    admission = decode(raw, "admission")
+    admission = decode_launch_admission(raw)
+
     direct = admission["prerequisites"]
     require(
         direct["livePreflight"] == digest(trusted.preflight),
@@ -259,11 +288,18 @@ def launch(journal: SuccessorJournal, token: str) -> Document:
         require(not os.path.lexists(ROOT / "revoked"), "native-successor-invocation-revoked")
         return trusted.context
 
-    return initialize_launch(STATE, ROOT, raw, evidence, reopen_lease)
+    receipt = initialize_launch(STATE, ROOT, raw, evidence, reopen_lease)
+    if admission["format"] == FIRST_CANARY:
+        project_launch(journal.root, journal.owner)
+    return receipt
 
 
 def admission_evidence(journal: SuccessorJournal, admission: Document) -> Evidence:
     records = {key: evidence_bytes(journal, key) for key in admission["prerequisites"].values()}
+    if admission["format"] == FIRST_CANARY:
+        key = admission["authoritySha256"]
+        records[key] = evidence_bytes(journal, key)
+        return Evidence(records)
     report_key = admission["prerequisites"]["completeDisposable"]
     report = Evidence(records).read(report_key, "report")
     require(report["completion"]["kind"] == "complete-disposable", "wrong-disposable-proof")
@@ -323,6 +359,11 @@ def require_dark_health() -> None:
 def phase(journal: SuccessorJournal, operation: str, token: str) -> Document:
     trusted = read_authority(journal, token)
     current = journal.snapshot()
+    require(
+        trusted.context.transaction_id != CANARY_TRANSACTION
+        or current.history.phase != "acceptance",
+        "first-canary-customer-acceptance-closed",
+    )
     record = decode_json_object(journal.read("phase-readback.json"))
     require(
         set(record)
@@ -356,6 +397,8 @@ def phase(journal: SuccessorJournal, operation: str, token: str) -> Document:
                 raw == encode(verify_launch(STATE, ROOT)),
                 "native-successor-launch-readback-changed",
             )
+            if trusted.context.transaction_id == CANARY_TRANSACTION:
+                project_launch(journal.root, journal.owner)
         else:
             require(
                 not os.path.lexists(ROOT / "launch-intent.json"),
@@ -413,6 +456,8 @@ def physical(journal: SuccessorJournal, token: str, operation: str) -> Document:
                     bool(current.rollbacks) and current.rollbacks[-1] == decision,
                     "native-successor-original-rollback-missing",
                 )
+                if trusted.context.transaction_id == CANARY_TRANSACTION:
+                    fence_worker_view(journal.root, journal.owner, closed=True)
                 return
             require(
                 not current.rollbacks or current.rollbacks[-1] != decision,
@@ -448,8 +493,22 @@ def physical(journal: SuccessorJournal, token: str, operation: str) -> Document:
                     rollback_active=len(current.rollbacks) % 2 == 1,
                 ),
             )
+            if trusted.context.transaction_id == CANARY_TRANSACTION:
+                fence_worker_view(journal.root, journal.owner, closed=True)
 
-        return engine.reconcile(decision, authorize=authorize)
+        result = engine.reconcile(decision, authorize=authorize)
+        if (
+            trusted.context.transaction_id == CANARY_TRANSACTION
+            and decision["action"] == "reactivate-same-policy"
+        ):
+            require(
+                journal.snapshot().rollbacks[-1] == decision
+                and len(journal.snapshot().rollbacks) % 2 == 0
+                and not os.path.lexists(ROOT / "publication-fence.json"),
+                "first-canary-rollback-pending",
+            )
+            fence_worker_view(journal.root, journal.owner, closed=False)
+        return result
 
 
 def drain_unit(unit: str, events_file: Path) -> None:

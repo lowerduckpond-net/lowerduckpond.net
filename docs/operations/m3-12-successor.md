@@ -7,6 +7,43 @@ The successor uses the original accepted M3.11 record chain as a predecessor.
 Keep that chain and its selected namespace intact. The new transaction binds
 its own lease, reviewed candidate and configuration for each authorized phase.
 
+## One-time production canary
+
+Trey authorized a two-tenant canary on production Droplet `593949487` in
+decision `Sentinel_c1a03d66ef1c819188af86d6dbc24b64`. The reserved
+transaction is `01a21d1c-672f-7111-83be-f9a37c3bc632`. Keep its original
+journal through interruption and rollback. Customer admission stays closed.
+
+Before preparing that transaction, an independent reviewer must reopen the
+candidate revision and archive, production target and state, accepted M3.11
+chain, and original proposal. Bind those identities in a canonical
+`first-canary-decision` from the M3.12 schema. Record the production machine,
+DMI and SSH public key digests, dedicated operator principal, the two exact
+synthetic create requests and their reserved rename slug. Retain the risk list
+from the schema. Use the decision's canonical SHA-256 as the transaction's
+`authorizationSha256` and retain its bytes as `evidence-<sha256>.json` in the
+protected successor journal. `just m3-12 prepare PATH` reopens the decision for
+review. A preview grants no lease.
+
+Use the original action lease and a `lowerduckpond-m3-12-first-canary-invocation-v1`
+invocation with the transaction, invocation, lease and current preflight
+identities. Supply a `first-canary-admission` with that decision and all nine
+direct production receipts. The native launch action compares the committed
+post-dark-repeat backup verification, including the separately fenced restore,
+before creating the launch. Enabled convergence installs the isolated worker
+view. Rollback and reactivation use the existing history-aware controller.
+
+For follow-up jobs resolve the tenant ID from its original successful create.
+Bind the exact canonical request, including any artifact, in the protected
+`canary-job-<correlationId>.json` for that job. Its four fields are `format`
+(`lowerduckpond-m3-12-first-canary-job-v1`), `authoritySha256`,
+`createCorrelationId` and `requestSha256`. Use the ordinary forced-command
+operator and retain its original correlation and result. After both tenants
+are retired and all jobs and owned archive versions are accounted for, close
+issuance by sealing `canary-closed` in the original successor journal. Keep
+the launch, authorization, audit and rollback history. Customer opening requires
+a separate decision and implementation review.
+
 The installed `successor-rollout` case builds the accepted M3.11 source from
 Git and uses the existing corrected bootstrap harness to complete the dark
 rollout on the owned fixture. The case retains
