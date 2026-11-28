@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import re
 import subprocess
@@ -20,8 +21,11 @@ from lowerduckpond_static_host_agent.platform_launch import initialize_launch, v
 from lowerduckpond_static_host_agent.repository import StateRecordPath, StateRepository
 from lowerduckpond_static_host_agent.successor_rollback import PhysicalRollback
 
+from scripts import m3_11_production_initialize as locks
 from scripts import m3_11_production_lease as lease
+from scripts import m3_11_production_observe as predecessor_state
 from scripts import m3_11_production_records as predecessor_records
+from scripts.m3_11_playbook_recap import MAX_RECEIPT_BYTES, validate_recap
 from scripts.m3_12_contracts import (
     CANARY_DROPLET,
     CANARY_TRANSACTION,
@@ -52,7 +56,6 @@ LEASE = RUNTIME / "lease"
 UNIT = "lowerduckpond-m3-12-action.service"
 ROOT = Path("/var/lib/lowerduckpond/convergence/m3-12")
 STATE = Path("/var/lib/lowerduckpond/static")
-MACHINE_ID = Path("/etc/machine-id")
 SELECTION = Path("/opt/lowerduckpond/static-host-agent/current")
 PREDECESSOR = ROOT.parent / "m3-11"
 CANDIDATE = Path("/opt/lowerduckpond/static-host-agent")
@@ -60,6 +63,7 @@ PUBLICATION = Path("/etc/lowerduckpond/static-publication.json")
 REQUIRE_CGROUP = Path("/proc/self/cgroup")
 CGROUP_EVENTS = Path("/sys/fs/cgroup/system.slice") / UNIT / "cgroup.events"
 HEX_SHA = re.compile(r"[0-9a-f]{64}", re.ASCII)
+CANARY_PLAYBOOK_HOST = "lowerduckpond_production_01"
 
 
 @dataclass(frozen=True)
@@ -76,13 +80,16 @@ def read_enrollment(journal: SuccessorJournal, target: Document) -> Document:
     require(not os.path.lexists("/.dockerenv"), "production-enrollment-is-disposable")
     raw = journal.read("enrollment.json")
     record = decode_json_object(raw)
-    machine = MACHINE_ID.read_bytes()
+    from scripts.m3_12_droplet_observe import (  # noqa: PLC0415 - native guest admission only
+        production_enrollment_machine_sha256,
+    )
+
     require(
         raw == encode(record)
         and record
         == {
             "format": "lowerduckpond-m3-12-production-enrollment-v1",
-            "machineSha256": sha256(machine).hexdigest(),
+            "machineSha256": production_enrollment_machine_sha256(journal.owner),
             "inventorySha256": target["inventorySha256"],
             "leaseDomainSha256": target["leaseDomainSha256"],
         }
@@ -282,6 +289,11 @@ def launch(journal: SuccessorJournal, token: str) -> Document:
         "native-successor-final-backup-changed",
     )
 
+    if admission["format"] == FIRST_CANARY:
+        from scripts.m3_12_backup_evidence import require_committed_restore  # noqa: PLC0415
+
+        require_committed_restore(journal, snapshot, backup, trusted.context)
+
     def reopen_lease() -> AdmissionContext:
         # The native initializer already owns tenant-state; avoid nested access.
         lease.require_action(LEASE, owner=0, token=token)
@@ -356,6 +368,210 @@ def require_dark_health() -> None:
     require(health.returncode == 0 and health.stdout == b"current\n", "native-successor-unhealthy")
 
 
+def _require_only_readback_process() -> None:
+    # An action-lock alone does not establish that all earlier descendants
+    # left the fixed ExitType=cgroup unit.
+    processes = CGROUP_EVENTS.with_name("cgroup.procs").read_text(encoding="ascii")
+    stats = CGROUP_EVENTS.with_name("cgroup.stat").read_text(encoding="ascii")
+    require(
+        processes.splitlines() == [str(os.getpid())] and "nr_descendants 0" in stats.splitlines(),
+        "first-canary-dark-action-not-drained",
+    )
+
+
+def canary_preparation(journal: SuccessorJournal, token: str) -> Document:
+    """Record readiness only after reopening the staged and selected artifacts."""
+    trusted = read_authority(journal, token)
+    current = journal.snapshot()
+    require(
+        trusted.context.transaction_id == CANARY_TRANSACTION
+        and current.history.phase == "preparation"
+        and not current.rollbacks,
+        "first-canary-preparation-unavailable",
+    )
+    from scripts.m3_12_canary_baseline import _verify_artifact  # noqa: PLC0415
+
+    owner = journal.owner
+    with locks._lock(locks.SELECTION_LOCK, fcntl.LOCK_SH, owner):
+        _require_only_readback_process()
+        raw = predecessor_records.operate(PREDECESSOR, ["read"], b"", owner=owner)
+        accepted, original = accepted_predecessor(predecessor_records.decode(raw))
+        require(accepted == trusted.predecessor, "first-canary-preparation-predecessor-changed")
+        predecessor = original["candidate"]["artifact_sha256"]
+        candidate = trusted.candidate["hostAgentSha256"]
+
+        def selected() -> None:
+            require(
+                candidate != predecessor
+                and SELECTION.is_symlink()
+                and SELECTION.resolve(strict=True) == CANDIDATE / predecessor
+                and not os.path.lexists(STATE / "platform" / "launch.json")
+                and not os.path.lexists(ROOT / "launch-intent.json"),
+                "first-canary-preparation-not-original",
+            )
+
+        selected()
+        for artifact in (predecessor, candidate):
+            _verify_artifact(artifact)
+        require_dark_health()
+        predecessor_state._empty(owner)
+        selected()
+        fresh = read_authority(journal, token)
+        require(
+            journal.snapshot() == current
+            and fresh.predecessor == trusted.predecessor
+            and fresh.candidate == trusted.candidate
+            and fresh.preflight == trusted.preflight
+            and fresh.context.invocation_id == trusted.context.invocation_id
+            and fresh.context.lease_sha256 == trusted.context.lease_sha256,
+            "first-canary-preparation-authority-changed",
+        )
+        _require_only_readback_process()
+        configuration = {
+            "operation": "stage-only",
+            "selectedArtifactSha256": predecessor,
+            "stagedArtifactSha256": candidate,
+        }
+        config_sha = digest(configuration)
+        observation = {
+            "format": "lowerduckpond-m3-12-first-canary-preparation-observation-v1",
+            "transactionSha256": current.history.transaction_sha256,
+            "priorHeadSha256": current.history.head_sha256,
+            "configuration": configuration,
+            "invocationId": fresh.context.invocation_id,
+            "leaseSha256": fresh.context.lease_sha256,
+            "preflightSha256": digest(fresh.preflight),
+        }
+        if not current.history.pending:
+            key = digest(observation)
+            journal.immutable(f"evidence-{key}.json", encode(observation))
+            intent = journal.advance(
+                "started", fresh.context, Reconciliation(key, "not-applied", True, True, config_sha)
+            )
+        else:
+            intent = current.phases[-1]
+            recorded = decode_json_object(evidence_bytes(journal, intent["evidenceSha256"]))
+            require(
+                recorded.get("format") == observation["format"]
+                and recorded.get("configuration") == configuration
+                and recorded.get("transactionSha256") == current.history.transaction_sha256
+                and recorded.get("priorHeadSha256") == intent["previousSha256"],
+                "first-canary-preparation-intent-changed",
+            )
+        observation.update(
+            format="lowerduckpond-m3-12-first-canary-preparation-completion-v1",
+            priorHeadSha256=digest(intent),
+        )
+        key = digest(observation)
+        journal.immutable(f"evidence-{key}.json", encode(observation))
+        return journal.advance(
+            "committed",
+            fresh.context,
+            Reconciliation(
+                key,
+                "committed",
+                True,
+                True,
+                config_sha,
+            ),
+        )
+
+
+def _canary_dark(
+    journal: SuccessorJournal, trusted: NativeAuthority, token: str, recap: bytes | None = None
+) -> Document:
+    current = journal.snapshot()
+    phase_name = current.history.phase
+    require(
+        trusted.context.transaction_id == CANARY_TRANSACTION
+        and phase_name in {"dark-staging", "dark-repeat"}
+        and current.history.pending == (recap is not None)
+        and not current.rollbacks,
+        "first-canary-dark-intent-unavailable",
+    )
+    if phase_name is None:
+        raise ValueError("first-canary-dark-intent-unavailable")
+    owner = journal.owner
+    artifact = trusted.candidate["hostAgentSha256"]
+    config_sha = digest(stage_configuration(phase_name, artifact))
+    recap_context = current.history.head_sha256
+    if recap is not None:
+        pending = current.phases[-1]
+        require(
+            pending["invocationId"] == trusted.context.invocation_id
+            and pending["leaseSha256"] == trusted.context.lease_sha256
+            and pending["stageConfigurationSha256"] == config_sha,
+            "first-canary-dark-recap-authority-changed",
+        )
+        if recap_context is None:
+            raise ValueError("first-canary-dark-intent-unavailable")
+        validate_recap(
+            recap,
+            recap_context,
+            idempotent=phase_name == "dark-repeat",
+            expected_host=CANARY_PLAYBOOK_HOST,
+        )
+    with locks._lock(locks.SELECTION_LOCK, fcntl.LOCK_SH, owner):
+        _require_only_readback_process()
+        if phase_name == "dark-staging" and recap is None:
+            raw = predecessor_records.operate(PREDECESSOR, ["read"], b"", owner=owner)
+            accepted, original = accepted_predecessor(predecessor_records.decode(raw))
+            require(accepted == trusted.predecessor, "first-canary-dark-predecessor-changed")
+            expected_artifact = original["candidate"]["artifact_sha256"]
+        else:
+            expected_artifact = artifact
+        expected_path = CANDIDATE / expected_artifact
+
+        def selected() -> None:
+            require(
+                SELECTION.is_symlink()
+                and SELECTION.resolve(strict=True) == expected_path
+                and not os.path.lexists(STATE / "platform" / "launch.json")
+                and not os.path.lexists(ROOT / "launch-intent.json"),
+                "first-canary-dark-preconditions-changed",
+            )
+
+        selected()
+        require_dark_health()
+        predecessor_state._empty(owner)
+        selected()
+        fresh = read_authority(journal, token)
+        require(
+            fresh.candidate == trusted.candidate
+            and fresh.preflight == trusted.preflight
+            and fresh.context.invocation_id == trusted.context.invocation_id
+            and fresh.context.lease_sha256 == trusted.context.lease_sha256
+            and journal.snapshot() == current,
+            "first-canary-dark-authority-changed",
+        )
+        _require_only_readback_process()
+        observed = {
+            "format": "lowerduckpond-m3-12-first-canary-dark-intent-observation-v1",
+            "transactionSha256": current.history.transaction_sha256,
+            "priorHeadSha256": current.history.head_sha256,
+            "phase": phase_name,
+            "invocationId": fresh.context.invocation_id,
+            "leaseSha256": fresh.context.lease_sha256,
+            "preflightSha256": digest(fresh.preflight),
+            "configurationSha256": config_sha,
+            "selectedArtifactSha256": expected_artifact,
+        }
+        if recap is not None:
+            observed["format"] = "lowerduckpond-m3-12-first-canary-dark-completion-observation-v1"
+            recap_sha = sha256(recap).hexdigest()
+            observed["playbookRecapSha256"] = recap_sha
+            journal.immutable(f"evidence-{recap_sha}.json", recap)
+        key = digest(observed)
+        journal.immutable(f"evidence-{key}.json", encode(observed))
+        return journal.advance(
+            "started" if recap is None else "committed",
+            fresh.context,
+            Reconciliation(
+                key, "not-applied" if recap is None else "committed", True, True, config_sha
+            ),
+        )
+
+
 def phase(journal: SuccessorJournal, operation: str, token: str) -> Document:
     trusted = read_authority(journal, token)
     current = journal.snapshot()
@@ -363,6 +579,29 @@ def phase(journal: SuccessorJournal, operation: str, token: str) -> Document:
         trusted.context.transaction_id != CANARY_TRANSACTION
         or current.history.phase != "acceptance",
         "first-canary-customer-acceptance-closed",
+    )
+    require(
+        operation != "reconcile"
+        or trusted.context.transaction_id != CANARY_TRANSACTION
+        or current.history.phase != "final-backup-verification",
+        "first-canary-requires-native-backup-verification",
+    )
+    if (
+        operation == "start"
+        and trusted.context.transaction_id == CANARY_TRANSACTION
+        and current.history.phase in {"dark-staging", "dark-repeat"}
+    ):
+        return _canary_dark(journal, trusted, token)
+    require(
+        operation != "reconcile"
+        or trusted.context.transaction_id != CANARY_TRANSACTION
+        or current.history.phase not in {"dark-staging", "dark-repeat"},
+        "first-canary-requires-dark-playbook-proof",
+    )
+    require(
+        trusted.context.transaction_id != CANARY_TRANSACTION
+        or current.history.phase != "preparation",
+        "first-canary-requires-native-preparation",
     )
     record = decode_json_object(journal.read("phase-readback.json"))
     require(
@@ -561,6 +800,29 @@ def dispatch(journal: SuccessorJournal, arguments: list[str]) -> int:
         return _under_action(journal, operation, token, extra)
 
 
+def canary_pending_dark(journal: SuccessorJournal, token: str) -> Document:
+    """Return the original pending receipt under the exact live canary lease."""
+    trusted = read_authority(journal, token)
+    current = journal.snapshot()
+    require(
+        trusted.context.transaction_id == CANARY_TRANSACTION
+        and current.history.pending
+        and current.history.phase in {"dark-staging", "dark-repeat"},
+        "first-canary-dark-not-pending",
+    )
+    pending = current.phases[-1]
+    require(
+        pending["transition"] == "started"
+        and pending["transactionSha256"] == current.history.transaction_sha256
+        and pending["invocationId"] == trusted.context.invocation_id
+        and pending["leaseSha256"] == trusted.context.lease_sha256
+        and pending["stageConfigurationSha256"]
+        == digest(stage_configuration(pending["phase"], trusted.candidate["hostAgentSha256"])),
+        "first-canary-dark-pending-authority-changed",
+    )
+    return pending
+
+
 def _under_action(journal: SuccessorJournal, operation: str, token: str, extra: list[str]) -> int:
     if operation == "action" and len(extra) == 1:
         trusted = read_authority(journal, token)
@@ -578,8 +840,19 @@ def _under_action(journal: SuccessorJournal, operation: str, token: str, extra: 
         )
         return subprocess.call(["/bin/sh", "-c", extra[0]])  # noqa: S603 - leased Ansible channel
     require(not extra, "native-successor-command-invalid")
-    if operation == "launch":
+    if operation == "first-canary-verify-preparation":
+        result = canary_preparation(journal, token)
+    elif operation == "first-canary-pending-dark":
+        result = canary_pending_dark(journal, token)
+    elif operation == "launch":
         result = launch(journal, token)
+    elif operation == "first-canary-final-backup":
+        from scripts.m3_12_native_backup import run as final_backup  # noqa: PLC0415
+
+        result = final_backup(journal, lambda: read_authority(journal, token), require_dark_health)
+    elif operation == "first-canary-finish-dark":
+        recap = sys.stdin.buffer.read(MAX_RECEIPT_BYTES + 1)
+        result = _canary_dark(journal, read_authority(journal, token), token, recap)
     elif operation in {"start", "reconcile"}:
         result = phase(journal, operation, token)
     elif operation in {"pin-predecessor", "rollback", "resume-rollback"}:
