@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import stat
 import tempfile
@@ -11,6 +10,10 @@ from pathlib import Path
 from typing import cast
 
 from scripts import m3_11_production_journal as journal
+from scripts.m3_11_playbook_recap import (
+    COUNTERS as COUNTERS,  # noqa: PLC0414 - legacy controller API
+)
+from scripts.m3_11_playbook_recap import MAX_RECEIPT_BYTES, validate_recap
 from scripts.m3_11_production_preflight import save
 from scripts.m3_11_production_replica import Replica
 from scripts.m3_11_production_session import Result
@@ -23,8 +26,6 @@ PHASES = {
     "rotation-enabled": ("rotation-enabled.started", "site.yml", True, True),
     "accepted": ("accepted.started", "acceptance.yml", True, True),
 }
-COUNTERS = {"ok", "changed", "failures", "unreachable", "skipped", "rescued", "ignored"}
-MAX_RECEIPT_BYTES = 4096
 PRIVATE_MODE = 0o600
 
 
@@ -45,28 +46,7 @@ def recap(
         raw = os.read(descriptor, MAX_RECEIPT_BYTES + 1)
     finally:
         os.close(descriptor)
-    value = json.loads(raw)
-    if (
-        type(value) is not dict
-        or set(value) != {"format", "context_sha256", "hosts"}
-        or value["format"] != "lowerduckpond-m3-11-playbook-recap-v1"
-        or value["context_sha256"] != context
-        or type(value["hosts"]) is not dict
-        or set(value["hosts"]) != {expected_host}
-        or journal.canonical(value) != raw
-    ):
-        raise ValueError("production playbook did not report exactly its intended host and inputs")
-    counters = value["hosts"][expected_host]
-    if (
-        type(counters) is not dict
-        or set(counters) != COUNTERS
-        or any(type(count) is not int or count < 0 for count in counters.values())
-        or not counters["ok"]
-        or any(counters[name] for name in ("failures", "unreachable", "rescued", "ignored"))
-        or (idempotent and counters["changed"])
-    ):
-        raise ValueError("production playbook failed or its second pass was not idempotent")
-    return raw, cast(dict[str, int], counters)
+    return raw, validate_recap(raw, context, idempotent=idempotent, expected_host=expected_host)
 
 
 def _digest(path: Path) -> str:

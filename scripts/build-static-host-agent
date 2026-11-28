@@ -87,7 +87,8 @@ done
 install -d -- "${site_packages}/scripts" "${site_packages}/schemas/m3-12/v1"
 for helper in __init__ m3_12_contracts m3_12_installed_root m3_12_droplet_action m3_11_production_journal \
     m3_11_production_lease m3_11_production_records m3_12_droplet m3_12_droplet_observe m3_12_native m3_12_successor \
-    m3_12_successor_journal m3_12_transaction; do
+    m3_11_playbook_recap m3_11_production_fence m3_11_production_initialize m3_11_production_observe m3_11_production_probe \
+    m3_12_backup_evidence m3_12_canary_baseline m3_12_native_backup m3_12_successor_journal m3_12_transaction; do
     cp -- "${repository_root}/scripts/${helper}.py" "${site_packages}/scripts/"
 done
 cp -- "${repository_root}/schemas/m3-12/v1/contracts.schema.json" \

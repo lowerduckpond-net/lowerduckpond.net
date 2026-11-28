@@ -85,7 +85,9 @@ def ed25519_key(raw: bytes) -> tuple[bytes, str]:
     return b"ssh-ed25519 " + key, sha256(wire_key).hexdigest()
 
 
-def _system_file(path: Path, owner: int, *, mode: int | None = None) -> bytes:
+def _system_file(
+    path: Path, owner: int, *, mode: int | None = None, verbatim: bool = False
+) -> bytes:
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     with os.fdopen(fd, "rb") as source:
         status = os.fstat(source.fileno())
@@ -99,7 +101,17 @@ def _system_file(path: Path, owner: int, *, mode: int | None = None) -> bytes:
         )
         value = source.read(IDENTITY_LIMIT + 1)
     require(0 < len(value) <= IDENTITY_LIMIT, "droplet-host-identity-unsafe")
-    return value if mode is not None else value.strip()
+    return value if mode is not None or verbatim else value.strip()
+
+
+def production_enrollment_machine_sha256(owner: int) -> str:
+    """Hash exact machine-id file bytes for the existing production enrollment format."""
+    raw = _system_file(MACHINE_ID, owner, verbatim=True)
+    require(
+        re.fullmatch(rb"[0-9a-f]{32}\n?", raw) is not None and raw.strip() != b"0" * 32,
+        "droplet-machine-id-invalid",
+    )
+    return sha256(raw).hexdigest()
 
 
 def host_identity(owner: int = 0) -> dict[str, str]:

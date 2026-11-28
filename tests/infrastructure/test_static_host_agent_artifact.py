@@ -348,6 +348,12 @@ def test_installer_refuses_to_select_an_upgrade_with_an_active_intent(
     (intents / "legacy.json").write_text("{}", encoding="utf-8")
     verifier = verifier_for_test(tmp_path)
 
+    staged = run(INSTALLER, artifact, digest, install_root, verifier, state_root, "--stage-only")
+    assert staged.returncode == 0 and staged.stdout == "changed\n", staged.stderr
+    assert run(verifier, install_root / digest).returncode == 0
+    assert (install_root / "current").resolve(strict=True) == previous
+    assert (intents / "legacy.json").read_text(encoding="utf-8") == "{}"
+
     refused = run(INSTALLER, artifact, digest, install_root, verifier, state_root)
 
     assert refused.returncode != 0

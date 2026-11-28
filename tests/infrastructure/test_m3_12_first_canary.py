@@ -12,6 +12,7 @@ from typing import Any, cast
 import pytest
 from lowerduckpond_static_host_agent import first_canary, platform_launch
 from lowerduckpond_static_host_agent.durable import DurableDirectory
+from lowerduckpond_static_host_agent.production_backup import BackupAuthority
 
 from infrastructure.test_m3_12_contracts import (
     _launch_paths,
@@ -25,6 +26,7 @@ from infrastructure.test_m3_12_contracts import (
 from scripts import m3_11_production_lease as lease
 from scripts import m3_12_droplet_observe
 from scripts import m3_12_native as native
+from scripts.m3_12_backup_evidence import seal_verified_restore
 from scripts.m3_12_contracts import (
     CANARY_DROPLET,
     CANARY_PREDECESSOR,
@@ -40,6 +42,7 @@ from scripts.m3_12_contracts import (
     decode,
     digest,
     encode,
+    instant,
 )
 from scripts.m3_12_successor_journal import SuccessorJournal
 from scripts.m3_12_transaction import PHASES, Reconciliation
@@ -246,13 +249,12 @@ def test_launch_worker_restore_and_rollback(
             open_worker()
 
 
-@pytest.mark.parametrize(("wrong_backup", "crash"), [(False, False), (False, True), (True, False)])
-def test_native_launch_consumes_original_backup_and_seals_worker_view(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, wrong_backup: bool, crash: bool
+@pytest.mark.parametrize("scenario", ["pass", "projection-crash", "wrong-backup", "missing-proof"])
+def test_native_launch_consumes_original_backup_and_seals_worker_view(  # noqa: PLR0915
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, scenario: str
 ) -> None:
     state, root, admission, ctx, evidence = canary(tmp_path)
     owner = os.geteuid()
-    backup = evidence.read(admission["prerequisites"]["backupRestore"], "receipt")
     candidate = tmp_path / "artifacts"
     selected = candidate / admission["candidate"]["hostAgentSha256"]
     selected.mkdir(parents=True)
@@ -293,24 +295,57 @@ def test_native_launch_consumes_original_backup_and_seals_worker_view(
         root, expected_owner=owner, expected_directory_mode=0o700
     ) as records:
         journal = SuccessorJournal(records, owner)
-        journal.immutable("prepared-admission.json", encode(admission))
+        early = replace(ctx, now=instant(fixture_time(79)))
         for phase in PHASES:
-            observation = (
-                backup["observationSha256"]
-                if phase == "final-backup-verification" and not wrong_backup
-                else proof(phase)
-            )
-            data = Reconciliation(observation, "not-applied", True, True, proof("configuration"))
-            journal.advance("started", ctx, data)
+            data = Reconciliation(proof(phase), "not-applied", True, True, proof("configuration"))
+            phase_ctx = early if phase in PHASES[:4] else ctx
+            journal.advance("started", phase_ctx, data)
             if phase == "durable-launch":
                 break
-            journal.advance("committed", ctx, replace(data, outcome="committed"))
-        if wrong_backup:
+            if phase == "final-backup-verification" and scenario != "wrong-backup":
+                history = journal.snapshot().history
+                assert history.head_sha256 is not None
+                authority = BackupAuthority(
+                    history.transaction_sha256,
+                    history.head_sha256,
+                    ctx.authority_sha256,
+                    admission["candidate"]["hostAgentSha256"],
+                    proof("repository"),
+                    proof("lineage"),
+                    {},
+                    None,
+                )
+                backup, data = seal_verified_restore(
+                    journal,
+                    ctx,
+                    authority,
+                    {
+                        "snapshot_id": proof("snapshot"),
+                        "descriptor_sha256": proof("descriptor"),
+                        "index_sha256": proof("index"),
+                        "restored_tree_sha256": proof("tree"),
+                        "report_sha256": ctx.authority_sha256,
+                    },
+                    started=instant(fixture_time(80)),
+                    finished=instant(fixture_time(81)),
+                    expected_index_sha256=proof("index"),
+                )
+                admission["prerequisites"]["backupRestore"] = digest(backup)
+                phase_ctx = replace(ctx, now=instant(fixture_time(81)))
+                if scenario == "missing-proof":
+                    (root / f"evidence-{backup['observationSha256']}.json").unlink()
+            journal.advance("committed", phase_ctx, replace(data, outcome="committed"))
+        journal.immutable("prepared-admission.json", encode(admission))
+        if scenario == "missing-proof":
+            with pytest.raises(ValidationError, match="final-backup-record-missing"):
+                native.launch(journal, "synthetic")
+            assert not (state / "platform/launch.json").exists()
+        elif scenario == "wrong-backup":
             with pytest.raises(ValidationError, match="final-backup-changed"):
                 native.launch(journal, "synthetic")
             assert not (state / "platform/launch.json").exists()
         else:
-            if crash:
+            if scenario == "projection-crash":
                 project = first_canary.project_launch
 
                 def interrupted(source: DurableDirectory, uid: int) -> None:
